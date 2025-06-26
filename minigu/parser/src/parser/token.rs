@@ -107,6 +107,7 @@ impl State {
 
 pub(super) type TokenStream<'a, 'b> = Stateful<TokenSlice<'b, Token<'a>>, State>;
 
+/// 和 tokenize 的区别在于，这个函数会收集所有错误，并返回一个包含所有 Token 的向量。
 /// Tokenizes the input string and returns a vector of tokens or errors.
 ///
 /// This is different from [`tokenize`] in that this collects all errors to the resulting vector
@@ -141,6 +142,8 @@ pub fn tokenize_full(input: &str) -> Vec<Result<Token<'_>, TokenizeError<'_>>> {
     tokens
 }
 
+/// 词法分析入口函数。将输入字符串转换为 Token 流，并返回一个包含所有 Token 的向量。
+///
 /// Tokenizes the input string and returns a vector of tokens.
 ///
 /// This can be used as the building block of a GQL parser/analyzer/syntax highlighter, etc.

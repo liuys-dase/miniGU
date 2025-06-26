@@ -61,6 +61,14 @@ impl ParseOptions {
         self
     }
 
+    /// 解析 GQL 查询的主入口，核心调用流程：
+    /// 1. 用户输入 GQL 字符串
+    /// 2. ParseOptions::parse()
+    /// 3. tokenize(input)  ← 这里调用 TokenKind::lexer()
+    /// 4. Token 流生成
+    /// 5. 语法解析器使用 TokenKind 进行模式匹配
+    /// 6. 生成 AST
+    ///
     /// Parses a GQL query `gql` into a spanned abstract syntax tree with the options specified by
     /// `self`.
     ///
@@ -81,7 +89,9 @@ impl ParseOptions {
     /// assert_eq!(program.unwrap().span(), 0..13);
     /// ```
     pub fn parse(&self, gql: &str) -> Result<Spanned<Program>, Error> {
+        // 调用 token.rs 中的 tokenize 函数，将输入字符串转换为 Token 流
         let tokens = tokenize(gql).map_err(|e| Error::from_tokenize_error(gql, e))?;
+        // 调用 parse_tokens 函数，将 Token 流转换为抽象语法树。
         self.parse_tokens(gql, &tokens)
     }
 
