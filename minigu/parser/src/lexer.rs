@@ -4,6 +4,25 @@ use smol_str::SmolStr;
 use crate::error::TokenErrorKind;
 use crate::unescape::unescape;
 
+/// 使用 Logos 库自动生成词法分析器的标记类型定义。
+/// Logos 是一个 Rust 库，通过派生宏机制为枚举类型自动生成词法分析器，
+/// 将输入文本按模式匹配规则转换为标记流（Tokens）。
+///
+/// 关键属性说明：
+/// - `#[derive(Logos)]`：核心属性，指示 Logos 为该枚举生成词法分析器。
+/// - `#[logos(error = TokenErrorKind)]`：指定解析错误时返回的错误类型。
+/// - `#[logos(skip regex)]`：标记匹配该正则的文本应被忽略（如空白和注释）。
+///
+/// 枚举成员属性说明：
+/// - `#[token("pattern", ignore(case))]`：精确匹配关键字，忽略大小写。
+/// - `#[regex = "pattern"]`：使用正则表达式匹配（未在当前代码片段中展示）。
+///
+/// TokenKind 包含以下几种类型：
+/// - 保留字，GQL 语言的核心关键字，如 `Match`、`Where`、`Return` 等。
+/// - 预保留字，为未来语言扩展预留的关键字，如 `Abstract`、`Catalog` 等。
+/// - 非保留字，有特殊语义但可以作为标识符的词汇，如 `Graph`、`Node` 等。
+/// - 分隔符，图模式匹配的专用符号，如 `]->`、`||` 等。
+/// - 标识符和字面量，用户定义的名称和数值，如 `identifier`、`123` 等。
 #[derive(Debug, Clone, PartialEq, Eq, Logos)]
 #[logos(error = TokenErrorKind)]
 // Whitespaces should be skipped.
@@ -772,6 +791,24 @@ pub enum TokenKind<'a> {
     _BracketedComment,
 }
 
+/// 使用 Logos 库实现的 SQL 参数名解析器。
+/// 该枚举定义了两种参数名格式：带引号的标识符和扩展标识符，
+/// 并通过 Logos 自动生成词法分析器逻辑。
+///
+/// 核心机制：
+/// - Logos 库通过 #[derive(Logos)] 自动生成词法分析器
+/// - 使用正则表达式匹配不同类型的参数名
+/// - 支持两种参数名格式：带引号的标识符和扩展标识符
+///
+/// 参数名类型：
+/// 1. Delimited：带引号的标识符（如 "column"、`column`、@"column"）
+/// 2. Extended：符合 Unicode XID 标准的扩展标识符（如 abc123、_underscore）
+///
+/// 示例：
+/// - 输入: `"user_name"` → 解析为 Delimited(Quoted { kind: DoubleQuote, value: "user_name" })
+/// - 输入: `@"email"` → 解析为 Delimited(Quoted { kind: AtDoubleQuote, value: "email" })
+/// - 输入: `age` → 解析为 Extended("age")
+/// - 输入: `_param1` → 解析为 Extended("_param1")
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Logos)]
 #[logos(error = TokenErrorKind)]
 pub enum ParameterName<'a> {
@@ -782,6 +819,13 @@ pub enum ParameterName<'a> {
 }
 
 impl ParameterName<'_> {
+    /// 解析参数名中的转义字符。
+    /// 支持单引号、双引号、反引号、@ 符号的转义。
+    /// 示例：
+    /// - 输入: `"user_name"` → 解析为 SmolStr("user_name")
+    /// - 输入: `@"email"` → 解析为 SmolStr("email")
+    /// - 输入: `age` → 解析为 SmolStr("age")
+    /// - 输入: `_param1` → 解析为 SmolStr("_param1")
     pub fn unescape(&self) -> Option<SmolStr> {
         match self {
             Self::Delimited(quoted) => quoted.unescape(),
@@ -790,6 +834,27 @@ impl ParameterName<'_> {
     }
 }
 
+/// GQL中带引号的字符串字面量解析器，支持多种引号格式和转义规则。
+/// 该枚举通过Logos库自动生成词法分析器，处理SQL中常见的六种引号字符串：
+///
+/// 1. 标准转义字符串：
+///    - 单引号：'value'，支持\'、\n等转义序列
+///    - 双引号："value"，支持\"、\n等转义序列
+///    - 反引号：`value`，支持\`、\n等转义序列
+///
+/// 2. 未转义字符串（SQL Server风格）：
+///    - 单引号：@'value'，用两个单引号表示转义（'' → '）
+///    - 双引号：@"value"，用两个双引号表示转义（"" → "）
+///    - 反引号：@`value`，用两个反引号表示转义（`` → `）
+///
+/// 转义规则：
+/// - 标准转义：支持常见的\转义序列（如\n、\t、\uXXXX）
+/// - 未转义字符串：使用重复引号表示转义（如''表示一个单引号）
+///
+/// 示例解析结果：
+/// - 输入：'hello\'world' → Single("hello'world")
+/// - 输入：@'hello''world' → UnescapedSingle("hello'world")
+/// - 输入："unicode: \u4e2d文" → Double("unicode: 中文")
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Logos)]
 #[logos(error = TokenErrorKind)]
 pub enum Quoted<'a> {
@@ -808,6 +873,13 @@ pub enum Quoted<'a> {
 }
 
 impl Quoted<'_> {
+    /// 解析带引号的字符串字面量中的转义字符。
+    /// 支持单引号、双引号、反引号、@ 符号的转义。
+    /// 示例：
+    /// - 输入: `'hello\'world'` → 解析为 SmolStr("hello'world")
+    /// - 输入: `@"hello''world"` → 解析为 SmolStr("hello'world")
+    /// - 输入: `@`hello``world` → 解析为 SmolStr("hello`world")
+    /// - 输入: `"unicode: \u4e2d文"` → 解析为 SmolStr("unicode: 中文")
     pub fn unescape(&self) -> Option<SmolStr> {
         match self {
             Self::Single(s) => unescape::<'\'', false>(s),
@@ -820,6 +892,7 @@ impl Quoted<'_> {
     }
 }
 
+/// 移除引用字符串的引号
 /// Return the input with the first (or with '@' if `NO_ESCAPE`) and last characters removed.
 fn strip<const NO_ESCAPE: bool>(input: &str) -> &str {
     // SAFETY: The length of `input` is guaranteed to be >= 3 (NO_ESCAPE) or >= 2 (otherwise).
@@ -832,6 +905,7 @@ fn strip<const NO_ESCAPE: bool>(input: &str) -> &str {
     }
 }
 
+/// 处理块注释 /** ... **/
 fn handle_comment<'a>(lex: &mut LogosLexer<'a, TokenKind<'a>>) -> Result<Skip, TokenErrorKind> {
     let remainder = lex.remainder();
     if let Some(len) = remainder.find("*/") {
@@ -843,6 +917,7 @@ fn handle_comment<'a>(lex: &mut LogosLexer<'a, TokenKind<'a>>) -> Result<Skip, T
     }
 }
 
+/// 处理复杂的引用字符串和参数引用
 fn handle_quoted<'a, T>(lex: &mut LogosLexer<'a, T>) -> Result<Quoted<'a>, TokenErrorKind>
 where
     T: Logos<'a, Source = str>,
@@ -867,6 +942,7 @@ fn handle_parameter<'a>(
 }
 
 impl TokenKind<'_> {
+    /// 检查是否为无符号整数前缀
     #[inline]
     pub fn is_prefix_of_unsigned_integer(&self) -> bool {
         matches!(
@@ -878,11 +954,13 @@ impl TokenKind<'_> {
         )
     }
 
+    /// 检查是否为数字字面量前缀
     #[inline]
     pub fn is_prefix_of_numeric_literal(&self) -> bool {
         self.is_prefix_of_unsigned_integer()
     }
 
+    /// 检查是否为保留字
     #[inline]
     pub fn is_reserved_word(&self) -> bool {
         matches!(
@@ -1206,11 +1284,13 @@ impl TokenKind<'_> {
         )
     }
 
+    /// 检查是否为常规标识符前缀
     #[inline]
     pub fn is_prefix_of_regular_identifier(&self) -> bool {
         matches!(self, Self::RegularIdentifier(_)) || self.is_non_reserved_word()
     }
 
+    /// 检查是否为通用集合函数前缀
     #[inline]
     pub fn is_prefix_of_general_set_function(&self) -> bool {
         matches!(
@@ -1226,16 +1306,19 @@ impl TokenKind<'_> {
         )
     }
 
+    /// 检查是否为二进制集合函数前缀
     #[inline]
     pub fn is_prefix_of_binary_set_function(&self) -> bool {
         matches!(self, Self::PercentileCont | Self::PercentileDisc)
     }
 
+    /// 检查是否为聚合函数前缀
     #[inline]
     pub fn is_prefix_of_aggregate_function(&self) -> bool {
         self.is_prefix_of_general_set_function() || self.is_prefix_of_binary_set_function()
     }
 
+    /// 检查是否为预定义类型前缀
     #[inline]
     pub fn is_prefix_of_predefined_type(&self) -> bool {
         matches!(
@@ -1257,6 +1340,7 @@ impl TokenKind<'_> {
             || self.is_prefix_of_temporal_type()
     }
 
+    /// 检查是否为有符号精确数值类型前缀
     #[inline]
     pub fn is_prefix_of_signed_exact_numeric_type(&self) -> bool {
         matches!(
@@ -1274,6 +1358,7 @@ impl TokenKind<'_> {
         ) || self.is_prefix_of_verbose_exact_numeric_type()
     }
 
+    /// 检查是否为无符号精确数值类型前缀
     #[inline]
     pub fn is_prefix_of_unsigned_exact_numeric_type(&self) -> bool {
         matches!(
@@ -1465,6 +1550,10 @@ mod tests {
 
     #[test]
     fn test_quoted() {
+        // 普通字符串：Rust 会先处理转义字符
+        // 如 let normal_str = "ab\ncd";  实际内容：ab + 换行符 + cd
+        // 原始字符串：Rust 不处理转义字符
+        // 如 let raw_str = r#"ab\ncd"#;  实际内容：ab\ncd
         let lexer = TokenKind::lexer(r#"'ab\ncd'"#);
         let tokens: Vec<_> = lexer.collect();
         assert_eq!(tokens, vec![Ok(TokenKind::SingleQuoted(Quoted::Single(
