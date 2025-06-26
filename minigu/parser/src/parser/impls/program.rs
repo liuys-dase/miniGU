@@ -11,6 +11,30 @@ use crate::parser::token::{TokenStream, any};
 use crate::parser::utils::{SpannedParserExt, ToSpanned};
 use crate::span::Spanned;
 
+/// 解析器函数
+///
+/// 该解析器使用 winnow 解析器组合子：
+/// - `alt()`: 尝试多个替代解析路径
+/// - `opt()`: 可选解析
+/// - `map()`: 转换解析结果
+/// - `spanned()`: 添加位置信息
+///
+/// Program
+///
+/// ├── activity: Option<ProgramActivity>
+/// │   ├── Session(SessionActivity)           // 会话管理，不涉及数据操作
+/// │   └── Transaction(TransactionActivity)   // 🎯 包含数据操作
+/// │       ├── start: Option<StartTransaction>
+/// │       ├── procedure: Option<Procedure>   // 🎯 数据操作的核心
+/// │       └── end: Option<EndTransaction>
+/// └── session_close: bool
+///
+/// # 总结
+/// Program 结构体现了 GQL 语言的核心概念：
+/// - 会话管理: 配置数据库连接和参数
+/// - 事务管理: 控制数据操作的原子性
+/// - 位置追踪: 支持精确的错误报告和代码分析
+
 pub fn gql_program(input: &mut TokenStream) -> ModalResult<Spanned<Program>> {
     alt((
         (program_activity, opt(session_close_command)).map(|(activity, session_close)| Program {

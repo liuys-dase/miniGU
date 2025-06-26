@@ -105,6 +105,9 @@ impl State {
     }
 }
 
+/// `TokenSlice`: winnow 解析器库的 Token 流包装器
+///
+/// `State`: 解析状态，包含递归深度和解析选项
 pub(super) type TokenStream<'a, 'b> = Stateful<TokenSlice<'b, Token<'a>>, State>;
 
 /// 和 tokenize 的区别在于，这个函数会收集所有错误，并返回一个包含所有 Token 的向量。
@@ -180,12 +183,12 @@ pub(super) fn build_token_stream<'a, 'b>(
     input: &'b [Token<'a>],
     options: ParseOptionsInner,
 ) -> TokenStream<'a, 'b> {
-    let input = TokenSlice::new(input);
+    let input = TokenSlice::new(input); // 包装为 winnow
     Stateful {
         input,
         state: State {
-            recursion: 0,
-            options,
+            recursion: 0, // 初始化递归深度
+            options,      // 解析选项
         },
     }
 }

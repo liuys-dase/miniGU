@@ -95,8 +95,21 @@ impl ParseOptions {
         self.parse_tokens(gql, &tokens)
     }
 
-    /// Parses the tokens into a spanned abstract syntax tree with the options specified by
-    /// `self`.
+    /// `parse_tokens` 方法是 GQL 解析器的核心方法之一，负责将词法分析后的 Token
+    /// 数组转换为抽象语法树（AST），作为语法分析阶段的入口点。
+    ///
+    /// # 参数说明
+    /// - `&self: ParseOptions`：实例的不可变引用，包含解析配置选项
+    /// - `gql: &str`：原始 GQL 查询字符串，用于错误定位与报告
+    /// - `tokens: &[Token]`：词法分析生成的 Token 数组切片
+    ///
+    /// # 返回值
+    /// - `Result<Spanned<Program>, Error>`
+    ///   - 成功时：返回带位置信息的 `Program` 根节点 AST
+    ///   - 失败时：返回包含详细错误信息的 `Error` 实例
+    ///
+    /// Parses the tokens into a
+    /// spanned abstract syntax tree with the options specified by `self`.
     ///
     /// Since this produces detailed error messages, the caller should provide the original input
     /// string.
@@ -116,7 +129,9 @@ impl ParseOptions {
     /// assert!(program.is_ok());
     /// ```
     pub fn parse_tokens(&self, gql: &str, tokens: &[Token]) -> Result<Spanned<Program>, Error> {
+        // 第 1 步：将 Token 数组转换为 Token 流
         let stream = build_token_stream(tokens, self.0.clone());
+        // 第 2 步：语法分析
         gql_program
             .parse(stream)
             .map_err(|e| match tokens.get(e.offset()) {

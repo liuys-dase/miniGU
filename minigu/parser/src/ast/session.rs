@@ -8,10 +8,10 @@ use crate::span::{OptSpanned, Spanned};
 
 #[apply(base)]
 pub enum SessionSet {
-    Schema(Spanned<SchemaRef>),
-    Graph(Spanned<GraphExpr>),
-    TimeZone(Spanned<StringLiteral>),
-    Parameter(Spanned<SessionSetParameter>),
+    Schema(Spanned<SchemaRef>),              // 设置模式
+    Graph(Spanned<GraphExpr>),               // 设置图
+    TimeZone(Spanned<StringLiteral>),        // 设置时区
+    Parameter(Spanned<SessionSetParameter>), // 设置参数
 }
 
 #[apply(base)]
@@ -32,10 +32,10 @@ pub struct SessionReset(pub OptSpanned<SessionResetArgs>);
 
 #[apply(base)]
 pub enum SessionResetArgs {
-    AllCharacteristics,
-    AllParameters,
-    Schema,
-    Graph,
-    TimeZone,
-    Parameter(Spanned<Ident>),
+    AllCharacteristics,        // 重置所有特征
+    AllParameters,             // 重置所有参数
+    Schema,                    // 重置模式
+    Graph,                     // 重置图
+    TimeZone,                  // 重置时区
+    Parameter(Spanned<Ident>), // 重置特定参数
 }
