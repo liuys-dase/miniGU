@@ -15,6 +15,7 @@ use crate::common::wal::graph_wal::{Operation, RedoEntry, WalManager, WalManager
 use crate::error::{
     EdgeNotFoundError, StorageError, StorageResult, TransactionError, VertexNotFoundError,
 };
+use crate::tp_storage::iterators::{AdjacencyIterator, EdgeIterator, VertexIterator};
 
 // Perform the update properties operation
 macro_rules! update_properties {
@@ -660,16 +661,13 @@ impl MemoryGraph {
     pub fn iter_vertices<'a>(
         &'a self,
         txn: &'a TransactionHandle,
-    ) -> StorageResult<Box<dyn Iterator<Item = StorageResult<Vertex>> + 'a>> {
-        Ok(Box::new(txn.iter_vertices()))
+    ) -> StorageResult<VertexIterator<'a>> {
+        Ok(txn.iter_vertices())
     }
 
     /// Returns an iterator over all edges within a transaction.
-    pub fn iter_edges<'a>(
-        &'a self,
-        txn: &'a TransactionHandle,
-    ) -> StorageResult<Box<dyn Iterator<Item = StorageResult<Edge>> + 'a>> {
-        Ok(Box::new(txn.iter_edges()))
+    pub fn iter_edges<'a>(&'a self, txn: &'a TransactionHandle) -> StorageResult<EdgeIterator<'a>> {
+        Ok(txn.iter_edges())
     }
 
     /// Returns an iterator over the adjacency list of a vertex in a given direction.
@@ -677,8 +675,8 @@ impl MemoryGraph {
         &'a self,
         txn: &'a TransactionHandle,
         vid: VertexId,
-    ) -> StorageResult<Box<dyn Iterator<Item = StorageResult<Neighbor>> + 'a>> {
-        Ok(Box::new(txn.iter_adjacency(vid)))
+    ) -> StorageResult<AdjacencyIterator<'a>> {
+        Ok(txn.iter_adjacency(vid))
     }
 }
 

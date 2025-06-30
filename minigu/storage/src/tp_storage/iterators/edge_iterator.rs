@@ -1,9 +1,7 @@
-use std::sync::Arc;
-
 use dashmap::iter::Iter;
 use minigu_common::types::EdgeId;
 
-use crate::common::iterators::{ChunkData, EdgeIteratorTrait};
+use crate::common::iterators::EdgeIteratorTrait;
 use crate::common::model::edge::Edge;
 use crate::error::StorageResult;
 use crate::tp_storage::memory_graph::VersionedEdge;
@@ -72,17 +70,8 @@ impl<'a> EdgeIteratorTrait<'a> for EdgeIterator<'a> {
     }
 
     /// Returns a reference to the currently iterated edge.
-    fn edge(&self) -> Option<&Edge> {
+    fn current_edge(&self) -> Option<&Edge> {
         self.current_edge.as_ref()
-    }
-
-    /// Retrieves the properties of the currently iterated edge.
-    fn properties(&self) -> ChunkData {
-        if let Some(edge) = &self.current_edge {
-            vec![Arc::new(edge.properties().clone())]
-        } else {
-            ChunkData::new()
-        }
     }
 }
 
