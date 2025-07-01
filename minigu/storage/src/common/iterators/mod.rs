@@ -11,10 +11,8 @@ mod adjacency_iter;
 mod edge_iter;
 mod vertex_iter;
 
-// Re-export public traits and types
 pub use adjacency_iter::{AdjacencyIteratorTrait, Direction};
 pub use edge_iter::EdgeIteratorTrait;
 pub use vertex_iter::VertexIteratorTrait;
 
-/// Default batch size for batch operations
 pub const DEFAULT_BATCH_SIZE: usize = 1024;

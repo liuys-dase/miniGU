@@ -66,16 +66,12 @@ pub trait AdjacencyIteratorTrait<'a>: Iterator<Item = StorageResult<Neighbor>> {
     /// * `Err(StorageError)` if an error occurs during seeking
     fn seek(&mut self, id: EdgeId) -> StorageResult<bool>;
 
-    // === State Access ===
-
     /// Returns a reference to the currently iterated adjacency entry.
     ///
     /// # Returns
     /// * `Some(&Neighbor)` if there is a current neighbor
     /// * `None` if the iterator is not positioned at a valid neighbor
     fn current_neighbor(&self) -> Option<&Neighbor>;
-
-    // === Batch Operations ===
 
     /// Retrieves the next batch of neighbors.
     ///
@@ -108,8 +104,6 @@ pub trait AdjacencyIteratorTrait<'a>: Iterator<Item = StorageResult<Neighbor>> {
             Ok(Some(batch))
         }
     }
-
-    // === Utility Methods ===
 
     /// Collects all remaining neighbors into a vector.
     ///
