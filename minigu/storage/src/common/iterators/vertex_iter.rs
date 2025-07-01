@@ -9,23 +9,6 @@ use crate::model::vertex::Vertex;
 ///
 /// This trait provides methods for iterating over vertices in a graph storage,
 /// with support for filtering, seeking, and batch operations.
-///
-/// # Examples
-///
-/// ```ignore
-/// // Single vertex iteration
-/// for vertex_result in vertex_iter {
-///     let vertex = vertex_result?;
-///     // Process vertex
-/// }
-///
-/// // Batch iteration
-/// while let Some(batch) = vertex_iter.next_batch(100)? {
-///     for vertex in batch {
-///         // Process batch of vertices
-///     }
-/// }
-/// ```
 pub trait VertexIteratorTrait<'a>: Iterator<Item = StorageResult<Vertex>> {
     /// Adds a filtering predicate to the iterator (supports method chaining).
     ///

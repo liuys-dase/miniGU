@@ -21,23 +21,6 @@ pub enum Direction {
 ///
 /// This trait provides methods for iterating over the adjacency list of a vertex,
 /// with support for filtering, seeking, and batch operations.
-///
-/// # Examples
-///
-/// ```ignore
-/// // Single neighbor iteration
-/// for neighbor_result in adjacency_iter {
-///     let neighbor = neighbor_result?;
-///     // Process neighbor
-/// }
-///
-/// // Batch iteration
-/// while let Some(batch) = adjacency_iter.next_batch(100)? {
-///     for neighbor in batch {
-///         // Process batch of neighbors
-///     }
-/// }
-/// ```
 pub trait AdjacencyIteratorTrait<'a>: Iterator<Item = StorageResult<Neighbor>> {
     /// Adds a filtering predicate to the iterator (supports method chaining).
     ///

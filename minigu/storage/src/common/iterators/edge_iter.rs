@@ -9,23 +9,6 @@ use crate::model::edge::Edge;
 ///
 /// This trait provides methods for iterating over edges in a graph storage,
 /// with support for filtering, seeking, and batch operations.
-///
-/// # Examples
-///
-/// ```ignore
-/// // Single edge iteration
-/// for edge_result in edge_iter {
-///     let edge = edge_result?;
-///     // Process edge
-/// }
-///
-/// // Batch iteration
-/// while let Some(batch) = edge_iter.next_batch(100)? {
-///     for edge in batch {
-///         // Process batch of edges
-///     }
-/// }
-/// ```
 pub trait EdgeIteratorTrait<'a>: Iterator<Item = StorageResult<Edge>> {
     /// Adds a filtering predicate to the iterator (supports method chaining).
     ///
