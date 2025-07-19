@@ -7,6 +7,7 @@ use crossbeam_skiplist::SkipMap;
 use dashmap::DashSet;
 use minigu_common::types::{EdgeId, VertexId};
 
+use super::gap_lock::{EntityId, EntityType, GapRange, LockType};
 use super::memory_graph::MemoryGraph;
 use crate::common::model::edge::{Edge, Neighbor};
 pub use crate::common::transaction::{DeltaOp, IsolationLevel, SetPropsOp, Timestamp};
@@ -459,6 +460,68 @@ impl MemTransaction {
 }
 
 impl MemTransaction {
+    /// Acquire a record lock on a specific entity
+    pub(super) fn acquire_record_lock(&self, entity: EntityId) -> StorageResult<()> {
+        if let IsolationLevel::Serializable = self.isolation_level {
+            let lock = LockType::Record(entity);
+            self.graph.lock_manager.acquire_lock(self.txn_id, lock)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Acquire a gap lock on a range
+    pub(super) fn acquire_gap_lock(&self, range: GapRange) -> StorageResult<()> {
+        if let IsolationLevel::Serializable = self.isolation_level {
+            let lock = LockType::Gap(range);
+            self.graph.lock_manager.acquire_lock(self.txn_id, lock)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Acquire a next-key lock (record + gap)
+    // pub(super) fn acquire_next_key_lock(&self, entity: EntityId, range: GapRange) ->
+    // StorageResult<()> {     if let IsolationLevel::Serializable = self.isolation_level {
+    //         let lock = LockType::NextKey(entity, range);
+    //         self.graph.lock_manager.acquire_lock(self.txn_id, lock)
+    //     } else {
+    //         Ok(())
+    //     }
+    // }
+
+    /// Acquire gap locks for a vertex iteration range
+    pub(super) fn acquire_vertex_iteration_locks(&self) -> StorageResult<()> {
+        if let IsolationLevel::Serializable = self.isolation_level {
+            // Lock the entire vertex ID range to prevent phantom reads
+            let gap_range = GapRange::IdRange {
+                entity_type: EntityType::Vertex,
+                lower_bound: std::ops::Bound::Unbounded,
+                upper_bound: std::ops::Bound::Unbounded,
+            };
+            self.acquire_gap_lock(gap_range)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Acquire gap locks for an edge iteration range
+    pub(super) fn acquire_edge_iteration_locks(&self) -> StorageResult<()> {
+        if let IsolationLevel::Serializable = self.isolation_level {
+            // Lock the entire edge ID range to prevent phantom reads
+            let gap_range = GapRange::IdRange {
+                entity_type: EntityType::Edge,
+                lower_bound: std::ops::Bound::Unbounded,
+                upper_bound: std::ops::Bound::Unbounded,
+            };
+            self.acquire_gap_lock(gap_range)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl MemTransaction {
     /// Commits the transaction, applying all changes atomically.
     /// Ensures serializability, updates version chains, and manages adjacency lists.
     pub fn commit(&self) -> StorageResult<Timestamp> {
@@ -570,14 +633,17 @@ impl MemTransaction {
             self.graph.wal_manager.wal().write().unwrap().flush()?;
         }
 
-        // Step 5: Clean up transaction state and update the `latest_commit_ts`.
+        // Step 5: Release all locks held by this transaction
+        self.graph.lock_manager.release_locks(self.txn_id())?;
+
+        // Step 6: Clean up transaction state and update the `latest_commit_ts`.
         self.graph
             .txn_manager
             .latest_commit_ts
             .store(commit_ts.0, Ordering::SeqCst);
         self.graph.txn_manager.finish_transaction(self)?;
 
-        // Step 6: Check if an auto checkpoint should be created
+        // Step 7: Check if an auto checkpoint should be created
         self.graph.check_auto_checkpoint()?;
         Ok(commit_ts)
     }
@@ -695,6 +761,9 @@ impl MemTransaction {
                 .append(&wal_entry)?;
             self.graph.wal_manager.wal().write().unwrap().flush()?;
         }
+
+        // Release all locks held by this transaction
+        self.graph.lock_manager.release_locks(self.txn_id())?;
 
         // Remove transaction from transaction manager
         self.graph.txn_manager.finish_transaction(self)?;

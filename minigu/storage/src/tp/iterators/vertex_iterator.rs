@@ -3,6 +3,7 @@ use std::sync::Arc;
 use dashmap::iter::Iter;
 use minigu_common::types::VertexId;
 
+use super::super::gap_lock::EntityId;
 use crate::common::iterators::{ChunkData, VertexIteratorTrait};
 use crate::common::model::vertex::Vertex;
 use crate::error::StorageResult;
@@ -18,6 +19,7 @@ pub struct VertexIterator<'a> {
     txn: &'a MemTransaction,                    // Reference to the transaction
     filters: Vec<VertexFilter<'a>>,             // List of filtering predicates
     current_vertex: Option<Vertex>,             // Currently iterated vertex
+    gap_lock_acquired: bool,                    // Track if gap lock has been acquired
 }
 
 impl Iterator for VertexIterator<'_> {
@@ -25,6 +27,14 @@ impl Iterator for VertexIterator<'_> {
 
     /// Retrieves the next visible vertex that satisfies all filters.
     fn next(&mut self) -> Option<Self::Item> {
+        // Acquire gap lock on first access to prevent phantom reads
+        if !self.gap_lock_acquired {
+            if let Err(e) = self.txn.acquire_vertex_iteration_locks() {
+                return Some(Err(e));
+            }
+            self.gap_lock_acquired = true;
+        }
+
         for entry in self.inner.by_ref() {
             let vid = *entry.key();
             let versioned_vertex = entry.value();
@@ -39,6 +49,12 @@ impl Iterator for VertexIterator<'_> {
             if self.filters.iter().all(|f| f(&visible_vertex)) {
                 // Record the vertex read in the transaction
                 self.txn.vertex_reads().insert(vid);
+                
+                // Acquire record lock for the specific vertex
+                if let Err(e) = self.txn.acquire_record_lock(EntityId::Vertex(vid)) {
+                    return Some(Err(e));
+                }
+                
                 self.current_vertex = Some(visible_vertex.clone());
                 return Some(Ok(visible_vertex));
             }
@@ -99,6 +115,7 @@ impl MemTransaction {
             txn: self,
             filters: Vec::new(), // Initialize with an empty filter list
             current_vertex: None,
+            gap_lock_acquired: false,
         }
     }
 }

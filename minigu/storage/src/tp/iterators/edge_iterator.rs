@@ -3,6 +3,7 @@ use std::sync::Arc;
 use dashmap::iter::Iter;
 use minigu_common::types::EdgeId;
 
+use super::super::gap_lock::EntityId;
 use crate::common::iterators::{ChunkData, EdgeIteratorTrait};
 use crate::common::model::edge::Edge;
 use crate::error::StorageResult;
@@ -17,6 +18,7 @@ pub struct EdgeIterator<'a> {
     txn: &'a MemTransaction,                // Reference to the transaction
     filters: Vec<EdgeFilter<'a>>,           // List of filtering predicates
     current_edge: Option<Edge>,             // Currently iterated edge
+    gap_lock_acquired: bool,                // Track if gap lock has been acquired
 }
 
 impl Iterator for EdgeIterator<'_> {
@@ -24,6 +26,14 @@ impl Iterator for EdgeIterator<'_> {
 
     /// Retrieves the next visible edge that satisfies all filters.
     fn next(&mut self) -> Option<Self::Item> {
+        // Acquire gap lock on first access to prevent phantom reads
+        if !self.gap_lock_acquired {
+            if let Err(e) = self.txn.acquire_edge_iteration_locks() {
+                return Some(Err(e));
+            }
+            self.gap_lock_acquired = true;
+        }
+
         for entry in self.inner.by_ref() {
             let eid = *entry.key();
             let versioned_edge = entry.value();
@@ -38,6 +48,12 @@ impl Iterator for EdgeIterator<'_> {
             if self.filters.iter().all(|f| f(&visible_edge)) {
                 // Record the edge read in the transaction
                 self.txn.edge_reads().insert(eid);
+
+                // Acquire record lock for the specific edge
+                if let Err(e) = self.txn.acquire_record_lock(EntityId::Edge(eid)) {
+                    return Some(Err(e));
+                }
+
                 self.current_edge = Some(visible_edge.clone());
                 return Some(Ok(visible_edge));
             }
@@ -96,6 +112,7 @@ impl MemTransaction {
             txn: self,
             filters: Vec::new(), // Initialize with an empty filter list
             current_edge: None,  // No edge selected initially
+            gap_lock_acquired: false,
         }
     }
 }

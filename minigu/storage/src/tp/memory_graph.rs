@@ -5,6 +5,7 @@ use dashmap::DashMap;
 use minigu_common::types::{EdgeId, VertexId};
 use minigu_common::value::ScalarValue;
 
+use super::gap_lock::LockManager;
 use super::checkpoint::{CheckpointManager, CheckpointManagerConfig};
 use super::transaction::{MemTransaction, MemTxnManager, TransactionHandle, UndoEntry, UndoPtr};
 use crate::common::model::edge::{Edge, Neighbor};
@@ -346,6 +347,9 @@ pub struct MemoryGraph {
     // ---- Transaction management ----
     pub(super) txn_manager: MemTxnManager,
 
+    // ---- Lock management ----
+    pub(super) lock_manager: LockManager,
+
     // ---- Write-ahead-log for crash recovery ----
     pub(super) wal_manager: WalManager,
 
@@ -402,6 +406,7 @@ impl MemoryGraph {
             edges: DashMap::new(),
             adjacency_list: DashMap::new(),
             txn_manager: MemTxnManager::new(),
+            lock_manager: LockManager::new(),
             wal_manager: WalManager::new(wal_config),
             checkpoint_manager: None,
         });
@@ -558,6 +563,9 @@ impl MemoryGraph {
     // ===== Read-only graph methods =====
     /// Retrieves a vertex by its ID within the context of a transaction.
     pub fn get_vertex(&self, txn: &TransactionHandle, vid: VertexId) -> StorageResult<Vertex> {
+        // Acquire record lock for the vertex being read
+        txn.acquire_record_lock(super::gap_lock::EntityId::Vertex(vid))?;
+        
         // Step 1: Atomically retrieve the versioned vertex (check existence).
         let versioned_vertex = self.vertices.get(&vid).ok_or(StorageError::VertexNotFound(
             VertexNotFoundError::VertexNotFound(vid.to_string()),
@@ -607,6 +615,9 @@ impl MemoryGraph {
 
     /// Retrieves an edge by its ID within the context of a transaction.
     pub fn get_edge(&self, txn: &TransactionHandle, eid: EdgeId) -> StorageResult<Edge> {
+        // Acquire record lock for the edge being read
+        txn.acquire_record_lock(super::gap_lock::EntityId::Edge(eid))?;
+        
         // Step 1: Atomically retrieve the versioned edge (check existence).
         let versioned_edge = self.edges.get(&eid).ok_or(StorageError::EdgeNotFound(
             EdgeNotFoundError::EdgeNotFound(eid.to_string()),
@@ -687,6 +698,10 @@ impl MemoryGraph {
         vertex: Vertex,
     ) -> StorageResult<VertexId> {
         let vid = vertex.vid();
+        
+        // Acquire record lock for the new vertex
+        txn.acquire_record_lock(super::gap_lock::EntityId::Vertex(vid))?;
+        
         let entry = self
             .vertices
             .entry(vid)
@@ -726,6 +741,9 @@ impl MemoryGraph {
         let src_id = edge.src_id();
         let dst_id = edge.dst_id();
         let label_id = edge.label_id();
+        
+        // Acquire record lock for the new edge
+        txn.acquire_record_lock(super::gap_lock::EntityId::Edge(eid))?;
 
         // Check if source and destination vertices exist.
         self.get_vertex(txn, edge.src_id())?;

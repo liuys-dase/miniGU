@@ -47,6 +47,8 @@ pub enum TransactionError {
     TransactionNotFound(String),
     #[error("Transaction already committed: {0}")]
     TransactionAlreadyCommitted(String),
+    #[error("Lock conflict: {0}")]
+    LockConflict(String),
 }
 
 #[derive(Error, Debug)]
