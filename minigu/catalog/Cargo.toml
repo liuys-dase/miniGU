@@ -6,7 +6,9 @@ repository.workspace = true
 version.workspace = true
 
 [dependencies]
+dashmap = { workspace = true }
 minigu-common = { workspace = true }
+minigu-storage = { workspace = true }
 serde = { workspace = true }
 smallvec = { workspace = true, features = ["union", "serde"] }
 thiserror = { workspace = true }

@@ -1414,7 +1414,9 @@ dependencies = [
 name = "minigu-catalog"
 version = "0.1.0"
 dependencies = [
+ "dashmap",
  "minigu-common",
+ "minigu-storage",
  "serde",
  "smallvec",
  "thiserror",
