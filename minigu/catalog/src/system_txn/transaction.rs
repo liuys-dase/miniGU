@@ -1,4 +1,5 @@
-use std::sync::{atomic::{AtomicU64, AtomicUsize, Ordering}, Arc, Mutex, OnceLock, RwLock};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use dashmap::{DashMap, DashSet};
 use minigu_storage::common::transaction::{IsolationLevel, Timestamp};
@@ -102,10 +103,10 @@ impl SystemTransactionManager {
         }
 
         let watermark = self.calculate_watermark();
-        
+
         // Decide between sequential and parallel GC
         let stats = self.catalog_txn_manager.get_statistics();
-        
+
         if stats.total_chains >= config.parallel_gc_threshold {
             // Use parallel GC for large datasets
             self.catalog_txn_manager
@@ -121,7 +122,8 @@ impl SystemTransactionManager {
         // Also run storage GC (commented out due to missing MemoryGraph parameter)
         // self.storage_txn_manager
         //     .garbage_collect()
-        //     .map_err(|e| SystemTransactionError::StorageError(format!("Storage GC failed: {}", e)))?;
+        //     .map_err(|e| SystemTransactionError::StorageError(format!("Storage GC failed: {}",
+        // e)))?;
 
         Ok(())
     }
@@ -142,8 +144,11 @@ impl SystemTransactionManager {
     /// Get comprehensive performance statistics
     pub fn get_performance_statistics(&self) -> PerformanceStatistics {
         let (gc_stats, version_stats) = self.get_gc_statistics();
-        let cache_stats = self.catalog_txn_manager.version_manager.get_cache_statistics();
-        
+        let cache_stats = self
+            .catalog_txn_manager
+            .version_manager
+            .get_cache_statistics();
+
         PerformanceStatistics {
             gc_stats,
             version_stats,
@@ -164,7 +169,10 @@ impl SystemTransactionManager {
         total_memory += self.active_transactions.len() as u64 * 1024; // ~1KB per transaction
 
         // Memory from cache
-        let cache_stats = self.catalog_txn_manager.version_manager.get_cache_statistics();
+        let cache_stats = self
+            .catalog_txn_manager
+            .version_manager
+            .get_cache_statistics();
         total_memory += cache_stats.current_size as u64 * 512; // ~512B per cache entry
 
         total_memory
@@ -179,11 +187,11 @@ impl SystemTransactionManager {
 
         // Run aggressive GC
         let config = AdaptiveGcConfig {
-            min_gc_interval_sec: 0, // Force immediate GC
+            min_gc_interval_sec: 0,         // Force immediate GC
             memory_pressure_threshold: 0.0, // Lower threshold
             ..Default::default()
         };
-        
+
         self.run_adaptive_gc(&config)?;
 
         let final_memory = self.estimate_memory_usage();
@@ -210,14 +218,22 @@ impl SystemTransactionManager {
     }
 
     /// Check version chain consistency
-    fn check_version_chains(&self, report: &mut ConsistencyReport) -> Result<(), SystemTransactionError> {
-        for version_chain_entry in self.catalog_txn_manager.version_manager.version_chains.iter() {
+    fn check_version_chains(
+        &self,
+        report: &mut ConsistencyReport,
+    ) -> Result<(), SystemTransactionError> {
+        for version_chain_entry in self
+            .catalog_txn_manager
+            .version_manager
+            .version_chains
+            .iter()
+        {
             let key = version_chain_entry.key();
             let version_chain = version_chain_entry.value();
-            
+
             // Check current version
             let current = version_chain.current.read().unwrap();
-            
+
             // Validate commit timestamp
             if current.commit_ts.0 == 0 {
                 report.add_error(ConsistencyError::InvalidTimestamp {
@@ -234,7 +250,7 @@ impl SystemTransactionManager {
 
             while let Some(undo_entry) = undo_ptr {
                 undo_count += 1;
-                
+
                 // Check timestamp ordering
                 if undo_entry.timestamp >= prev_timestamp {
                     report.add_error(ConsistencyError::TimestampOrderViolation {
@@ -262,7 +278,10 @@ impl SystemTransactionManager {
     }
 
     /// Check active transaction consistency
-    fn check_active_transactions(&self, report: &mut ConsistencyReport) -> Result<(), SystemTransactionError> {
+    fn check_active_transactions(
+        &self,
+        report: &mut ConsistencyReport,
+    ) -> Result<(), SystemTransactionError> {
         for txn_entry in self.active_transactions.iter() {
             let txn_id = *txn_entry.key();
             let txn = txn_entry.value();
@@ -278,7 +297,8 @@ impl SystemTransactionManager {
 
             // Check if transaction has been running too long
             let latest_commit = self.timestamp_manager.latest_commit_timestamp();
-            if txn.start_ts.0 + 10000 < latest_commit.0 { // Arbitrary threshold
+            if txn.start_ts.0 + 10000 < latest_commit.0 {
+                // Arbitrary threshold
                 report.add_warning(ConsistencyWarning::LongRunningTransaction {
                     txn_id,
                     start_ts: txn.start_ts,
@@ -291,7 +311,10 @@ impl SystemTransactionManager {
     }
 
     /// Check timestamp consistency
-    fn check_timestamp_consistency(&self, report: &mut ConsistencyReport) -> Result<(), SystemTransactionError> {
+    fn check_timestamp_consistency(
+        &self,
+        report: &mut ConsistencyReport,
+    ) -> Result<(), SystemTransactionError> {
         let watermark = self.calculate_watermark();
         let latest_commit = self.timestamp_manager.latest_commit_timestamp();
 
@@ -307,7 +330,10 @@ impl SystemTransactionManager {
     }
 
     /// Check memory consistency
-    fn check_memory_consistency(&self, report: &mut ConsistencyReport) -> Result<(), SystemTransactionError> {
+    fn check_memory_consistency(
+        &self,
+        report: &mut ConsistencyReport,
+    ) -> Result<(), SystemTransactionError> {
         let estimated_memory = self.estimate_memory_usage();
         const MAX_MEMORY_THRESHOLD: u64 = 1024 * 1024 * 1024; // 1GB
 
@@ -322,7 +348,10 @@ impl SystemTransactionManager {
     }
 
     /// Attempt to repair consistency issues
-    pub fn repair_consistency(&self, report: &ConsistencyReport) -> Result<RepairReport, SystemTransactionError> {
+    pub fn repair_consistency(
+        &self,
+        report: &ConsistencyReport,
+    ) -> Result<RepairReport, SystemTransactionError> {
         let mut repair_report = RepairReport::new();
 
         for error in &report.errors {
@@ -336,11 +365,19 @@ impl SystemTransactionManager {
     }
 
     /// Repair a specific consistency error
-    fn repair_consistency_error(&self, error: &ConsistencyError) -> Result<RepairAction, SystemTransactionError> {
+    fn repair_consistency_error(
+        &self,
+        error: &ConsistencyError,
+    ) -> Result<RepairAction, SystemTransactionError> {
         match error {
             ConsistencyError::UndoChainTooLong { key, .. } => {
                 // Truncate the undo chain
-                if let Some(version_chain) = self.catalog_txn_manager.version_manager.version_chains.get(key) {
+                if let Some(version_chain) = self
+                    .catalog_txn_manager
+                    .version_manager
+                    .version_chains
+                    .get(key)
+                {
                     let mut undo_ptr = version_chain.undo_ptr.write().unwrap();
                     let mut current = undo_ptr.clone();
                     let mut count = 0;
@@ -360,7 +397,7 @@ impl SystemTransactionManager {
                         current = entry.next.clone();
                     }
                 }
-                
+
                 Ok(RepairAction::NoActionNeeded)
             }
             ConsistencyError::WatermarkAhead { .. } => {
@@ -506,7 +543,7 @@ impl SystemTransaction {
         // Abort storage transaction
         if let Some(ref _storage_txn) = *self.storage_txn.read().unwrap() {
             // Abort storage transaction
-            // Note: This would need to be integrated with the storage transaction API  
+            // Note: This would need to be integrated with the storage transaction API
             // TODO: Implement storage transaction abort when integration is complete
             // _storage_txn.abort_at(false)?;
         }
@@ -579,7 +616,9 @@ impl CatalogTransaction {
                 self.apply_undo_chain_optimized(&version_chain.undo_ptr, &mut data)?;
 
                 // Cache the result for future reads
-                version_manager.read_cache.put(key, self.start_ts, data.clone());
+                version_manager
+                    .read_cache
+                    .put(key, self.start_ts, data.clone());
 
                 return Ok(Some(data));
             }
@@ -651,7 +690,7 @@ impl CatalogTransaction {
     ) -> Result<(), CatalogError> {
         // Invalidate cache entries for this key since we're modifying it
         version_manager.invalidate_cache(key);
-        
+
         if let Some(version_chain) = version_manager.version_chains.get(key) {
             let mut current = version_chain.current.write().unwrap();
 
@@ -1382,10 +1421,10 @@ impl CatalogTxnManager {
     pub fn garbage_collect(&self, watermark: Timestamp) -> Result<(), CatalogError> {
         use std::time::Instant;
         let start_time = Instant::now();
-        
+
         // Calculate memory usage before GC (rough estimation)
         let memory_before = self.estimate_memory_usage();
-        
+
         let mut cleaned_entries = 0u64;
         let mut removed_chains = 0u64;
 
@@ -1420,64 +1459,76 @@ impl CatalogTxnManager {
         // Update GC statistics
         let gc_time_us = start_time.elapsed().as_micros() as u64;
         let memory_after = self.estimate_memory_usage();
-        
+
         {
             let mut stats = self.version_manager.gc_stats.write().unwrap();
-            stats.update(gc_time_us, cleaned_entries, removed_chains, 
-                        watermark, memory_before, memory_after);
+            stats.update(
+                gc_time_us,
+                cleaned_entries,
+                removed_chains,
+                watermark,
+                memory_before,
+                memory_after,
+            );
         }
-        
+
         self.version_manager.update_last_gc_timestamp();
 
         Ok(())
     }
 
     /// Parallel garbage collection for large datasets
-    pub fn parallel_garbage_collect(&self, watermark: Timestamp, config: &AdaptiveGcConfig) 
-        -> Result<(), CatalogError> {
-        use std::time::Instant;
+    pub fn parallel_garbage_collect(
+        &self,
+        watermark: Timestamp,
+        config: &AdaptiveGcConfig,
+    ) -> Result<(), CatalogError> {
         use std::sync::atomic::{AtomicU64, Ordering};
         use std::thread;
-        
+        use std::time::Instant;
+
         let start_time = Instant::now();
         let memory_before = self.estimate_memory_usage();
-        
+
         let cleaned_entries = Arc::new(AtomicU64::new(0));
         let removed_chains = Arc::new(AtomicU64::new(0));
-        
+
         // Collect all version chain keys
-        let all_keys: Vec<_> = self.version_manager.version_chains.iter()
+        let all_keys: Vec<_> = self
+            .version_manager
+            .version_chains
+            .iter()
             .map(|entry| entry.key().clone())
             .collect();
-            
+
         if all_keys.len() < config.parallel_gc_threshold {
             // Fall back to sequential GC for small datasets
             return self.garbage_collect(watermark);
         }
-        
+
         // Split work among threads
         let chunk_size = (all_keys.len() + config.gc_worker_threads - 1) / config.gc_worker_threads;
         let chunks: Vec<_> = all_keys.chunks(chunk_size).collect();
-        
+
         let mut handles = vec![];
-        
+
         for chunk in chunks {
             let chunk = chunk.to_vec();
             let version_manager = self.version_manager.clone();
             let cleaned_entries = cleaned_entries.clone();
             let removed_chains = removed_chains.clone();
-            
+
             let handle = thread::spawn(move || {
                 let mut local_cleaned = 0u64;
                 let mut local_removed = 0u64;
-                
+
                 for key in chunk {
                     if let Some(version_chain_entry) = version_manager.version_chains.get(&key) {
                         let version_chain = version_chain_entry.value();
-                        
+
                         // Clean up old undo entries
                         let mut undo_ptr = version_chain.undo_ptr.write().unwrap();
-                        
+
                         while let Some(ref entry) = *undo_ptr {
                             if entry.timestamp < watermark {
                                 *undo_ptr = entry.next.clone();
@@ -1486,13 +1537,13 @@ impl CatalogTxnManager {
                                 break;
                             }
                         }
-                        
+
                         // Check if we can remove the entire chain
                         let current = version_chain.current.read().unwrap();
                         let should_remove = current.is_tombstone && current.commit_ts < watermark;
                         drop(current);
                         drop(undo_ptr);
-                        
+
                         if should_remove {
                             drop(version_chain_entry);
                             version_manager.version_chains.remove(&key);
@@ -1500,46 +1551,54 @@ impl CatalogTxnManager {
                         }
                     }
                 }
-                
+
                 cleaned_entries.fetch_add(local_cleaned, Ordering::Relaxed);
                 removed_chains.fetch_add(local_removed, Ordering::Relaxed);
             });
-            
+
             handles.push(handle);
         }
-        
+
         // Wait for all threads to complete
         for handle in handles {
-            handle.join().map_err(|_| CatalogError::Other("GC thread panicked".to_string()))?;
+            handle
+                .join()
+                .map_err(|_| CatalogError::Other("GC thread panicked".to_string()))?;
         }
-        
+
         // Update GC statistics
         let gc_time_us = start_time.elapsed().as_micros() as u64;
         let memory_after = self.estimate_memory_usage();
         let final_cleaned = cleaned_entries.load(Ordering::Relaxed);
         let final_removed = removed_chains.load(Ordering::Relaxed);
-        
+
         {
             let mut stats = self.version_manager.gc_stats.write().unwrap();
-            stats.update(gc_time_us, final_cleaned, final_removed, 
-                        watermark, memory_before, memory_after);
+            stats.update(
+                gc_time_us,
+                final_cleaned,
+                final_removed,
+                watermark,
+                memory_before,
+                memory_after,
+            );
         }
-        
+
         self.version_manager.update_last_gc_timestamp();
-        
+
         Ok(())
     }
-    
+
     /// Estimate memory usage of version chains (rough approximation)
     fn estimate_memory_usage(&self) -> u64 {
         let mut total_size = 0u64;
-        
+
         for version_chain_entry in self.version_manager.version_chains.iter() {
             let version_chain = version_chain_entry.value();
-            
+
             // Estimate size of current version
             total_size += 128; // Base overhead
-            
+
             // Estimate size of undo chain
             let mut undo_ptr = version_chain.undo_ptr.read().unwrap().clone();
             while let Some(entry) = undo_ptr {
@@ -1547,26 +1606,29 @@ impl CatalogTxnManager {
                 undo_ptr = entry.next.clone();
             }
         }
-        
+
         total_size
     }
-    
+
     /// Check if GC should run based on adaptive strategy
     pub fn should_run_gc(&self, config: &AdaptiveGcConfig) -> bool {
         use std::time::{SystemTime, UNIX_EPOCH};
-        
+
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
-            
-        let last_gc = self.version_manager.last_gc_timestamp.load(Ordering::Relaxed);
+
+        let last_gc = self
+            .version_manager
+            .last_gc_timestamp
+            .load(Ordering::Relaxed);
         let time_since_last_gc = now.saturating_sub(last_gc);
-        
+
         // Always run if minimum interval has passed and we have significant pressure
         if time_since_last_gc >= config.min_gc_interval_sec {
             let stats = self.get_statistics();
-            
+
             // Check memory pressure (estimated)
             let estimated_memory = self.estimate_memory_usage();
             let memory_pressure = if estimated_memory > 0 {
@@ -1574,19 +1636,19 @@ impl CatalogTxnManager {
             } else {
                 0.0
             };
-            
+
             // Check undo chain length pressure
             let avg_undo_length = if stats.total_chains > 0 {
                 stats.total_undo_entries / stats.total_chains
             } else {
                 0
             };
-            
+
             return memory_pressure > config.memory_pressure_threshold
                 || avg_undo_length > config.undo_chain_threshold as usize
                 || time_since_last_gc >= config.max_gc_interval_sec;
         }
-        
+
         false
     }
 
@@ -1743,8 +1805,15 @@ impl GcStatistics {
         }
     }
 
-    pub fn update(&mut self, gc_time_us: u64, cleaned_entries: u64, removed_chains: u64, 
-                  watermark: Timestamp, memory_before: u64, memory_after: u64) {
+    pub fn update(
+        &mut self,
+        gc_time_us: u64,
+        cleaned_entries: u64,
+        removed_chains: u64,
+        watermark: Timestamp,
+        memory_before: u64,
+        memory_after: u64,
+    ) {
         self.total_gc_runs += 1;
         self.total_gc_time_us += gc_time_us;
         self.cleaned_undo_entries += cleaned_entries;
@@ -1847,7 +1916,8 @@ impl ReadCache {
 
     pub fn invalidate(&self, key: &MetadataKey) {
         // Remove all cache entries for this key
-        let to_remove: Vec<_> = self.cache
+        let to_remove: Vec<_> = self
+            .cache
             .iter()
             .filter(|entry| &entry.key().metadata_key == key)
             .map(|entry| entry.key().clone())
@@ -1876,7 +1946,7 @@ impl ReadCache {
 
         if current_size >= max_size {
             let mut access_order = self.access_order.write().unwrap();
-            
+
             // Evict least recently used entries
             while self.current_size.load(Ordering::Relaxed) >= max_size {
                 if let Some(lru_key) = access_order.pop_front() {
@@ -1892,12 +1962,12 @@ impl ReadCache {
 
     fn update_access_order(&self, key: &CacheKey) {
         let mut access_order = self.access_order.write().unwrap();
-        
+
         // Remove existing entry if present
         if let Some(pos) = access_order.iter().position(|k| k == key) {
             access_order.remove(pos);
         }
-        
+
         // Add to back (most recently used)
         access_order.push_back(key.clone());
     }
@@ -2077,7 +2147,8 @@ pub enum ConsistencyWarning {
 #[derive(Debug)]
 pub struct RepairReport {
     pub successful_repairs: Vec<RepairAction>,
-    pub failed_repairs: Vec<(ConsistencyError, String)>, // Use String instead of SystemTransactionError
+    pub failed_repairs: Vec<(ConsistencyError, String)>, /* Use String instead of
+                                                          * SystemTransactionError */
     pub timestamp: std::time::Instant,
 }
 

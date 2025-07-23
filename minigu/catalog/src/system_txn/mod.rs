@@ -8,5 +8,7 @@ mod tests;
 
 pub use metadata::{MetadataKey, MetadataValue};
 pub use timestamp::TimestampManager;
-pub use transaction::{SystemTransaction, SystemTransactionManager, CatalogTransaction, CatalogTxnManager};
-pub use version_chain::{MetadataVersionChain, MetadataVersion, MetadataUndoEntry};
+pub use transaction::{
+    CatalogTransaction, CatalogTxnManager, SystemTransaction, SystemTransactionManager,
+};
+pub use version_chain::{MetadataUndoEntry, MetadataVersion, MetadataVersionChain};

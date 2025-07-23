@@ -1,4 +1,5 @@
 use std::sync::{Arc, RwLock, Weak};
+
 use minigu_storage::common::transaction::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -33,8 +34,8 @@ impl MetadataVersionChain {
     pub fn new_tombstone() -> Self {
         Self {
             current: RwLock::new(MetadataVersion {
-                data: MetadataValue::Directory(super::metadata::DirectoryMetadata { 
-                    name: String::new() 
+                data: MetadataValue::Directory(super::metadata::DirectoryMetadata {
+                    name: String::new(),
                 }), // Placeholder, will be replaced
                 commit_ts: Timestamp(0),
                 is_tombstone: true,
@@ -68,8 +69,8 @@ impl MetadataVersion {
     /// Create a tombstone version
     pub fn new_tombstone(commit_ts: Timestamp) -> Self {
         Self {
-            data: MetadataValue::Directory(super::metadata::DirectoryMetadata { 
-                name: String::new() 
+            data: MetadataValue::Directory(super::metadata::DirectoryMetadata {
+                name: String::new(),
             }), // Placeholder
             commit_ts,
             is_tombstone: true,

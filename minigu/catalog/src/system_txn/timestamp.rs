@@ -1,4 +1,5 @@
 use std::sync::atomic::{AtomicU64, Ordering};
+
 use minigu_storage::common::transaction::Timestamp;
 
 /// Transaction ID type for system transactions
@@ -66,7 +67,7 @@ impl TimestampManager {
             .map(|ts| ts.0)
             .min()
             .unwrap_or_else(|| self.latest_commit_ts.load(Ordering::Acquire));
-        
+
         self.watermark.store(min_ts, Ordering::SeqCst);
     }
 

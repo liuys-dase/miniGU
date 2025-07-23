@@ -1,4 +1,5 @@
 use std::fmt::{self, Display};
+
 use serde::{Deserialize, Serialize};
 
 /// Key type for identifying metadata entries in the catalog
