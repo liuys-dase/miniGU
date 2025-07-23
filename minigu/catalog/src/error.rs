@@ -16,6 +16,8 @@ pub enum CatalogError {
     InvalidMetadataOperation(String),
     #[error("Serialization failure")]
     SerializationFailure,
+    #[error("Incompatible key-value pair")]
+    IncompatibleKeyValue,
     #[error("Other error: {0}")]
     Other(String),
 }
