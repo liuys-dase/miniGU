@@ -1516,6 +1516,7 @@ dependencies = [
  "crossbeam-skiplist",
  "dashmap",
  "minigu-common",
+ "minigu-transaction",
  "postcard",
  "rand 0.9.1",
  "serde",
@@ -1536,6 +1537,14 @@ dependencies = [
  "minigu",
  "pastey",
  "sqllogictest",
+]
+
+[[package]]
+name = "minigu-transaction"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "thiserror",
 ]
 
 [[package]]

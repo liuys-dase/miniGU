@@ -6,6 +6,10 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 use crossbeam_skiplist::SkipMap;
 use dashmap::DashSet;
 use minigu_common::types::{EdgeId, VertexId};
+use minigu_transaction::{
+    GlobalTimestampGenerator, TransactionIdGenerator, global_timestamp_generator,
+    global_transaction_id_generator,
+};
 
 use super::memory_graph::MemoryGraph;
 use crate::common::model::edge::{Edge, Neighbor};
@@ -66,9 +70,10 @@ pub struct MemTxnManager {
     /// Commit lock to enforce serial commit order
     pub(super) commit_lock: Mutex<()>,
     pub(super) latest_commit_ts: AtomicU64,
-    /// The commit timestamp and transaction id
-    commit_ts_counter: AtomicU64,
-    txn_id_counter: AtomicU64,
+    /// The commit timestamp generator
+    commit_ts_generator: Arc<GlobalTimestampGenerator>,
+    /// The transaction id generator
+    txn_id_generator: Arc<TransactionIdGenerator>,
     /// The watermark is the minimum start timestamp of the active transactions.
     /// If there is no active transaction, the watermark is the latest commit timestamp.
     pub(super) watermark: AtomicU64,
@@ -81,8 +86,8 @@ impl Default for MemTxnManager {
             active_txns: SkipMap::new(),
             committed_txns: SkipMap::new(),
             commit_lock: Mutex::new(()),
-            commit_ts_counter: AtomicU64::new(1),
-            txn_id_counter: AtomicU64::new(Timestamp::TXN_ID_START + 1),
+            commit_ts_generator: global_timestamp_generator(),
+            txn_id_generator: global_transaction_id_generator(),
             latest_commit_ts: AtomicU64::new(0),
             watermark: AtomicU64::new(0),
             last_gc_ts: Mutex::new(0),
@@ -125,20 +130,20 @@ impl MemTxnManager {
     /// Generate a new commit timestamp.
     pub fn new_commit_ts(&self, ts: Option<Timestamp>) -> Timestamp {
         if let Some(ts) = ts {
-            self.commit_ts_counter.store(ts.0 + 1, Ordering::Relaxed);
+            self.commit_ts_generator.update_if_greater(ts);
             ts
         } else {
-            Timestamp::with_ts(self.commit_ts_counter.fetch_add(1, Ordering::Relaxed))
+            self.commit_ts_generator.next()
         }
     }
 
     /// Generate a new transaction id.
     pub fn new_txn_id(&self, txn_id: Option<Timestamp>) -> Timestamp {
         if let Some(txn_id) = txn_id {
-            self.txn_id_counter.store(txn_id.0 + 1, Ordering::Relaxed);
+            self.txn_id_generator.update_if_greater(txn_id);
             txn_id
         } else {
-            Timestamp::with_ts(self.txn_id_counter.fetch_add(1, Ordering::Relaxed))
+            self.txn_id_generator.next()
         }
     }
 
