@@ -1,14 +1,14 @@
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use crossbeam_skiplist::SkipMap;
 use dashmap::DashSet;
 use minigu_common::types::{EdgeId, VertexId};
 use minigu_transaction::{
-    GlobalTimestampGenerator, TransactionIdGenerator, global_timestamp_generator,
-    global_transaction_id_generator,
+    GlobalTimestampGenerator, TransactionIdGenerator, UndoEntry as GenericUndoEntry,
+    UndoPtr as GenericUndoPtr, global_timestamp_generator, global_transaction_id_generator,
 };
 
 use super::memory_graph::MemoryGraph;
@@ -22,44 +22,11 @@ use crate::error::{
 
 const PERIODIC_GC_THRESHOLD: u64 = 50;
 
-pub type UndoPtr = Weak<UndoEntry>;
+/// Type alias for storage-specific undo entry
+pub type UndoEntry = GenericUndoEntry<DeltaOp>;
 
-#[derive(Debug, Clone)]
-/// Represents an undo log entry for multi-version concurrency control.
-pub struct UndoEntry {
-    /// The delta operation of the undo entry.
-    delta: DeltaOp,
-    /// The timestamp when this version is committed.
-    timestamp: Timestamp,
-    /// The next undo entry in the undo buffer.
-    next: UndoPtr,
-}
-
-impl UndoEntry {
-    /// Create a UndoEntry
-    pub(super) fn new(delta: DeltaOp, timestamp: Timestamp, next: UndoPtr) -> Self {
-        Self {
-            delta,
-            timestamp,
-            next,
-        }
-    }
-
-    /// Get the data of the undo entry.
-    pub(super) fn delta(&self) -> &DeltaOp {
-        &self.delta
-    }
-
-    /// Get the end timestamp of the undo entry.
-    pub(super) fn timestamp(&self) -> Timestamp {
-        self.timestamp
-    }
-
-    /// Get the next undo ptr of the undo entry.
-    pub(super) fn next(&self) -> UndoPtr {
-        self.next.clone()
-    }
-}
+/// Type alias for storage-specific undo pointer
+pub type UndoPtr = GenericUndoPtr<DeltaOp>;
 
 /// A manager for managing transactions.
 pub struct MemTxnManager {

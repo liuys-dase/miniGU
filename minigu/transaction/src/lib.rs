@@ -4,7 +4,7 @@
 //! that are used across both the catalog and storage layers.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, Weak};
 
 use serde::{Deserialize, Serialize};
 
@@ -164,6 +164,50 @@ pub enum IsolationLevel {
     Snapshot,
     /// Serializable isolation - full serializability
     Serializable,
+}
+
+/// A generic undo log entry for multi-version concurrency control.
+/// This abstraction can be used by both storage and catalog layers.
+///
+/// Type parameter `T` represents the type of delta operation (e.g., DeltaOp for storage, CatalogOp
+/// for catalog)
+#[derive(Debug, Clone)]
+pub struct UndoEntry<T> {
+    /// The delta operation of the undo entry
+    delta: T,
+    /// The timestamp when this version was created
+    timestamp: Timestamp,
+    /// Pointer to the next undo entry in the undo buffer
+    next: UndoPtr<T>,
+}
+
+/// Weak pointer to an undo entry, used to build undo chains
+pub type UndoPtr<T> = Weak<UndoEntry<T>>;
+
+impl<T> UndoEntry<T> {
+    /// Create a new UndoEntry
+    pub fn new(delta: T, timestamp: Timestamp, next: UndoPtr<T>) -> Self {
+        Self {
+            delta,
+            timestamp,
+            next,
+        }
+    }
+
+    /// Get the delta operation of the undo entry
+    pub fn delta(&self) -> &T {
+        &self.delta
+    }
+
+    /// Get the timestamp of the undo entry
+    pub fn timestamp(&self) -> Timestamp {
+        self.timestamp
+    }
+
+    /// Get the next undo pointer in the chain
+    pub fn next(&self) -> UndoPtr<T> {
+        self.next.clone()
+    }
 }
 
 #[cfg(test)]
