@@ -4,6 +4,9 @@ use crossbeam_skiplist::SkipSet;
 use dashmap::DashMap;
 use minigu_common::types::{EdgeId, VertexId};
 use minigu_common::value::ScalarValue;
+use minigu_transaction::{
+    GraphTxnManager, global_timestamp_generator, global_transaction_id_generator,
+};
 
 use super::checkpoint::{CheckpointManager, CheckpointManagerConfig};
 use super::transaction::{MemTransaction, MemTxnManager, TransactionHandle, UndoEntry, UndoPtr};
@@ -435,7 +438,7 @@ impl MemoryGraph {
                         Some(start_ts),
                         entry.iso_level,
                         true,
-                    );
+                    )?;
                     txn = Some(TransactionHandle::new(t));
                 }
                 Operation::CommitTransaction(commit_ts) => {
@@ -491,7 +494,9 @@ impl MemoryGraph {
         self: &Arc<Self>,
         isolation_level: IsolationLevel,
     ) -> TransactionHandle {
-        let txn = self.begin_transaction_at(None, None, isolation_level, false);
+        let txn = self
+            .begin_transaction_at(None, None, isolation_level, false)
+            .unwrap();
         TransactionHandle::new(txn)
     }
 
@@ -501,10 +506,20 @@ impl MemoryGraph {
         start_ts: Option<Timestamp>,
         isolation_level: IsolationLevel,
         skip_wal: bool,
-    ) -> Arc<MemTransaction> {
+    ) -> StorageResult<Arc<MemTransaction>> {
         // Update the counters
-        let txn_id = self.txn_manager.new_txn_id(txn_id);
-        let start_ts = self.txn_manager.new_commit_ts(start_ts);
+        let txn_id = if let Some(txn_id) = txn_id {
+            global_transaction_id_generator().update_if_greater(txn_id);
+            txn_id
+        } else {
+            global_transaction_id_generator().next()
+        };
+        let start_ts = if let Some(start_ts) = start_ts {
+            global_timestamp_generator().update_if_greater(start_ts);
+            start_ts
+        } else {
+            global_timestamp_generator().next()
+        };
 
         // Acquire the checkpoint lock to prevent new transactions from being created
         // while we are creating a checkpoint
@@ -523,7 +538,7 @@ impl MemoryGraph {
             start_ts,
             isolation_level,
         ));
-        self.txn_manager.start_transaction(txn.clone());
+        self.txn_manager.begin_transaction(txn.clone())?;
 
         // Write `Operation::BeginTransaction` to WAL,
         // unless the function is called when recovering from WAL
@@ -542,7 +557,7 @@ impl MemoryGraph {
                 .unwrap();
         }
 
-        txn
+        Ok(txn)
     }
 
     /// Returns a reference to the vertices storage.

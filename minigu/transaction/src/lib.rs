@@ -210,6 +210,40 @@ impl<T> UndoEntry<T> {
     }
 }
 
+/// Trait for transaction managers supporting MVCC operations.
+/// This trait abstracts the core functionality needed for managing transactions
+/// across different storage implementations (memory-based, disk-based, etc.).
+///
+/// Note: Timestamp and transaction ID generation is handled by global generators
+/// accessible via `global_timestamp_generator()` and `global_transaction_id_generator()`.
+pub trait GraphTxnManager {
+    /// The transaction type that this manager handles
+    type Transaction;
+    /// The graph/storage context type
+    type GraphContext;
+    /// The error type for operations
+    type Error;
+
+    /// Register a new transaction as active.
+    /// This adds the transaction to the active transaction set and updates watermarks.
+    fn begin_transaction(&self, txn: Arc<Self::Transaction>) -> Result<(), Self::Error>;
+
+    /// Unregister a transaction when it completes (commits or aborts).
+    /// This removes the transaction from active set, updates watermarks,
+    /// and may trigger garbage collection.
+    fn finish_transaction(&self, txn: &Self::Transaction) -> Result<(), Self::Error>;
+
+    /// Perform garbage collection to clean up expired transaction data.
+    /// This typically includes removing old transaction records and cleaning up
+    /// version chains that are no longer visible to any active transaction.
+    fn garbage_collect(&self, graph: &Self::GraphContext) -> Result<(), Self::Error>;
+
+    /// Update the watermark based on currently active transactions.
+    /// The watermark represents the minimum timestamp that any active transaction
+    /// can see, which is crucial for determining what data can be garbage collected.
+    fn update_watermark(&self);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
