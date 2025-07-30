@@ -9,6 +9,7 @@ use minigu_transaction::{
 };
 
 use super::checkpoint::{CheckpointManager, CheckpointManagerConfig};
+use super::graph_gc::GraphGarbageCollector;
 use super::transaction::{MemTransaction, MemTxnManager, TransactionHandle, UndoEntry, UndoPtr};
 use crate::common::model::edge::{Edge, Neighbor};
 use crate::common::model::vertex::Vertex;
@@ -354,6 +355,9 @@ pub struct MemoryGraph {
 
     // ---- Checkpoint management ----
     pub(super) checkpoint_manager: Option<CheckpointManager>,
+
+    // ---- Graph garbage collection ----
+    pub(super) graph_gc: Option<GraphGarbageCollector>,
 }
 
 impl MemoryGraph {
@@ -406,13 +410,21 @@ impl MemoryGraph {
             txn_manager: MemTxnManager::new(),
             wal_manager: WalManager::new(wal_config),
             checkpoint_manager: None,
+            graph_gc: None,
         });
 
         // Initialize the checkpoint manager
         let checkpoint_manager = CheckpointManager::new(graph.clone(), checkpoint_config).unwrap();
+
+        // Initialize the graph garbage collector
+        // 使用一个空的弱引用，稍后在运行时获取实际的引用
+        let empty_weak = std::sync::Weak::<MemTxnManager>::new();
+        let graph_gc = GraphGarbageCollector::new(graph.clone(), empty_weak);
+
         unsafe {
             let graph_ptr = Arc::as_ptr(&graph) as *mut MemoryGraph;
             (*graph_ptr).checkpoint_manager = Some(checkpoint_manager);
+            (*graph_ptr).graph_gc = Some(graph_gc);
         }
 
         graph
@@ -1496,6 +1508,11 @@ pub mod tests {
             assert!(count == 2);
         }
 
+        // 手动触发图数据垃圾回收
+        if let Some(ref graph_gc) = graph.graph_gc {
+            graph_gc.trigger_gc_sync().unwrap();
+        }
+        // 也需要触发事务级垃圾回收
         graph.txn_manager.garbage_collect(txn2.graph()).unwrap();
         // Check after GC
         {
@@ -1600,6 +1617,11 @@ pub mod tests {
         }
 
         let txn3 = graph.begin_transaction(IsolationLevel::Serializable);
+        // 手动触发图数据垃圾回收
+        if let Some(ref graph_gc) = graph.graph_gc {
+            graph_gc.trigger_gc_sync().unwrap();
+        }
+        // 也需要触发事务级垃圾回收
         graph.txn_manager.garbage_collect(txn3.graph()).unwrap();
         // Check after GC
         {

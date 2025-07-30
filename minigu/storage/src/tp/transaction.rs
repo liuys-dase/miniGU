@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
@@ -11,8 +10,8 @@ use minigu_transaction::{
     global_timestamp_generator,
 };
 
+use super::graph_gc::{GcInfo, GcMonitor};
 use super::memory_graph::MemoryGraph;
-use crate::common::model::edge::{Edge, Neighbor};
 pub use crate::common::transaction::{DeltaOp, IsolationLevel, SetPropsOp, Timestamp};
 use crate::common::wal::StorageWal;
 use crate::common::wal::graph_wal::{Operation, RedoEntry};
@@ -40,7 +39,8 @@ pub struct MemTxnManager {
     /// The watermark is the minimum start timestamp of the active transactions.
     /// If there is no active transaction, the watermark is the latest commit timestamp.
     pub(super) watermark: AtomicU64,
-    last_gc_ts: Mutex<u64>,
+    /// Last garbage collection timestamp
+    last_gc_ts: AtomicU64,
 }
 
 impl Default for MemTxnManager {
@@ -51,7 +51,7 @@ impl Default for MemTxnManager {
             commit_lock: Mutex::new(()),
             latest_commit_ts: AtomicU64::new(0),
             watermark: AtomicU64::new(0),
-            last_gc_ts: Mutex::new(0),
+            last_gc_ts: AtomicU64::new(0),
         }
     }
 }
@@ -60,18 +60,6 @@ impl MemTxnManager {
     /// Create a new MemTxnManager
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Periodlically garbage collect expired transactions.
-    fn periodic_garbage_collect(&self, graph: &MemoryGraph) -> StorageResult<()> {
-        // Through acquiring the lock, the garbage collection is single-threaded execution.
-        let mut last_gc_ts = self.last_gc_ts.lock().unwrap();
-        if self.watermark.load(Ordering::Relaxed) - *last_gc_ts > PERIODIC_GC_THRESHOLD {
-            self.garbage_collect(graph)?;
-            *last_gc_ts = self.watermark.load(Ordering::Relaxed);
-        }
-
-        Ok(())
     }
 }
 
@@ -97,22 +85,18 @@ impl GraphTxnManager for MemTxnManager {
             return Ok(());
         }
 
-        self.periodic_garbage_collect(txn.graph())?;
-
         Err(StorageError::Transaction(
             TransactionError::TransactionNotFound(format!("{:?}", txn.txn_id())),
         ))
     }
 
-    fn garbage_collect(&self, graph: &Self::GraphContext) -> Result<(), Self::Error> {
+    fn garbage_collect(&self, _graph: &Self::GraphContext) -> Result<(), Self::Error> {
         // Step1: Obtain the min read timestamp of the active transactions
         let min_read_ts = self.watermark.load(Ordering::Acquire);
 
-        // Clean up expired transactions
+        // Collect expired transactions (只处理事务级别的垃圾回收)
         let mut expired_txns = Vec::new();
-        // Since both `DeleteVertex` and `DeleteEdge` trigger `DeleteEdge`,
-        // we only need to collect and analyze expired edges
-        let mut expired_edges: HashMap<EdgeId, Edge> = HashMap::new();
+
         for entry in self.committed_txns.iter() {
             // If the commit timestamp of the transaction is greater than the min read timestamp,
             // it means the transaction is still active, and the subsequent transactions are also
@@ -121,111 +105,13 @@ impl GraphTxnManager for MemTxnManager {
                 break;
             }
 
-            for entry in entry.value().undo_buffer.read().unwrap().iter() {
-                match entry.delta() {
-                    // DeltaOp::CreateEdge means that the edge is deleted in this transaction
-                    DeltaOp::CreateEdge(edge) => {
-                        expired_edges.insert(edge.eid(), edge.without_properties());
-                    }
-                    DeltaOp::DelEdge(eid) => {
-                        expired_edges.remove(eid);
-                    }
-                    _ => {}
-                }
-            }
-
-            // Txn has been committed, iterate over its undo buffer
+            // Mark transaction for removal
             expired_txns.push(entry.value().clone());
         }
 
-        // Remove expired transactions containing undo buffer
+        // Remove expired transactions from our tracking
         for txn in expired_txns {
             self.committed_txns.remove(txn.commit_ts.get().unwrap());
-        }
-
-        for (_, edge) in expired_edges {
-            // Define a macro to check if an entity is marked as a tombstone
-            macro_rules! check_tombstone {
-                ($graph:expr, $collection:ident, $id_method:expr) => {
-                    $graph
-                        .$collection
-                        .get($id_method)
-                        .map(|v| Some(v.value().chain.current.read().unwrap().data.is_tombstone))
-                        .unwrap_or(None)
-                };
-            }
-            let src_tombstone = check_tombstone!(graph, vertices, &edge.src_id());
-            let dst_tombstone = check_tombstone!(graph, vertices, &edge.dst_id());
-            let edge_tombstone = check_tombstone!(graph, edges, &edge.eid());
-
-            // Remove the vertex and the corresponding adjacencies
-            fn remove_vertex_and_adjacencies(graph: &MemoryGraph, vid: VertexId) {
-                graph.vertices.remove(&vid);
-                let mut incoming_to_remove = Vec::new();
-                let mut outgoing_to_remove = Vec::new();
-
-                if let Some(adj_container) = graph.adjacency_list.get(&vid) {
-                    for adj in adj_container.incoming().iter() {
-                        outgoing_to_remove.push((
-                            adj.neighbor_id(),
-                            Neighbor::new(adj.label_id(), vid, adj.eid()),
-                        ));
-                    }
-                    for adj in adj_container.outgoing().iter() {
-                        incoming_to_remove.push((
-                            adj.neighbor_id(),
-                            Neighbor::new(adj.label_id(), vid, adj.eid()),
-                        ));
-                    }
-                }
-
-                for (other_vid, euid) in incoming_to_remove {
-                    graph.adjacency_list.entry(other_vid).and_modify(|l| {
-                        l.incoming().remove(&euid);
-                    });
-                }
-
-                for (other_vid, euid) in outgoing_to_remove {
-                    graph.adjacency_list.entry(other_vid).and_modify(|l| {
-                        l.outgoing().remove(&euid);
-                    });
-                }
-
-                // Remove adjancy list of the vertex
-                graph.adjacency_list.remove(&vid);
-            }
-
-            if let Some(true) = src_tombstone {
-                remove_vertex_and_adjacencies(graph, edge.src_id());
-            }
-
-            if let Some(true) = dst_tombstone {
-                remove_vertex_and_adjacencies(graph, edge.dst_id());
-            }
-
-            if let Some(true) = edge_tombstone {
-                graph.edges.remove(&edge.eid());
-                graph
-                    .adjacency_list
-                    .entry(edge.src_id())
-                    .and_modify(|adj_container| {
-                        adj_container.outgoing().remove(&Neighbor::new(
-                            edge.label_id(),
-                            edge.dst_id(),
-                            edge.eid(),
-                        ));
-                    });
-                graph
-                    .adjacency_list
-                    .entry(edge.dst_id())
-                    .and_modify(|adj_container| {
-                        adj_container.incoming().remove(&Neighbor::new(
-                            edge.label_id(),
-                            edge.src_id(),
-                            edge.eid(),
-                        ));
-                    });
-            }
         }
 
         Ok(())
@@ -239,6 +125,51 @@ impl GraphTxnManager for MemTxnManager {
             .unwrap_or(self.latest_commit_ts.load(Ordering::Acquire))
             .max(self.watermark.load(Ordering::Acquire));
         self.watermark.store(min_ts, Ordering::SeqCst);
+    }
+}
+
+/// 为 MemTxnManager 实现 GcMonitor trait
+impl GcMonitor for MemTxnManager {
+    fn should_trigger_gc(&self) -> bool {
+        let current_watermark = self.watermark.load(Ordering::Acquire);
+        let last_gc_ts = self.last_gc_ts.load(Ordering::Acquire);
+        let committed_count = self.committed_txns.len();
+
+        // 基于 watermark 变化或已提交事务数量判断是否需要 GC
+        (current_watermark - last_gc_ts > PERIODIC_GC_THRESHOLD) || (committed_count > 100)
+    }
+
+    fn get_gc_info(&self) -> GcInfo {
+        GcInfo {
+            watermark: self.watermark.load(Ordering::Acquire),
+            committed_txns_count: self.committed_txns.len(),
+            last_gc_timestamp: self.last_gc_ts.load(Ordering::Acquire),
+        }
+    }
+
+    fn get_expired_entries(&self) -> (Vec<Arc<UndoEntry>>, u64) {
+        let min_read_ts = self.watermark.load(Ordering::Acquire);
+        let mut expired_undo_entries = Vec::new();
+
+        for entry in self.committed_txns.iter() {
+            // If the commit timestamp of the transaction is greater than the min read timestamp,
+            // it means the transaction is still active, and the subsequent transactions are also
+            // active.
+            if entry.key().0 > min_read_ts {
+                break;
+            }
+
+            // Collect all undo entries from this expired transaction
+            for undo_entry in entry.value().undo_buffer.read().unwrap().iter() {
+                expired_undo_entries.push(undo_entry.clone());
+            }
+        }
+
+        (expired_undo_entries, min_read_ts)
+    }
+
+    fn update_last_gc_timestamp(&self, timestamp: u64) {
+        self.last_gc_ts.store(timestamp, Ordering::SeqCst);
     }
 }
 
