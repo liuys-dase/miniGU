@@ -356,7 +356,6 @@ pub struct MemoryGraph {
     pub(super) checkpoint_manager: Option<CheckpointManager>,
 }
 
-#[allow(dead_code)]
 impl MemoryGraph {
     // ===== Basic methods =====
     /// Creates a new [`MemoryGraph`] instance using default configurations,
