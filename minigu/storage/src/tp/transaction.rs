@@ -7,7 +7,7 @@ use crossbeam_skiplist::SkipMap;
 use dashmap::DashSet;
 use minigu_common::types::{EdgeId, VertexId};
 use minigu_transaction::{
-    GraphTxnManager, UndoEntry as GenericUndoEntry, UndoPtr as GenericUndoPtr,
+    GraphTxnManager, Transaction, UndoEntry as GenericUndoEntry, UndoPtr as GenericUndoPtr,
     global_timestamp_generator,
 };
 
@@ -265,6 +265,30 @@ pub struct MemTransaction {
     pub(super) redo_buffer: RwLock<Vec<RedoEntry>>,
 }
 
+impl Transaction for MemTransaction {
+    type Error = StorageError;
+
+    fn txn_id(&self) -> Timestamp {
+        self.txn_id
+    }
+
+    fn start_ts(&self) -> Timestamp {
+        self.start_ts
+    }
+
+    fn isolation_level(&self) -> &IsolationLevel {
+        &self.isolation_level
+    }
+
+    fn commit(&self) -> Result<Timestamp, Self::Error> {
+        self.commit_at(None, false)
+    }
+
+    fn abort(&self) -> Result<(), Self::Error> {
+        self.abort_at(false)
+    }
+}
+
 impl MemTransaction {
     pub(super) fn with_memgraph(
         graph: Arc<MemoryGraph>,
@@ -336,16 +360,6 @@ impl MemTransaction {
         Ok(())
     }
 
-    /// Returns the start timestamp of the transaction.
-    pub fn start_ts(&self) -> Timestamp {
-        self.start_ts
-    }
-
-    /// Returns the transaction ID.
-    pub fn txn_id(&self) -> Timestamp {
-        self.txn_id
-    }
-
     /// Returns the set of vertex reads in this transaction.
     pub fn vertex_reads(&self) -> &DashSet<VertexId> {
         &self.vertex_reads
@@ -359,11 +373,6 @@ impl MemTransaction {
     /// Returns a reference to the associated graph.
     pub fn graph(&self) -> &Arc<MemoryGraph> {
         &self.graph
-    }
-
-    /// Returns the isolution level
-    pub fn isolation_level(&self) -> &IsolationLevel {
-        &self.isolation_level
     }
 
     /// Reconstructs a specific version of a Vertex or Edge
@@ -392,17 +401,6 @@ impl MemTransaction {
 }
 
 impl MemTransaction {
-    /// Commits the transaction, applying all changes atomically.
-    /// Ensures serializability, updates version chains, and manages adjacency lists.
-    pub fn commit(&self) -> StorageResult<Timestamp> {
-        self.commit_at(None, false)
-    }
-
-    /// Aborts the transaction, rolling back all changes.
-    pub fn abort(&self) -> StorageResult<()> {
-        self.abort_at(false)
-    }
-
     /// Commits the transaction at a specific commit timestamp.
     pub fn commit_at(
         &self,

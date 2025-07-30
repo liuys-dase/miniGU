@@ -5,7 +5,7 @@ use dashmap::DashMap;
 use minigu_common::types::{EdgeId, VertexId};
 use minigu_common::value::ScalarValue;
 use minigu_transaction::{
-    GraphTxnManager, global_timestamp_generator, global_transaction_id_generator,
+    GraphTxnManager, Transaction, global_timestamp_generator, global_transaction_id_generator,
 };
 
 use super::checkpoint::{CheckpointManager, CheckpointManagerConfig};

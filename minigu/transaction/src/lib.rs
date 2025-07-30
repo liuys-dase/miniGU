@@ -210,6 +210,29 @@ impl<T> UndoEntry<T> {
     }
 }
 
+/// Trait defining the core operations that all transactions must support.
+/// This trait abstracts the fundamental transaction behavior across different
+/// storage implementations (memory-based, disk-based, catalog, etc.).
+pub trait Transaction {
+    /// The error type for transaction operations
+    type Error;
+
+    /// Get the transaction ID
+    fn txn_id(&self) -> Timestamp;
+
+    /// Get the start timestamp of the transaction
+    fn start_ts(&self) -> Timestamp;
+
+    /// Get the isolation level of the transaction
+    fn isolation_level(&self) -> &IsolationLevel;
+
+    /// Commit the transaction, returning the commit timestamp on success
+    fn commit(&self) -> Result<Timestamp, Self::Error>;
+
+    /// Abort the transaction and rollback all changes
+    fn abort(&self) -> Result<(), Self::Error>;
+}
+
 /// Trait for transaction managers supporting MVCC operations.
 /// This trait abstracts the core functionality needed for managing transactions
 /// across different storage implementations (memory-based, disk-based, etc.).
@@ -218,7 +241,7 @@ impl<T> UndoEntry<T> {
 /// accessible via `global_timestamp_generator()` and `global_transaction_id_generator()`.
 pub trait GraphTxnManager {
     /// The transaction type that this manager handles
-    type Transaction;
+    type Transaction: Transaction;
     /// The graph/storage context type
     type GraphContext;
     /// The error type for operations
