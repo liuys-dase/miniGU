@@ -10,7 +10,8 @@ use minigu_transaction::{
 
 use super::checkpoint::{CheckpointManager, CheckpointManagerConfig};
 use super::graph_gc::GraphGarbageCollector;
-use super::transaction::{MemTransaction, MemTxnManager, TransactionHandle, UndoEntry, UndoPtr};
+use super::transaction::{MemTransaction, TransactionHandle, UndoEntry, UndoPtr};
+use super::txn_manager::MemTxnManager;
 use crate::common::model::edge::{Edge, Neighbor};
 use crate::common::model::vertex::Vertex;
 use crate::common::transaction::{DeltaOp, IsolationLevel, SetPropsOp, Timestamp};
