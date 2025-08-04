@@ -1,19 +1,25 @@
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use crossbeam_skiplist::SkipMap;
-use minigu_transaction::{GraphTxnManager, Transaction};
+use minigu_transaction::{
+    GraphTxnManager, Transaction, global_timestamp_generator, global_transaction_id_generator,
+};
 
 use super::graph_gc::{GcInfo, GcMonitor};
 use super::memory_graph::MemoryGraph;
-use super::transaction::{MemTransaction, UndoEntry};
+use super::transaction::{IsolationLevel, MemTransaction, UndoEntry};
 use crate::common::transaction::Timestamp;
+use crate::common::wal::StorageWal;
+use crate::common::wal::graph_wal::{Operation, RedoEntry};
 use crate::error::{StorageError, TransactionError};
 
 const PERIODIC_GC_THRESHOLD: u64 = 50;
 
 /// A manager for managing transactions.
 pub struct MemTxnManager {
+    /// Weak reference to the graph to avoid circular references
+    pub(super) graph: Weak<MemoryGraph>,
     /// Active transactions' txn.
     pub(super) active_txns: SkipMap<Timestamp, Arc<MemTransaction>>,
     /// All transactions, running or committed.
@@ -31,6 +37,7 @@ pub struct MemTxnManager {
 impl Default for MemTxnManager {
     fn default() -> Self {
         Self {
+            graph: Weak::new(),
             active_txns: SkipMap::new(),
             committed_txns: SkipMap::new(),
             commit_lock: Mutex::new(()),
@@ -46,6 +53,80 @@ impl MemTxnManager {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// Set the graph reference after construction
+    pub fn set_graph(&mut self, graph: &Arc<MemoryGraph>) {
+        self.graph = Arc::downgrade(graph);
+    }
+
+    /// Begin a new transaction with specified parameters
+    pub fn begin_transaction_at(
+        &self,
+        txn_id: Option<Timestamp>,
+        start_ts: Option<Timestamp>,
+        isolation_level: IsolationLevel,
+        skip_wal: bool,
+    ) -> Result<Arc<MemTransaction>, StorageError> {
+        let graph = self.graph.upgrade().ok_or_else(|| {
+            StorageError::Transaction(TransactionError::InvalidState(
+                "Graph reference is no longer valid".to_string(),
+            ))
+        })?;
+
+        // Update the counters
+        let txn_id = if let Some(txn_id) = txn_id {
+            global_transaction_id_generator().update_if_greater(txn_id);
+            txn_id
+        } else {
+            global_transaction_id_generator().next()
+        };
+        let start_ts = if let Some(start_ts) = start_ts {
+            global_timestamp_generator().update_if_greater(start_ts);
+            start_ts
+        } else {
+            global_timestamp_generator().next()
+        };
+
+        // Acquire the checkpoint lock to prevent new transactions from being created
+        // while we are creating a checkpoint
+        let _checkpoint_lock = graph
+            .checkpoint_manager
+            .as_ref()
+            .unwrap()
+            .checkpoint_lock
+            .read()
+            .unwrap();
+
+        // Create the transaction
+        let txn = Arc::new(MemTransaction::with_memgraph(
+            graph.clone(),
+            txn_id,
+            start_ts,
+            isolation_level,
+        ));
+        self.active_txns.insert(txn.txn_id(), txn.clone());
+        self.update_watermark();
+
+        // Write `Operation::BeginTransaction` to WAL,
+        // unless the function is called when recovering from WAL
+        if !skip_wal {
+            let wal_entry = RedoEntry {
+                lsn: graph.wal_manager.next_lsn(),
+                txn_id: txn.txn_id(),
+                iso_level: *txn.isolation_level(),
+                op: Operation::BeginTransaction(txn.start_ts()),
+            };
+            graph
+                .wal_manager
+                .wal()
+                .write()
+                .unwrap()
+                .append(&wal_entry)
+                .unwrap();
+        }
+
+        Ok(txn)
+    }
 }
 
 impl GraphTxnManager for MemTxnManager {
@@ -53,10 +134,8 @@ impl GraphTxnManager for MemTxnManager {
     type GraphContext = MemoryGraph;
     type Transaction = MemTransaction;
 
-    fn begin_transaction(&self, txn: Arc<Self::Transaction>) -> Result<(), Self::Error> {
-        self.active_txns.insert(txn.txn_id(), txn.clone());
-        self.update_watermark();
-        Ok(())
+    fn begin_transaction(&self) -> Result<Arc<Self::Transaction>, Self::Error> {
+        self.begin_transaction_at(None, None, IsolationLevel::Serializable, false)
     }
 
     fn finish_transaction(&self, txn: &Self::Transaction) -> Result<(), Self::Error> {

@@ -21,9 +21,10 @@ pub trait GraphTxnManager {
     /// The error type for operations
     type Error;
 
-    /// Register a new transaction as active.
-    /// This adds the transaction to the active transaction set and updates watermarks.
-    fn begin_transaction(&self, txn: Arc<Self::Transaction>) -> Result<(), Self::Error>;
+    /// Begin a new transaction and return it.
+    /// This creates a new transaction, adds it to the active transaction set and updates
+    /// watermarks.
+    fn begin_transaction(&self) -> Result<Arc<Self::Transaction>, Self::Error>;
 
     /// Unregister a transaction when it completes (commits or aborts).
     /// This removes the transaction from active set, updates watermarks,
