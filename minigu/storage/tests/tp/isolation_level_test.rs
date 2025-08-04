@@ -5,6 +5,7 @@ use minigu_storage::model::edge::Edge;
 use minigu_storage::model::properties::PropertyRecord;
 use minigu_storage::model::vertex::Vertex;
 use minigu_storage::tp::IsolationLevel;
+use minigu_transaction::Transaction;
 
 use crate::common::*;
 

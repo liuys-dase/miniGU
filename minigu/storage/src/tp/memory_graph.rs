@@ -10,7 +10,7 @@ use minigu_transaction::{
 
 use super::checkpoint::{CheckpointManager, CheckpointManagerConfig};
 use super::graph_gc::GraphGarbageCollector;
-use super::transaction::{MemTransaction, TransactionHandle, UndoEntry, UndoPtr};
+use super::transaction::{MemTransaction, UndoEntry, UndoPtr};
 use super::txn_manager::MemTxnManager;
 use crate::common::model::edge::{Edge, Neighbor};
 use crate::common::model::vertex::Vertex;
@@ -418,7 +418,8 @@ impl MemoryGraph {
         let checkpoint_manager = CheckpointManager::new(graph.clone(), checkpoint_config).unwrap();
 
         // Initialize the graph garbage collector
-        // 使用一个空的弱引用，稍后在运行时获取实际的引用
+        // Use an empty weak reference, which will be replaced with the actual reference later
+        // when the graph is fully initialized
         let empty_weak = std::sync::Weak::<MemTxnManager>::new();
         let graph_gc = GraphGarbageCollector::new(graph.clone(), empty_weak);
 
@@ -439,7 +440,7 @@ impl MemoryGraph {
 
     /// Applies a list of WAL entries to the graph
     pub fn apply_wal_entries(self: &Arc<Self>, entries: Vec<RedoEntry>) -> StorageResult<()> {
-        let mut txn: Option<TransactionHandle> = None;
+        let mut txn: Option<Arc<MemTransaction>> = None;
         for entry in entries {
             self.wal_manager.set_next_lsn(entry.lsn + 1);
             match entry.op {
@@ -451,21 +452,21 @@ impl MemoryGraph {
                         entry.iso_level,
                         true,
                     )?;
-                    txn = Some(TransactionHandle::new(t));
+                    txn = Some(t);
                 }
                 Operation::CommitTransaction(commit_ts) => {
                     // Commit the transaction
-                    if let Some(txn) = txn.as_ref() {
-                        txn.commit_at(Some(commit_ts), true)?;
-                        txn.mark_handled(); // Avoid dropping the transaction handle
+                    if let Some(t) = txn.as_ref() {
+                        t.commit_at(Some(commit_ts), true)?;
+                        t.mark_handled(); // Avoid dropping the transaction handle
                     }
                     txn = None;
                 }
                 Operation::AbortTransaction => {
                     // Abort the transaction
-                    if let Some(txn) = txn.as_ref() {
-                        txn.abort_at(true)?;
-                        txn.mark_handled(); // Avoid dropping the transaction handle
+                    if let Some(t) = txn.as_ref() {
+                        t.abort_at(true)?;
+                        t.mark_handled(); // Avoid dropping the transaction handle
                     }
                     txn = None;
                 }
@@ -501,15 +502,13 @@ impl MemoryGraph {
         Ok(())
     }
 
-    /// Begins a new transaction and returns a `TransactionHandle` instance.
+    /// Begins a new transaction and returns an `Arc<MemTransaction>` instance.
     pub fn begin_transaction(
         self: &Arc<Self>,
         isolation_level: IsolationLevel,
-    ) -> TransactionHandle {
-        let txn = self
-            .begin_transaction_at(None, None, isolation_level, false)
-            .unwrap();
-        TransactionHandle::new(txn)
+    ) -> Arc<MemTransaction> {
+        self.begin_transaction_at(None, None, isolation_level, false)
+            .unwrap()
     }
 
     pub fn begin_transaction_at(
@@ -584,7 +583,7 @@ impl MemoryGraph {
 
     // ===== Read-only graph methods =====
     /// Retrieves a vertex by its ID within the context of a transaction.
-    pub fn get_vertex(&self, txn: &TransactionHandle, vid: VertexId) -> StorageResult<Vertex> {
+    pub fn get_vertex(&self, txn: &Arc<MemTransaction>, vid: VertexId) -> StorageResult<Vertex> {
         // Step 1: Atomically retrieve the versioned vertex (check existence).
         let versioned_vertex = self.vertices.get(&vid).ok_or(StorageError::VertexNotFound(
             VertexNotFoundError::VertexNotFound(vid.to_string()),
@@ -633,7 +632,7 @@ impl MemoryGraph {
     }
 
     /// Retrieves an edge by its ID within the context of a transaction.
-    pub fn get_edge(&self, txn: &TransactionHandle, eid: EdgeId) -> StorageResult<Edge> {
+    pub fn get_edge(&self, txn: &Arc<MemTransaction>, eid: EdgeId) -> StorageResult<Edge> {
         // Step 1: Atomically retrieve the versioned edge (check existence).
         let versioned_edge = self.edges.get(&eid).ok_or(StorageError::EdgeNotFound(
             EdgeNotFoundError::EdgeNotFound(eid.to_string()),
@@ -684,7 +683,7 @@ impl MemoryGraph {
     /// Returns an iterator over all vertices within a transaction.
     pub fn iter_vertices<'a>(
         &'a self,
-        txn: &'a TransactionHandle,
+        txn: &'a Arc<MemTransaction>,
     ) -> StorageResult<Box<dyn Iterator<Item = StorageResult<Vertex>> + 'a>> {
         Ok(Box::new(txn.iter_vertices()))
     }
@@ -692,7 +691,7 @@ impl MemoryGraph {
     /// Returns an iterator over all edges within a transaction.
     pub fn iter_edges<'a>(
         &'a self,
-        txn: &'a TransactionHandle,
+        txn: &'a Arc<MemTransaction>,
     ) -> StorageResult<Box<dyn Iterator<Item = StorageResult<Edge>> + 'a>> {
         Ok(Box::new(txn.iter_edges()))
     }
@@ -700,7 +699,7 @@ impl MemoryGraph {
     /// Returns an iterator over the adjacency list of a vertex in a given direction.
     pub fn iter_adjacency<'a>(
         &'a self,
-        txn: &'a TransactionHandle,
+        txn: &'a Arc<MemTransaction>,
         vid: VertexId,
     ) -> StorageResult<Box<dyn Iterator<Item = StorageResult<Neighbor>> + 'a>> {
         Ok(Box::new(txn.iter_adjacency(vid)))
@@ -710,7 +709,7 @@ impl MemoryGraph {
     /// Inserts a new vertex into the graph within a transaction.
     pub fn create_vertex(
         &self,
-        txn: &TransactionHandle,
+        txn: &Arc<MemTransaction>,
         vertex: Vertex,
     ) -> StorageResult<VertexId> {
         let vid = vertex.vid();
@@ -748,7 +747,7 @@ impl MemoryGraph {
     }
 
     /// Inserts a new edge into the graph within a transaction.
-    pub fn create_edge(&self, txn: &TransactionHandle, edge: Edge) -> StorageResult<EdgeId> {
+    pub fn create_edge(&self, txn: &Arc<MemTransaction>, edge: Edge) -> StorageResult<EdgeId> {
         let eid = edge.eid();
         let src_id = edge.src_id();
         let dst_id = edge.dst_id();
@@ -802,7 +801,7 @@ impl MemoryGraph {
     }
 
     /// Deletes a vertex from the graph within a transaction.
-    pub fn delete_vertex(&self, txn: &TransactionHandle, vid: VertexId) -> StorageResult<()> {
+    pub fn delete_vertex(&self, txn: &Arc<MemTransaction>, vid: VertexId) -> StorageResult<()> {
         // Atomically retrieve the versioned vertex (check existence).
         let entry = self.vertices.get(&vid).ok_or(StorageError::VertexNotFound(
             VertexNotFoundError::VertexNotFound(vid.to_string()),
@@ -851,7 +850,7 @@ impl MemoryGraph {
     }
 
     /// Deletes an edge from the graph within a transaction.
-    pub fn delete_edge(&self, txn: &TransactionHandle, eid: EdgeId) -> StorageResult<()> {
+    pub fn delete_edge(&self, txn: &Arc<MemTransaction>, eid: EdgeId) -> StorageResult<()> {
         // Atomically retrieve the versioned edge (check existence).
         let entry = self.edges.get(&eid).ok_or(StorageError::EdgeNotFound(
             EdgeNotFoundError::EdgeNotFound(eid.to_string()),
@@ -888,7 +887,7 @@ impl MemoryGraph {
     /// Updates the properties of a vertex within a transaction.
     pub fn set_vertex_property(
         &self,
-        txn: &TransactionHandle,
+        txn: &Arc<MemTransaction>,
         vid: VertexId,
         indices: Vec<usize>,
         props: Vec<ScalarValue>,
@@ -923,7 +922,7 @@ impl MemoryGraph {
     /// Updates the properties of an edge within a transaction.
     pub fn set_edge_property(
         &self,
-        txn: &TransactionHandle,
+        txn: &Arc<MemTransaction>,
         eid: EdgeId,
         indices: Vec<usize>,
         props: Vec<ScalarValue>,
@@ -960,7 +959,7 @@ impl MemoryGraph {
 /// the current transaction.
 /// Current check applies to both Snapshot Isolation and Serializable isolation levels.
 #[inline]
-fn check_write_conflict(commit_ts: Timestamp, txn: &TransactionHandle) -> StorageResult<()> {
+fn check_write_conflict(commit_ts: Timestamp, txn: &Arc<MemTransaction>) -> StorageResult<()> {
     match commit_ts {
         // If the vertex is modified by other transactions, return write-write conflict
         ts if ts.is_txn_id() && ts != txn.txn_id() => Err(StorageError::Transaction(
@@ -987,6 +986,7 @@ pub mod tests {
 
     use minigu_common::types::LabelId;
     use minigu_common::value::ScalarValue;
+    use minigu_transaction::Transaction;
     use {Edge, Vertex};
 
     use super::*;

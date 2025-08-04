@@ -273,6 +273,7 @@ mod tests {
     use minigu_storage::tp::checkpoint::CheckpointManagerConfig;
     use minigu_storage::tp::{IsolationLevel, MemoryGraph};
     use minigu_storage::wal::graph_wal::WalManagerConfig;
+    use minigu_transaction::Transaction;
     use walkdir::WalkDir;
 
     use super::*;

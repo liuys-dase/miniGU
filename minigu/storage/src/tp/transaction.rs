@@ -1,5 +1,4 @@
-use std::ops::Deref;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 
 use dashmap::DashSet;
@@ -44,6 +43,10 @@ pub struct MemTransaction {
 
     // ---- Write-ahead-log for crash recovery ----
     pub(super) redo_buffer: RwLock<Vec<RedoEntry>>,
+
+    // ---- Transaction state tracking ----
+    /// Flag to track whether the transaction has been explicitly handled (committed or aborted)
+    is_handled: Arc<AtomicBool>,
 }
 
 impl Transaction for MemTransaction {
@@ -87,6 +90,7 @@ impl MemTransaction {
             edge_reads: DashSet::new(),
             undo_buffer: RwLock::new(Vec::new()),
             redo_buffer: RwLock::new(Vec::new()),
+            is_handled: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -188,6 +192,12 @@ impl MemTransaction {
             }
             undo_ptr = undo_entry.next();
         }
+    }
+
+    /// Marks the transaction as handled (committed or aborted).
+    /// This prevents the automatic rollback in the Drop implementation.
+    pub fn mark_handled(&self) {
+        self.is_handled.store(true, Ordering::Release);
     }
 }
 
@@ -306,6 +316,10 @@ impl MemTransaction {
 
         // Step 6: Check if an auto checkpoint should be created
         self.graph.check_auto_checkpoint()?;
+
+        // Mark the transaction as handled
+        self.is_handled.store(true, Ordering::Release);
+
         Ok(commit_ts)
     }
 
@@ -425,90 +439,26 @@ impl MemTransaction {
 
         // Remove transaction from transaction manager
         self.graph.txn_manager.finish_transaction(self)?;
+
+        // Mark the transaction as handled
+        self.is_handled.store(true, Ordering::Release);
+
         Ok(())
     }
 }
 
-/// A smart pointer wrapper around `Arc<MemTransaction>` that provides automatic rollback
-/// functionality when the transaction goes out of scope without being explicitly committed or
-/// aborted.
-///
-/// This wrapper implements the RAII (Resource Acquisition Is Initialization) pattern to ensure
-/// that transactions are properly cleaned up in case of panics or when they go out of scope.
-pub struct TransactionHandle {
-    inner: Arc<MemTransaction>,
-    /// Flag to track whether the transaction has been explicitly handled (committed or aborted)
-    is_handled: std::cell::Cell<bool>,
-}
-
-impl TransactionHandle {
-    /// Creates a new `TransactionHandle` wrapper around an `Arc<MemTransaction>`.
-    pub fn new(txn: Arc<MemTransaction>) -> Self {
-        Self {
-            inner: txn,
-            is_handled: std::cell::Cell::new(false),
-        }
-    }
-
-    /// Marks the transaction as handled (committed or aborted).
-    /// This prevents the automatic rollback in the Drop implementation.
-    pub fn mark_handled(&self) {
-        self.is_handled.set(true);
-    }
-
-    /// Returns a reference to the inner `Arc<MemTransaction>`.
-    pub fn inner(&self) -> &Arc<MemTransaction> {
-        &self.inner
-    }
-}
-
-impl Deref for TransactionHandle {
-    type Target = MemTransaction;
-
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
-}
-
-impl Drop for TransactionHandle {
+impl Drop for MemTransaction {
     fn drop(&mut self) {
         // Only perform automatic rollback if:
         // 1. The transaction hasn't been explicitly handled (committed or aborted)
-        // 2. This is the last reference to the transaction (strong_count == 1)
-        if !self.is_handled.get() {
+        // 2. This is the last reference to the transaction
+        // Note: We can't check Arc::strong_count here because we have a &mut self,
+        // but the Drop will only be called when Arc count reaches 0
+        if !self.is_handled.load(Ordering::Acquire) {
             // Attempt to abort the transaction
             // We ignore errors here since we're in a Drop implementation
-            let _ = self.inner.abort();
-            println!("abort transaction {:?}", self.inner.txn_id());
-        }
-    }
-}
-
-impl TransactionHandle {
-    /// Commits the transaction through the underlying MemTransaction.
-    pub fn commit(&self) -> StorageResult<Timestamp> {
-        let result = self.inner.commit();
-        if result.is_ok() {
-            self.mark_handled();
-        }
-        result
-    }
-
-    /// Aborts the transaction through the underlying MemTransaction.
-    pub fn abort(&self) -> StorageResult<()> {
-        let result = self.inner.abort();
-        if result.is_ok() {
-            self.mark_handled();
-        }
-        result
-    }
-}
-
-impl Clone for TransactionHandle {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            is_handled: std::cell::Cell::new(self.is_handled.get()),
+            let _ = self.abort();
+            println!("abort transaction {:?}", self.txn_id());
         }
     }
 }
