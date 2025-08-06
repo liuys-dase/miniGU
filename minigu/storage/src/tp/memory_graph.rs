@@ -7,7 +7,6 @@ use minigu_common::value::ScalarValue;
 use minigu_transaction::Transaction;
 
 use super::checkpoint::{CheckpointManager, CheckpointManagerConfig};
-use super::graph_gc::GraphGarbageCollector;
 use super::transaction::{MemTransaction, UndoEntry, UndoPtr};
 use super::txn_manager::MemTxnManager;
 use crate::common::model::edge::{Edge, Neighbor};
@@ -354,9 +353,6 @@ pub struct MemoryGraph {
 
     // ---- Checkpoint management ----
     pub(super) checkpoint_manager: Option<CheckpointManager>,
-
-    // ---- Graph garbage collection ----
-    pub(super) graph_gc: Option<GraphGarbageCollector>,
 }
 
 impl MemoryGraph {
@@ -409,22 +405,14 @@ impl MemoryGraph {
             txn_manager: MemTxnManager::new(),
             wal_manager: WalManager::new(wal_config),
             checkpoint_manager: None,
-            graph_gc: None,
         });
 
         // Initialize the checkpoint manager
         let checkpoint_manager = CheckpointManager::new(graph.clone(), checkpoint_config).unwrap();
 
-        // Initialize the graph garbage collector
-        // Use an empty weak reference, which will be replaced with the actual reference later
-        // when the graph is fully initialized
-        let empty_weak = std::sync::Weak::<MemTxnManager>::new();
-        let graph_gc = GraphGarbageCollector::new(graph.clone(), empty_weak);
-
         unsafe {
             let graph_ptr = Arc::as_ptr(&graph) as *mut MemoryGraph;
             (*graph_ptr).checkpoint_manager = Some(checkpoint_manager);
-            (*graph_ptr).graph_gc = Some(graph_gc);
             // Set the graph reference in the transaction manager
             (*graph_ptr).txn_manager.graph = Arc::downgrade(&graph);
         }
@@ -1445,12 +1433,8 @@ pub mod tests {
             assert!(count == 2);
         }
 
-        // 手动触发图数据垃圾回收
-        if let Some(ref graph_gc) = graph.graph_gc {
-            graph_gc.trigger_gc_sync().unwrap();
-        }
-        // 也需要触发事务级垃圾回收
-        graph.txn_manager.garbage_collect(txn2.graph()).unwrap();
+        // 手动触发简化的垃圾回收
+        graph.txn_manager.simple_gc(&graph).unwrap();
         // Check after GC
         {
             let adj = graph.adjacency_list.get(&vid1).unwrap();
@@ -1554,12 +1538,8 @@ pub mod tests {
         }
 
         let txn3 = graph.txn_manager().begin_transaction().unwrap();
-        // 手动触发图数据垃圾回收
-        if let Some(ref graph_gc) = graph.graph_gc {
-            graph_gc.trigger_gc_sync().unwrap();
-        }
-        // 也需要触发事务级垃圾回收
-        graph.txn_manager.garbage_collect(txn3.graph()).unwrap();
+        // 手动触发简化的垃圾回收
+        graph.txn_manager.simple_gc(&graph).unwrap();
         // Check after GC
         {
             assert!(graph.vertices.get(&vid1).is_none());

@@ -1,5 +1,4 @@
 pub mod checkpoint;
-pub mod graph_gc;
 pub mod iterators;
 pub mod memory_graph;
 pub mod transaction;

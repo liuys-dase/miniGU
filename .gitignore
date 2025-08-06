@@ -30,4 +30,4 @@ target/
 .antlr/
 
 **/.checkpoint/
-**/.wal
+*.wal
