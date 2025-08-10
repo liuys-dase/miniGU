@@ -50,6 +50,77 @@ impl Default for MemTxnManager {
     }
 }
 
+impl GraphTxnManager for MemTxnManager {
+    type Error = StorageError;
+    type GraphContext = MemoryGraph;
+    type Transaction = MemTransaction;
+
+    fn begin_transaction(&self) -> Result<Arc<Self::Transaction>, Self::Error> {
+        self.begin_transaction_at(None, None, IsolationLevel::Serializable, false)
+    }
+
+    fn finish_transaction(&self, txn: &Self::Transaction) -> Result<(), Self::Error> {
+        let txn_entry = self.active_txns.remove(&txn.txn_id());
+        if let Some(txn_arc) = txn_entry {
+            // Check if the transaction has been committed (by checking if it has a commit_ts)
+            if let Some(commit_ts) = txn.commit_ts() {
+                self.committed_txns
+                    .insert(commit_ts, txn_arc.value().clone());
+            }
+            self.update_watermark();
+
+            // Trigger GC if threshold is reached
+            if self.committed_txns.len() >= GC_TRIGGER_THRESHOLD {
+                if let Some(graph) = self.graph.upgrade() {
+                    let _ = self.garbage_collect(&graph);
+                }
+            }
+
+            return Ok(());
+        }
+
+        Err(StorageError::Transaction(
+            TransactionError::TransactionNotFound(format!("{:?}", txn.txn_id())),
+        ))
+    }
+
+    fn garbage_collect(&self, graph: &Self::GraphContext) -> Result<(), Self::Error> {
+        let min_read_ts = self.watermark.load(Ordering::Acquire);
+        let mut expired_txns = Vec::new();
+        let mut expired_undo_entries = Vec::new();
+
+        // Step 1: Collect expired transactions and their undo entries
+        for entry in self.committed_txns.iter() {
+            if entry.key().0 > min_read_ts {
+                break;
+            }
+
+            expired_txns.push(entry.value().clone());
+
+            // Collect undo entries for graph data cleanup
+            for undo_entry in entry.value().undo_buffer().read().unwrap().iter() {
+                expired_undo_entries.push(undo_entry.clone());
+            }
+        }
+
+        // Step 2: Clean up graph data based on expired undo entries
+        self.cleanup_graph_data(graph, expired_undo_entries)?;
+
+        // Step 3: Remove expired transactions from tracking
+        for txn in expired_txns {
+            if let Some(commit_ts) = txn.commit_ts() {
+                self.committed_txns.remove(&commit_ts);
+            }
+        }
+
+        // Step 4: Update last GC timestamp
+        let current_ts = global_timestamp_generator().current();
+        self.last_gc_ts.store(current_ts.0, Ordering::SeqCst);
+
+        Ok(())
+    }
+}
+
 impl MemTxnManager {
     /// Create a new MemTxnManager
     pub fn new() -> Self {
@@ -129,46 +200,10 @@ impl MemTxnManager {
 
         Ok(txn)
     }
-}
 
-impl GraphTxnManager for MemTxnManager {
-    type Error = StorageError;
-    type GraphContext = MemoryGraph;
-    type Transaction = MemTransaction;
-
-    fn begin_transaction(&self) -> Result<Arc<Self::Transaction>, Self::Error> {
-        self.begin_transaction_at(None, None, IsolationLevel::Serializable, false)
-    }
-
-    fn finish_transaction(&self, txn: &Self::Transaction) -> Result<(), Self::Error> {
-        let txn_entry = self.active_txns.remove(&txn.txn_id());
-        if let Some(txn_arc) = txn_entry {
-            // Check if the transaction has been committed (by checking if it has a commit_ts)
-            if let Some(commit_ts) = txn.commit_ts() {
-                self.committed_txns
-                    .insert(commit_ts, txn_arc.value().clone());
-            }
-            self.update_watermark();
-
-            // Trigger GC if threshold is reached
-            if self.committed_txns.len() >= GC_TRIGGER_THRESHOLD {
-                if let Some(graph) = self.graph.upgrade() {
-                    let _ = self.simple_gc(&graph);
-                }
-            }
-
-            return Ok(());
-        }
-
-        Err(StorageError::Transaction(
-            TransactionError::TransactionNotFound(format!("{:?}", txn.txn_id())),
-        ))
-    }
-
-    fn garbage_collect(&self, graph: &Self::GraphContext) -> Result<(), Self::Error> {
-        self.simple_gc(graph)
-    }
-
+    /// Update the watermark based on currently active transactions.
+    /// The watermark represents the minimum timestamp that any active transaction
+    /// can see, which is crucial for determining what data can be garbage collected.
     fn update_watermark(&self) {
         let min_ts = self
             .active_txns
@@ -177,45 +212,6 @@ impl GraphTxnManager for MemTxnManager {
             .unwrap_or(self.latest_commit_ts.load(Ordering::Acquire))
             .max(self.watermark.load(Ordering::Acquire));
         self.watermark.store(min_ts, Ordering::SeqCst);
-    }
-}
-
-impl MemTxnManager {
-    /// Simplified garbage collection that combines transaction and graph data cleanup
-    pub fn simple_gc(&self, graph: &MemoryGraph) -> StorageResult<()> {
-        let min_read_ts = self.watermark.load(Ordering::Acquire);
-        let mut expired_txns = Vec::new();
-        let mut expired_undo_entries = Vec::new();
-
-        // Step 1: Collect expired transactions and their undo entries
-        for entry in self.committed_txns.iter() {
-            if entry.key().0 > min_read_ts {
-                break;
-            }
-
-            expired_txns.push(entry.value().clone());
-
-            // Collect undo entries for graph data cleanup
-            for undo_entry in entry.value().undo_buffer().read().unwrap().iter() {
-                expired_undo_entries.push(undo_entry.clone());
-            }
-        }
-
-        // Step 2: Clean up graph data based on expired undo entries
-        self.cleanup_graph_data(graph, expired_undo_entries)?;
-
-        // Step 3: Remove expired transactions from tracking
-        for txn in expired_txns {
-            if let Some(commit_ts) = txn.commit_ts() {
-                self.committed_txns.remove(&commit_ts);
-            }
-        }
-
-        // Step 4: Update last GC timestamp
-        let current_ts = global_timestamp_generator().current();
-        self.last_gc_ts.store(current_ts.0, Ordering::SeqCst);
-
-        Ok(())
     }
 
     /// Clean up graph data based on expired undo entries

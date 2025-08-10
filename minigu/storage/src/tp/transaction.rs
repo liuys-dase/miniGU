@@ -60,6 +60,10 @@ impl Transaction for MemTransaction {
         self.start_ts
     }
 
+    fn commit_ts(&self) -> Option<Timestamp> {
+        self.commit_ts.get().copied()
+    }
+
     fn isolation_level(&self) -> &IsolationLevel {
         &self.isolation_level
     }
@@ -160,13 +164,8 @@ impl MemTransaction {
         &self.graph
     }
 
-    /// Returns the commit timestamp if the transaction has been committed.
-    pub fn commit_ts(&self) -> Option<Timestamp> {
-        self.commit_ts.get().copied()
-    }
-
     /// Returns a reference to the undo buffer for garbage collection.
-    pub(crate) fn undo_buffer(&self) -> &RwLock<Vec<Arc<UndoEntry>>> {
+    pub fn undo_buffer(&self) -> &RwLock<Vec<Arc<UndoEntry>>> {
         &self.undo_buffer
     }
 
@@ -199,9 +198,7 @@ impl MemTransaction {
     pub fn mark_handled(&self) {
         self.is_handled.store(true, Ordering::Release);
     }
-}
 
-impl MemTransaction {
     /// Commits the transaction at a specific commit timestamp.
     pub fn commit_at(
         &self,
@@ -458,7 +455,6 @@ impl Drop for MemTransaction {
             // Attempt to abort the transaction
             // We ignore errors here since we're in a Drop implementation
             let _ = self.abort();
-            println!("abort transaction {:?}", self.txn_id());
         }
     }
 }

@@ -1433,8 +1433,7 @@ pub mod tests {
             assert!(count == 2);
         }
 
-        // 手动触发简化的垃圾回收
-        graph.txn_manager.simple_gc(&graph).unwrap();
+        graph.txn_manager.garbage_collect(&graph).unwrap();
         // Check after GC
         {
             let adj = graph.adjacency_list.get(&vid1).unwrap();
@@ -1538,8 +1537,7 @@ pub mod tests {
         }
 
         let txn3 = graph.txn_manager().begin_transaction().unwrap();
-        // 手动触发简化的垃圾回收
-        graph.txn_manager.simple_gc(&graph).unwrap();
+        graph.txn_manager.garbage_collect(&graph).unwrap();
         // Check after GC
         {
             assert!(graph.vertices.get(&vid1).is_none());

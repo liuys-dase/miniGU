@@ -18,7 +18,7 @@ pub enum IsolationLevel {
 
 /// Trait defining the core operations that all transactions must support.
 /// This trait abstracts the fundamental transaction behavior across different
-/// storage implementations (memory-based, disk-based, catalog, etc.).
+/// storage implementations.
 pub trait Transaction {
     /// The error type for transaction operations
     type Error;
@@ -28,6 +28,9 @@ pub trait Transaction {
 
     /// Get the start timestamp of the transaction
     fn start_ts(&self) -> Timestamp;
+
+    /// Get the commit timestamp of the transaction
+    fn commit_ts(&self) -> Option<Timestamp>;
 
     /// Get the isolation level of the transaction
     fn isolation_level(&self) -> &IsolationLevel;

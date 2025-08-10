@@ -9,7 +9,7 @@ use crate::transaction::Transaction;
 
 /// Trait for transaction managers supporting MVCC operations.
 /// This trait abstracts the core functionality needed for managing transactions
-/// across different storage implementations (memory-based, disk-based, etc.).
+/// across different storage implementations.
 ///
 /// Note: Timestamp and transaction ID generation is handled by global generators
 /// accessible via `global_timestamp_generator()` and `global_transaction_id_generator()`.
@@ -35,9 +35,4 @@ pub trait GraphTxnManager {
     /// This typically includes removing old transaction records and cleaning up
     /// version chains that are no longer visible to any active transaction.
     fn garbage_collect(&self, graph: &Self::GraphContext) -> Result<(), Self::Error>;
-
-    /// Update the watermark based on currently active transactions.
-    /// The watermark represents the minimum timestamp that any active transaction
-    /// can see, which is crucial for determining what data can be garbage collected.
-    fn update_watermark(&self);
 }
