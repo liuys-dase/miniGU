@@ -71,4 +71,9 @@ impl DirectoryProvider for MemoryDirectoryCatalog {
             .cloned()
             .collect()
     }
+
+    #[inline]
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }

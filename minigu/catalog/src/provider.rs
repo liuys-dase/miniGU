@@ -24,7 +24,7 @@ pub trait CatalogProvider: Debug + Send + Sync {
     fn get_root(&self) -> CatalogResult<DirectoryOrSchema>;
 }
 
-pub trait DirectoryProvider: Debug + Send + Sync {
+pub trait DirectoryProvider: Debug + Send + Sync + Any {
     /// Returns the parent directory ID of the directory.
     fn parent(&self) -> Option<DirectoryRef>;
 
@@ -33,10 +33,13 @@ pub trait DirectoryProvider: Debug + Send + Sync {
 
     /// Returns the names of the children of the directory.
     fn children_names(&self) -> Vec<String>;
+
+    /// Returns a reference to the underlying directory.
+    fn as_any(&self) -> &dyn Any;
 }
 
 /// Represents a logical schema, which contains graphs and graph type definitions.
-pub trait SchemaProvider: Debug + Send + Sync {
+pub trait SchemaProvider: Debug + Send + Sync + Any {
     /// Returns the parent directory ID of the schema.
     fn parent(&self) -> Option<DirectoryRef>;
 
@@ -57,6 +60,9 @@ pub trait SchemaProvider: Debug + Send + Sync {
 
     /// Retrieves a procedure by its name.
     fn get_procedure(&self, name: &str) -> CatalogResult<Option<ProcedureRef>>;
+
+    /// Returns a reference to the underlying schema.
+    fn as_any(&self) -> &dyn Any;
 }
 
 /// Represents a graph, which is an instance of a graph type.

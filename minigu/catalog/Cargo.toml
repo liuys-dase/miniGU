@@ -7,9 +7,10 @@ version.workspace = true
 
 [dependencies]
 minigu-common = { workspace = true }
+minigu-transaction = { workspace = true }
 serde = { workspace = true }
 smallvec = { workspace = true, features = ["union", "serde"] }
-smol_str = { workspace = true }
+smol_str = { workspace = true, features = ["serde"] }
 thiserror = { workspace = true }
 
 [lints]

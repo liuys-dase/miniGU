@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::timestamp::Timestamp;
 
 /// Isolation level for transactions
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum IsolationLevel {
     /// Snapshot isolation - reads see a consistent snapshot
     Snapshot,

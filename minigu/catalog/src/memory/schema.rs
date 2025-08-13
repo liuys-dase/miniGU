@@ -165,4 +165,9 @@ impl SchemaProvider for MemorySchemaCatalog {
             .get(name)
             .map(|p| p.clone() as _))
     }
+
+    #[inline]
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
