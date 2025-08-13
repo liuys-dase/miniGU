@@ -3,7 +3,7 @@
 //! This module implements transaction support for catalog operations,
 //! enabling DDL operations to be performed within transactions.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use minigu_transaction::{
@@ -607,74 +607,18 @@ impl CatalogTransaction {
     }
 }
 
-/// Garbage collection configuration
-#[derive(Debug, Clone)]
-pub struct GcConfig {
-    /// Maximum number of completed transactions to keep in history
-    pub max_txn_history: usize,
-    /// Maximum age of completed transactions before cleanup (in milliseconds)  
-    pub max_txn_age_ms: u64,
-    /// Maximum number of undo operations to keep per transaction
-    pub max_undo_operations: usize,
-}
-
-impl Default for GcConfig {
-    fn default() -> Self {
-        Self {
-            max_txn_history: 1000,
-            max_txn_age_ms: 300_000, // 5 minutes
-            max_undo_operations: 100,
-        }
-    }
-}
-
-/// Information about completed transactions for garbage collection
-#[derive(Debug, Clone)]
-struct CompletedTxnInfo {
-    #[allow(dead_code)]
-    txn_id: Timestamp,
-    completion_time: std::time::Instant,
-    #[allow(dead_code)]
-    was_committed: bool,
-}
-
-/// Garbage collection statistics
-#[derive(Debug, Clone)]
-pub struct GcStats {
-    /// Number of active transactions
-    pub active_txn_count: usize,
-    /// Number of completed transactions in history
-    pub completed_txn_count: usize,
-    /// Last garbage collection time
-    pub last_gc_time: std::time::Instant,
-}
-
-/// Result of garbage collection operation
-#[derive(Debug, Clone)]
-pub struct GcResult {
-    /// Number of completed transactions cleaned up
-    pub cleaned_completed_txns: usize,
-    /// Number of undo operations cleaned up
-    pub cleaned_undo_operations: usize,
-    /// Number of local changes cleaned up
-    pub cleaned_local_changes: usize,
-    /// Total time taken for garbage collection
-    pub gc_duration: std::time::Duration,
-}
+/// Maximum number of completed transactions to keep in history
+const MAX_COMPLETED_TXNS: usize = 100;
 
 /// Transaction manager for catalog operations
 pub struct CatalogTxnManager {
     /// Active transactions
     active_txns: Mutex<HashMap<Timestamp, Arc<CatalogTransaction>>>,
-    /// Completed transaction history for garbage collection
-    completed_txns: Mutex<Vec<CompletedTxnInfo>>,
+    /// Completed transaction IDs for simple tracking
+    completed_txn_ids: Mutex<VecDeque<Timestamp>>,
     /// Reference to the catalog
     #[allow(dead_code)]
     catalog: Arc<dyn CatalogProvider>,
-    /// Garbage collection configuration
-    gc_config: GcConfig,
-    /// Last garbage collection time
-    last_gc_time: Mutex<std::time::Instant>,
 }
 
 impl CatalogTxnManager {
@@ -682,150 +626,14 @@ impl CatalogTxnManager {
     pub fn new(catalog: Arc<dyn CatalogProvider>) -> Self {
         Self {
             active_txns: Mutex::new(HashMap::new()),
-            completed_txns: Mutex::new(Vec::new()),
+            completed_txn_ids: Mutex::new(VecDeque::new()),
             catalog,
-            gc_config: GcConfig::default(),
-            last_gc_time: Mutex::new(std::time::Instant::now()),
         }
     }
 
     /// Create a new catalog transaction manager wrapped in Arc
     pub fn new_arc(catalog: Arc<dyn CatalogProvider>) -> Arc<Self> {
         Arc::new(Self::new(catalog))
-    }
-
-    /// Create a new catalog transaction manager with custom GC configuration
-    pub fn new_with_gc_config(catalog: Arc<dyn CatalogProvider>, gc_config: GcConfig) -> Self {
-        Self {
-            active_txns: Mutex::new(HashMap::new()),
-            completed_txns: Mutex::new(Vec::new()),
-            catalog,
-            gc_config,
-            last_gc_time: Mutex::new(std::time::Instant::now()),
-        }
-    }
-
-    /// Get garbage collection statistics
-    pub fn gc_stats(&self) -> GcStats {
-        let active_count = self.active_txns.lock().unwrap().len();
-        let completed_count = self.completed_txns.lock().unwrap().len();
-        let last_gc = *self.last_gc_time.lock().unwrap();
-
-        GcStats {
-            active_txn_count: active_count,
-            completed_txn_count: completed_count,
-            last_gc_time: last_gc,
-        }
-    }
-
-    /// Trigger garbage collection manually
-    pub fn manual_gc(&self, catalog: &Arc<dyn CatalogProvider>) -> Result<GcResult, CatalogError> {
-        self.perform_garbage_collection(catalog)
-    }
-
-    /// Clean up undo operations in a transaction to prevent memory bloat
-    fn cleanup_transaction_undo_ops(&self, txn: &CatalogTransaction) {
-        let mut operations = txn.operations.lock().unwrap();
-        if operations.len() > self.gc_config.max_undo_operations {
-            // Keep only the most recent operations
-            let keep_count = self.gc_config.max_undo_operations / 2;
-            let current_len = operations.len();
-            operations.drain(0..(current_len - keep_count));
-        }
-    }
-
-    /// Perform the actual garbage collection work
-    fn perform_garbage_collection(
-        &self,
-        _catalog: &Arc<dyn CatalogProvider>,
-    ) -> Result<GcResult, CatalogError> {
-        let start_time = std::time::Instant::now();
-
-        let cleaned_completed_txns;
-        let mut cleaned_undo_operations = 0;
-        let mut cleaned_local_changes = 0;
-
-        // 1. Clean up old completed transactions
-        {
-            let mut completed_txns = self.completed_txns.lock().unwrap();
-            let cutoff_time = std::time::Instant::now()
-                - std::time::Duration::from_millis(self.gc_config.max_txn_age_ms);
-
-            let original_len = completed_txns.len();
-
-            // Remove transactions older than the cutoff time or keep only max_txn_history
-            if completed_txns.len() > self.gc_config.max_txn_history {
-                let keep_count = self.gc_config.max_txn_history / 2; // Keep half when cleaning
-                let current_len = completed_txns.len();
-                completed_txns.drain(0..(current_len - keep_count));
-            }
-
-            // Remove transactions older than max age
-            completed_txns.retain(|info| info.completion_time > cutoff_time);
-
-            cleaned_completed_txns = original_len - completed_txns.len();
-        }
-
-        // 2. Clean up undo operations in active transactions
-        {
-            let active_txns = self.active_txns.lock().unwrap();
-            for txn in active_txns.values() {
-                let operations_before = {
-                    let ops = txn.operations.lock().unwrap();
-                    ops.len()
-                };
-
-                self.cleanup_transaction_undo_ops(txn);
-
-                let operations_after = {
-                    let ops = txn.operations.lock().unwrap();
-                    ops.len()
-                };
-
-                cleaned_undo_operations += operations_before.saturating_sub(operations_after);
-            }
-        }
-
-        // 3. Clean up excessive local changes in active transactions
-        {
-            let active_txns = self.active_txns.lock().unwrap();
-            for txn in active_txns.values() {
-                let changes_before = {
-                    let changes = txn.local_changes.lock().unwrap();
-                    changes.len()
-                };
-
-                // Limit the number of local changes to prevent memory bloat
-                if changes_before > self.gc_config.max_undo_operations {
-                    let mut changes = txn.local_changes.lock().unwrap();
-                    let keys_to_remove: Vec<_> = changes
-                        .keys()
-                        .take(changes_before - self.gc_config.max_undo_operations / 2)
-                        .cloned()
-                        .collect();
-
-                    for key in keys_to_remove {
-                        changes.remove(&key);
-                    }
-                }
-
-                let changes_after = {
-                    let changes = txn.local_changes.lock().unwrap();
-                    changes.len()
-                };
-
-                cleaned_local_changes += changes_before.saturating_sub(changes_after);
-            }
-        }
-
-        let gc_duration = start_time.elapsed();
-
-        Ok(GcResult {
-            cleaned_completed_txns,
-            cleaned_undo_operations,
-            cleaned_local_changes,
-            gc_duration,
-        })
     }
 }
 
@@ -887,24 +695,23 @@ impl GraphTxnManager for CatalogTxnManager {
         // Remove from active transactions
         self.active_txns.lock().unwrap().remove(&txn.txn_id());
 
-        // Add to completed transactions history for potential garbage collection
-        let completed_info = CompletedTxnInfo {
-            txn_id: txn.txn_id(),
-            completion_time: std::time::Instant::now(),
-            was_committed,
-        };
+        // Simple inline GC: keep track of completed transaction IDs
+        let mut completed = self.completed_txn_ids.lock().unwrap();
+        completed.push_back(txn.txn_id());
 
-        self.completed_txns.lock().unwrap().push(completed_info);
+        // Keep only the most recent completed transactions
+        while completed.len() > MAX_COMPLETED_TXNS {
+            completed.pop_front();
+        }
 
         Ok(())
     }
 
-    fn garbage_collect(&self, catalog: &Self::GraphContext) -> Result<(), Self::Error> {
-        let _gc_result = self.perform_garbage_collection(catalog)?;
-
-        // Update last GC time
-        *self.last_gc_time.lock().unwrap() = std::time::Instant::now();
-
+    fn garbage_collect(&self, _catalog: &Self::GraphContext) -> Result<(), Self::Error> {
+        // Simple garbage collection: just clear the completed transaction IDs
+        // This is called explicitly when needed, not automatically
+        let mut completed = self.completed_txn_ids.lock().unwrap();
+        completed.clear();
         Ok(())
     }
 }
@@ -1716,18 +1523,12 @@ mod tests {
         let mock_catalog = create_mock_catalog();
         let txn_manager = CatalogTxnManager::new(mock_catalog.clone());
 
-        // Check initial stats
-        let initial_stats = txn_manager.gc_stats();
-        assert_eq!(initial_stats.active_txn_count, 0);
-        assert_eq!(initial_stats.completed_txn_count, 0);
-
         // Create some transactions
         let txn1 = txn_manager.begin_transaction().unwrap();
         let txn2 = txn_manager.begin_transaction().unwrap();
 
         // Check active transaction count
-        let stats_with_active = txn_manager.gc_stats();
-        assert_eq!(stats_with_active.active_txn_count, 2);
+        assert_eq!(txn_manager.active_txns.lock().unwrap().len(), 2);
 
         // Commit one transaction
         let _commit_result = txn1.commit();
@@ -1737,31 +1538,27 @@ mod tests {
         let _abort_result = txn2.abort();
         txn_manager.finish_transaction(&txn2).unwrap();
 
-        // Check completed transaction count
-        let final_stats = txn_manager.gc_stats();
-        assert_eq!(final_stats.active_txn_count, 0);
-        assert_eq!(final_stats.completed_txn_count, 2);
+        // Check that active transactions are cleared
+        assert_eq!(txn_manager.active_txns.lock().unwrap().len(), 0);
+
+        // Check that completed transaction IDs are tracked
+        assert_eq!(txn_manager.completed_txn_ids.lock().unwrap().len(), 2);
 
         // Run garbage collection
-        let gc_result = txn_manager.manual_gc(&mock_catalog);
+        let gc_result = txn_manager.garbage_collect(&mock_catalog);
         assert!(gc_result.is_ok());
+
+        // After GC, completed transaction IDs should be cleared
+        assert_eq!(txn_manager.completed_txn_ids.lock().unwrap().len(), 0);
     }
 
     #[test]
-    fn test_garbage_collection_with_custom_config() {
+    fn test_completed_transactions_limit() {
         let mock_catalog = create_mock_catalog();
+        let txn_manager = CatalogTxnManager::new(mock_catalog.clone());
 
-        // Create a custom GC config with very low limits
-        let gc_config = GcConfig {
-            max_txn_history: 2,
-            max_txn_age_ms: 100, // Very short age
-            max_undo_operations: 5,
-        };
-
-        let txn_manager = CatalogTxnManager::new_with_gc_config(mock_catalog.clone(), gc_config);
-
-        // Create and finish several transactions
-        for i in 0..5 {
+        // Create and finish many transactions (more than MAX_COMPLETED_TXNS)
+        for i in 0..150 {
             let txn = txn_manager.begin_transaction().unwrap();
 
             // Add some operations to the transaction
@@ -1775,91 +1572,8 @@ mod tests {
             txn_manager.finish_transaction(&txn).unwrap();
         }
 
-        // Check that we have many completed transactions
-        let stats_before_gc = txn_manager.gc_stats();
-        assert_eq!(stats_before_gc.completed_txn_count, 5);
-
-        // Wait a bit to exceed the age limit
-        std::thread::sleep(std::time::Duration::from_millis(150));
-
-        // Run garbage collection
-        let gc_result = txn_manager.manual_gc(&mock_catalog).unwrap();
-
-        // Should have cleaned up some transactions
-        assert!(gc_result.cleaned_completed_txns > 0);
-
-        // Check that completed transaction count is reduced
-        let stats_after_gc = txn_manager.gc_stats();
-        assert!(stats_after_gc.completed_txn_count < stats_before_gc.completed_txn_count);
-    }
-
-    #[test]
-    fn test_transaction_undo_operations_cleanup() {
-        let mock_catalog = create_mock_catalog();
-        let gc_config = GcConfig {
-            max_txn_history: 100,
-            max_txn_age_ms: 300_000,
-            max_undo_operations: 3, // Very low limit
-        };
-
-        let txn_manager = CatalogTxnManager::new_with_gc_config(mock_catalog.clone(), gc_config);
-        let txn = txn_manager.begin_transaction().unwrap();
-
-        // Add many operations to exceed the limit
-        for i in 0..10 {
-            txn.add_operation(CatalogOp::CreateSchema {
-                name: format!("schema_{}", i),
-                parent_dir: "root".to_string(),
-            });
-        }
-
-        // Check initial operation count
-        let initial_ops_count = {
-            let ops = txn.operations.lock().unwrap();
-            ops.len()
-        };
-        assert_eq!(initial_ops_count, 10);
-
-        // Run garbage collection
-        let gc_result = txn_manager.manual_gc(&mock_catalog).unwrap();
-
-        // Should have cleaned up some undo operations
-        assert!(gc_result.cleaned_undo_operations > 0);
-
-        // Check that operation count is reduced
-        let final_ops_count = {
-            let ops = txn.operations.lock().unwrap();
-            ops.len()
-        };
-        assert!(final_ops_count < initial_ops_count);
-
-        // Clean up transaction
-        txn_manager.finish_transaction(&txn).unwrap();
-    }
-
-    #[test]
-    fn test_gc_result_fields() {
-        let mock_catalog = create_mock_catalog();
-        let txn_manager = CatalogTxnManager::new(mock_catalog.clone());
-
-        // Create and finish a transaction
-        let txn = txn_manager.begin_transaction().unwrap();
-        txn.add_operation(CatalogOp::CreateSchema {
-            name: "test_schema".to_string(),
-            parent_dir: "root".to_string(),
-        });
-        let _commit_result = txn.commit();
-        txn_manager.finish_transaction(&txn).unwrap();
-
-        // Run GC and check result fields
-        let gc_result = txn_manager.manual_gc(&mock_catalog).unwrap();
-
-        // All fields should be valid (no need to check non-negative for usize)
-        assert!(gc_result.cleaned_completed_txns < 1000); // Reasonable upper bound
-        assert!(gc_result.cleaned_undo_operations < 1000); // Reasonable upper bound
-        assert!(gc_result.cleaned_local_changes < 1000); // Reasonable upper bound
-
-        // Duration should be measurable
-        assert!(gc_result.gc_duration.as_nanos() > 0);
+        // Check that we only keep MAX_COMPLETED_TXNS transactions
+        let completed_count = txn_manager.completed_txn_ids.lock().unwrap().len();
+        assert_eq!(completed_count, MAX_COMPLETED_TXNS);
     }
 }

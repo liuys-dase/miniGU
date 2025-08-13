@@ -7,7 +7,4 @@ pub mod provider;
 pub mod transaction;
 
 // Re-export commonly used types
-pub use transaction::{
-    CatalogOp, CatalogTransaction, CatalogTxnManager, GcConfig, GcResult, GcStats,
-    TransactionalCatalog,
-};
+pub use transaction::{CatalogOp, CatalogTransaction, CatalogTxnManager, TransactionalCatalog};
