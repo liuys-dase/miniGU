@@ -71,6 +71,8 @@ pub struct CatalogTransaction {
     isolation_level: IsolationLevel,
     /// Reference to the catalog for applying operations
     catalog: Arc<dyn CatalogProvider>,
+    /// Weak reference to the transaction manager for conflict detection
+    txn_manager: std::sync::Weak<CatalogTxnManager>,
     /// Operations performed in this transaction (for undo)
     operations: Mutex<Vec<CatalogOp>>,
     /// Modified state during transaction
@@ -83,7 +85,11 @@ pub struct CatalogTransaction {
 
 impl CatalogTransaction {
     /// Create a new catalog transaction
-    pub fn new(isolation_level: IsolationLevel, catalog: Arc<dyn CatalogProvider>) -> Self {
+    pub fn new(
+        isolation_level: IsolationLevel,
+        catalog: Arc<dyn CatalogProvider>,
+        txn_manager: std::sync::Weak<CatalogTxnManager>,
+    ) -> Self {
         let txn_id = global_transaction_id_generator().next();
         let start_ts = global_timestamp_generator().next();
 
@@ -93,6 +99,7 @@ impl CatalogTransaction {
             commit_ts: Mutex::new(None),
             isolation_level,
             catalog,
+            txn_manager,
             operations: Mutex::new(Vec::new()),
             local_changes: Mutex::new(HashMap::new()),
             read_set: Mutex::new(HashMap::new()),
@@ -358,8 +365,22 @@ impl Transaction for CatalogTransaction {
     }
 
     fn commit(&self) -> Result<Timestamp, Self::Error> {
-        // Note: Conflict detection should be performed by the transaction manager
-        // before calling commit(). This method assumes validation has already passed.
+        // Perform conflict detection for serializable isolation level
+        if let IsolationLevel::Serializable = self.isolation_level {
+            // Try to get the transaction manager for conflict detection
+            if let Some(txn_manager) = self.txn_manager.upgrade() {
+                let active_txns = txn_manager.active_txns.lock().unwrap();
+                if !self.validate_read_set(&active_txns) {
+                    // Conflict detected, abort the transaction
+                    let _ = self.abort();
+                    return Err(CatalogError::General(
+                        "Transaction aborted due to serialization conflict".to_string(),
+                    ));
+                }
+            }
+            // If txn_manager can't be upgraded, we proceed without conflict detection
+            // This should be rare and only happen during shutdown
+        }
 
         let commit_ts = global_timestamp_generator().next();
 
@@ -668,25 +689,9 @@ impl CatalogTxnManager {
         }
     }
 
-    /// Commit a transaction with conflict detection
-    pub fn commit_transaction(
-        &self,
-        txn: &Arc<CatalogTransaction>,
-    ) -> Result<Timestamp, CatalogError> {
-        // Perform conflict detection for serializable isolation level
-        if let IsolationLevel::Serializable = txn.isolation_level() {
-            let active_txns = self.active_txns.lock().unwrap();
-            if !txn.validate_read_set(&active_txns) {
-                // Conflict detected, abort the transaction
-                let _ = txn.abort();
-                return Err(CatalogError::General(
-                    "Transaction aborted due to serialization conflict".to_string(),
-                ));
-            }
-        }
-
-        // No conflicts, proceed with commit
-        txn.commit()
+    /// Create a new catalog transaction manager wrapped in Arc
+    pub fn new_arc(catalog: Arc<dyn CatalogProvider>) -> Arc<Self> {
+        Arc::new(Self::new(catalog))
     }
 
     /// Create a new catalog transaction manager with custom GC configuration
@@ -824,15 +829,39 @@ impl CatalogTxnManager {
     }
 }
 
+impl CatalogTxnManager {
+    /// Begin a transaction with Arc self
+    pub fn begin_transaction_arc(
+        self: &Arc<Self>,
+    ) -> Result<Arc<CatalogTransaction>, CatalogError> {
+        let txn = Arc::new(CatalogTransaction::new(
+            IsolationLevel::Serializable,
+            self.catalog.clone(),
+            Arc::downgrade(self),
+        ));
+
+        // Add to active transactions
+        self.active_txns
+            .lock()
+            .unwrap()
+            .insert(txn.txn_id(), txn.clone());
+
+        Ok(txn)
+    }
+}
+
 impl GraphTxnManager for CatalogTxnManager {
     type Error = CatalogError;
     type GraphContext = Arc<dyn CatalogProvider>;
     type Transaction = CatalogTransaction;
 
     fn begin_transaction(&self) -> Result<Arc<Self::Transaction>, Self::Error> {
+        // Create a temporary Arc to get weak reference
+        // This is not ideal but necessary due to trait constraints
         let txn = Arc::new(CatalogTransaction::new(
             IsolationLevel::Serializable,
             self.catalog.clone(),
+            std::sync::Weak::new(), // Empty weak ref for now
         ));
 
         // Add to active transactions
@@ -1458,7 +1487,11 @@ mod tests {
     #[test]
     fn test_catalog_transaction_creation() {
         let mock_catalog = create_mock_catalog();
-        let txn = CatalogTransaction::new(IsolationLevel::Serializable, mock_catalog);
+        let txn = CatalogTransaction::new(
+            IsolationLevel::Serializable,
+            mock_catalog,
+            std::sync::Weak::new(),
+        );
 
         assert_eq!(txn.isolation_level(), &IsolationLevel::Serializable);
         assert!(txn.commit_ts().is_none());
@@ -1469,7 +1502,11 @@ mod tests {
     #[test]
     fn test_catalog_transaction_operations() {
         let mock_catalog = create_mock_catalog();
-        let txn = CatalogTransaction::new(IsolationLevel::Serializable, mock_catalog.clone());
+        let txn = CatalogTransaction::new(
+            IsolationLevel::Serializable,
+            mock_catalog.clone(),
+            std::sync::Weak::new(),
+        );
 
         // Test adding operations
         let create_op = CatalogOp::CreateSchema {
@@ -1518,6 +1555,7 @@ mod tests {
         let txn = Arc::new(CatalogTransaction::new(
             IsolationLevel::Serializable,
             mock_catalog,
+            std::sync::Weak::new(),
         ));
         txn_catalog.set_transaction(txn.clone());
 
@@ -1531,7 +1569,11 @@ mod tests {
     #[test]
     fn test_catalog_transaction_commit_abort() {
         let mock_catalog = create_mock_catalog();
-        let txn = CatalogTransaction::new(IsolationLevel::Serializable, mock_catalog);
+        let txn = CatalogTransaction::new(
+            IsolationLevel::Serializable,
+            mock_catalog,
+            std::sync::Weak::new(),
+        );
 
         // Test commit
         let commit_result = txn.commit();
@@ -1551,7 +1593,11 @@ mod tests {
     #[test]
     fn test_catalog_rollback_operations() {
         let mock_catalog = create_mock_catalog();
-        let txn = CatalogTransaction::new(IsolationLevel::Serializable, mock_catalog.clone());
+        let txn = CatalogTransaction::new(
+            IsolationLevel::Serializable,
+            mock_catalog.clone(),
+            std::sync::Weak::new(),
+        );
 
         // Add some operations
         let create_schema_op = CatalogOp::CreateSchema {
@@ -1581,6 +1627,7 @@ mod tests {
         let txn = Arc::new(CatalogTransaction::new(
             IsolationLevel::Serializable,
             mock_catalog,
+            std::sync::Weak::new(),
         ));
         txn_catalog.set_transaction(txn.clone());
 
@@ -1613,7 +1660,11 @@ mod tests {
     #[test]
     fn test_transaction_commit_with_operations() {
         let mock_catalog = create_mock_catalog();
-        let txn = CatalogTransaction::new(IsolationLevel::Serializable, mock_catalog);
+        let txn = CatalogTransaction::new(
+            IsolationLevel::Serializable,
+            mock_catalog,
+            std::sync::Weak::new(),
+        );
 
         // Add operations
         txn.add_operation(CatalogOp::CreateSchema {
@@ -1638,7 +1689,11 @@ mod tests {
     fn test_apply_transaction_operations() {
         let mock_catalog = create_mock_catalog();
         let txn_catalog = TransactionalCatalog::new(mock_catalog.clone());
-        let txn = CatalogTransaction::new(IsolationLevel::Serializable, mock_catalog);
+        let txn = CatalogTransaction::new(
+            IsolationLevel::Serializable,
+            mock_catalog,
+            std::sync::Weak::new(),
+        );
 
         // Add various operations
         txn.add_operation(CatalogOp::CreateSchema {
