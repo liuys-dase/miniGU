@@ -106,7 +106,7 @@ pub(crate) fn import<P: AsRef<Path>>(
 
     // Graph
     let graph = MemoryGraph::with_config_fresh(Default::default(), Default::default());
-    let txn = graph.txn_manager().begin_transaction().unwrap();
+    let txn = graph.txn_manager().begin_transaction()?;
 
     let manifest_parent_dir = manifest_path.as_ref().parent().ok_or_else(|| {
         anyhow::anyhow!(
