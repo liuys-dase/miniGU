@@ -1,5 +1,6 @@
 use std::io;
 
+use minigu_transaction::TimestampError;
 use thiserror::Error;
 pub type StorageResult<T> = Result<T, StorageError>;
 
@@ -17,6 +18,8 @@ pub enum StorageError {
     Wal(#[from] WalError),
     #[error("Checkpoint error: {0}")]
     Checkpoint(#[from] CheckpointError),
+    #[error("Timestamp error: {0}")]
+    Timestamp(#[from] TimestampError),
 }
 
 #[derive(Error, Debug)]

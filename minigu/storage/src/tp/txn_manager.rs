@@ -91,7 +91,7 @@ impl GraphTxnManager for MemTxnManager {
 
         // Step 1: Collect expired transactions and their undo entries
         for entry in self.committed_txns.iter() {
-            if entry.key().0 > min_read_ts {
+            if entry.key().raw() > min_read_ts {
                 break;
             }
 
@@ -115,7 +115,7 @@ impl GraphTxnManager for MemTxnManager {
 
         // Step 4: Update last GC timestamp
         let current_ts = global_timestamp_generator().current();
-        self.last_gc_ts.store(current_ts.0, Ordering::SeqCst);
+        self.last_gc_ts.store(current_ts.raw(), Ordering::SeqCst);
 
         Ok(())
     }
@@ -148,16 +148,24 @@ impl MemTxnManager {
 
         // Update the counters
         let txn_id = if let Some(txn_id) = txn_id {
-            global_transaction_id_generator().update_if_greater(txn_id);
+            global_transaction_id_generator()
+                .update_if_greater(txn_id)
+                .map_err(StorageError::Timestamp)?;
             txn_id
         } else {
-            global_transaction_id_generator().next()
+            global_transaction_id_generator()
+                .next()
+                .map_err(StorageError::Timestamp)?
         };
         let start_ts = if let Some(start_ts) = start_ts {
-            global_timestamp_generator().update_if_greater(start_ts);
+            global_timestamp_generator()
+                .update_if_greater(start_ts)
+                .map_err(StorageError::Timestamp)?;
             start_ts
         } else {
-            global_timestamp_generator().next()
+            global_timestamp_generator()
+                .next()
+                .map_err(StorageError::Timestamp)?
         };
 
         // Acquire the checkpoint lock to prevent new transactions from being created
@@ -208,7 +216,7 @@ impl MemTxnManager {
         let min_ts = self
             .active_txns
             .front()
-            .map(|v| v.value().start_ts().0)
+            .map(|v| v.value().start_ts().raw())
             .unwrap_or(self.latest_commit_ts.load(Ordering::Acquire))
             .max(self.watermark.load(Ordering::Acquire));
         self.watermark.store(min_ts, Ordering::SeqCst);

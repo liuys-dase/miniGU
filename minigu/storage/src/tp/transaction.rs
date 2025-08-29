@@ -206,10 +206,14 @@ impl MemTransaction {
         skip_wal: bool,
     ) -> StorageResult<Timestamp> {
         let commit_ts = if let Some(commit_ts) = commit_ts {
-            global_timestamp_generator().update_if_greater(commit_ts);
+            global_timestamp_generator()
+                .update_if_greater(commit_ts)
+                .map_err(StorageError::Timestamp)?;
             commit_ts
         } else {
-            global_timestamp_generator().next()
+            global_timestamp_generator()
+                .next()
+                .map_err(StorageError::Timestamp)?
         };
 
         // Acquire the global commit lock to enforce serial execution of commits.
@@ -308,7 +312,7 @@ impl MemTransaction {
         self.graph
             .txn_manager
             .latest_commit_ts
-            .store(commit_ts.0, Ordering::SeqCst);
+            .store(commit_ts.raw(), Ordering::SeqCst);
         self.graph.txn_manager.finish_transaction(self)?;
 
         // Step 6: Check if an auto checkpoint should be created
@@ -473,7 +477,7 @@ mod tests {
 
         // Start txn0
         let txn0 = graph.txn_manager().begin_transaction().unwrap();
-        let txn0_start_ts = txn0.start_ts().0;
+        let txn0_start_ts = txn0.start_ts().raw();
 
         // The watermark should be set to the start timestamp of the first active transaction
         assert_eq!(
@@ -483,59 +487,59 @@ mod tests {
 
         {
             let txn_store_1 = graph.txn_manager().begin_transaction().unwrap();
-            let txn1_start_ts = txn_store_1.start_ts().0;
+            let txn1_start_ts = txn_store_1.start_ts().raw();
             // Ensure txn1 started after txn0
             assert!(txn1_start_ts > txn0_start_ts);
             let commit_ts = txn_store_1.commit().unwrap();
             // Ensure commit timestamp is greater than start timestamp
-            assert!(commit_ts.0 > txn1_start_ts);
+            assert!(commit_ts.raw() > txn1_start_ts);
         }
 
         // Watermark should remain unchanged since txn0 is still active
         assert_eq!(
             graph.txn_manager.watermark.load(Ordering::Acquire),
-            txn0.start_ts.0
+            txn0.start_ts.raw()
         );
 
         // Start txn1
         let txn1 = graph.txn_manager().begin_transaction().unwrap();
-        let txn1_start_ts = txn1.start_ts().0;
+        let txn1_start_ts = txn1.start_ts().raw();
         // Ensure txn1 starts after txn0
         assert!(txn1_start_ts > txn0_start_ts);
 
         // Watermark should remain unchanged (still pointing to txn0)
         assert_eq!(
             graph.txn_manager.watermark.load(Ordering::Acquire),
-            txn0.start_ts.0
+            txn0.start_ts.raw()
         );
 
         // Create and commit txn_store_2
         {
             let txn_store_2 = graph.txn_manager().begin_transaction().unwrap();
-            let txn2_start_ts = txn_store_2.start_ts().0;
+            let txn2_start_ts = txn_store_2.start_ts().raw();
             // Ensure txn2 starts after txn1
             assert!(txn2_start_ts > txn1_start_ts);
             let commit_ts = txn_store_2.commit().unwrap();
             // Ensure commit timestamp is greater than start timestamp
-            assert!(commit_ts.0 > txn2_start_ts);
+            assert!(commit_ts.raw() > txn2_start_ts);
         }
 
         // Watermark should remain unchanged
         assert_eq!(
             graph.txn_manager.watermark.load(Ordering::Acquire),
-            txn0.start_ts.0
+            txn0.start_ts.raw()
         );
 
         // Start txn2
         let txn2 = graph.txn_manager().begin_transaction().unwrap();
-        let txn2_start_ts = txn2.start_ts().0;
+        let txn2_start_ts = txn2.start_ts().raw();
         // Ensure txn2 starts after txn1
         assert!(txn2_start_ts > txn1_start_ts);
 
         // Watermark should remain unchanged (still pointing to txn0)
         assert_eq!(
             graph.txn_manager.watermark.load(Ordering::Acquire),
-            txn0.start_ts.0
+            txn0.start_ts.raw()
         );
 
         // Abort txn0
@@ -543,36 +547,36 @@ mod tests {
         // Watermark should update to start_ts of txn1 (now the oldest active transaction)
         assert_eq!(
             graph.txn_manager.watermark.load(Ordering::Acquire),
-            txn1.start_ts().0
+            txn1.start_ts().raw()
         );
 
         // Create and commit txn_store_3
         {
             let txn_store_3 = graph.txn_manager().begin_transaction().unwrap();
-            let txn3_start_ts = txn_store_3.start_ts().0;
+            let txn3_start_ts = txn_store_3.start_ts().raw();
             // Ensure txn3 starts after txn2
             assert!(txn3_start_ts > txn2_start_ts);
             let commit_ts = txn_store_3.commit().unwrap();
             // Ensure commit timestamp is greater than start timestamp
-            assert!(commit_ts.0 > txn3_start_ts);
+            assert!(commit_ts.raw() > txn3_start_ts);
         }
 
         // Watermark should remain unchanged (still pointing to txn1)
         assert_eq!(
             graph.txn_manager.watermark.load(Ordering::Acquire),
-            txn1.start_ts().0
+            txn1.start_ts().raw()
         );
 
         // Start txn3
         let txn3 = graph.txn_manager().begin_transaction().unwrap();
-        let txn3_start_ts = txn3.start_ts().0;
+        let txn3_start_ts = txn3.start_ts().raw();
         // Ensure txn3 starts after txn2
         assert!(txn3_start_ts > txn2_start_ts);
 
         // Watermark should remain unchanged (still pointing to txn1)
         assert_eq!(
             graph.txn_manager.watermark.load(Ordering::Acquire),
-            txn1.start_ts().0
+            txn1.start_ts().raw()
         );
 
         // Abort txn1
@@ -580,7 +584,7 @@ mod tests {
         // Watermark should be updated to txn2's start timestamp (now the oldest active)
         assert_eq!(
             graph.txn_manager.watermark.load(Ordering::Acquire),
-            txn2.start_ts().0
+            txn2.start_ts().raw()
         );
 
         // Abort txn2
@@ -588,36 +592,36 @@ mod tests {
         // Watermark should be updated to txn3's start timestamp (now the only active)
         assert_eq!(
             graph.txn_manager.watermark.load(Ordering::Acquire),
-            txn3.start_ts().0
+            txn3.start_ts().raw()
         );
 
         // Create and commit txn_store_4
         {
             let txn_store_4 = graph.txn_manager().begin_transaction().unwrap();
-            let txn4_start_ts = txn_store_4.start_ts().0;
+            let txn4_start_ts = txn_store_4.start_ts().raw();
             // Ensure txn4 starts after txn3
             assert!(txn4_start_ts > txn3_start_ts);
             let commit_ts = txn_store_4.commit().unwrap();
             // Ensure commit timestamp is greater than start timestamp
-            assert!(commit_ts.0 > txn4_start_ts);
+            assert!(commit_ts.raw() > txn4_start_ts);
         }
 
         // Watermark should remain unchanged (still pointing to txn3)
         assert_eq!(
             graph.txn_manager.watermark.load(Ordering::Acquire),
-            txn3.start_ts().0
+            txn3.start_ts().raw()
         );
 
         // Start txn4
         let txn4 = graph.txn_manager().begin_transaction().unwrap();
-        let txn4_start_ts = txn4.start_ts().0;
+        let txn4_start_ts = txn4.start_ts().raw();
         // Ensure txn4 starts after txn3
         assert!(txn4_start_ts > txn3_start_ts);
 
         // Watermark should remain unchanged (still pointing to txn3)
         assert_eq!(
             graph.txn_manager.watermark.load(Ordering::Acquire),
-            txn3.start_ts().0
+            txn3.start_ts().raw()
         );
 
         // Abort txn3
@@ -625,7 +629,7 @@ mod tests {
         // Watermark should be updated to txn4's start timestamp (now the only active)
         assert_eq!(
             graph.txn_manager.watermark.load(Ordering::Acquire),
-            txn4.start_ts().0
+            txn4.start_ts().raw()
         );
 
         // Abort txn4
@@ -639,13 +643,13 @@ mod tests {
         // Create and commit txn_store_5
         let last_commit_ts = {
             let txn_store_5 = graph.txn_manager().begin_transaction().unwrap();
-            let txn5_start_ts = txn_store_5.start_ts().0;
+            let txn5_start_ts = txn_store_5.start_ts().raw();
             // Ensure txn5 starts after previous transactions
             assert!(txn5_start_ts > current_watermark);
             let commit_ts = txn_store_5.commit().unwrap();
             // Ensure commit timestamp is greater than start timestamp
-            assert!(commit_ts.0 > txn5_start_ts);
-            commit_ts.0
+            assert!(commit_ts.raw() > txn5_start_ts);
+            commit_ts.raw()
         };
 
         // The watermark should be updated because there are no active transactions
@@ -655,14 +659,14 @@ mod tests {
 
         // Start txn5
         let txn5 = graph.txn_manager().begin_transaction().unwrap();
-        let txn5_start_ts = txn5.start_ts().0;
+        let txn5_start_ts = txn5.start_ts().raw();
         // Ensure txn5 starts after the last commit
         assert!(txn5_start_ts > last_commit_ts);
 
         // Watermark should now be set to txn5's start timestamp
         assert_eq!(
             graph.txn_manager.watermark.load(Ordering::Acquire),
-            txn5.start_ts().0
+            txn5.start_ts().raw()
         );
 
         // Abort txn5

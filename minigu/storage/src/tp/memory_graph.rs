@@ -81,7 +81,7 @@ impl VersionedVertex {
             chain: Arc::new(VersionChain {
                 current: RwLock::new(CurrentVersion {
                     data: initial,
-                    commit_ts: Timestamp(0), // Initial commit timestamp set to 0
+                    commit_ts: Timestamp::with_ts(0), // Initial commit timestamp set to 0
                 }),
                 undo_ptr: RwLock::new(Weak::new()),
             }),
@@ -93,7 +93,7 @@ impl VersionedVertex {
     }
 
     pub fn with_txn_id(initial: Vertex, txn_id: Timestamp) -> Self {
-        debug_assert!(txn_id.0 > Timestamp::TXN_ID_START);
+        debug_assert!(txn_id.raw() > Timestamp::TXN_ID_START);
         Self {
             chain: Arc::new(VersionChain {
                 current: RwLock::new(CurrentVersion {
@@ -198,7 +198,7 @@ impl VersionedEdge {
             chain: Arc::new(VersionChain {
                 current: RwLock::new(CurrentVersion {
                     data: initial,
-                    commit_ts: Timestamp(0), // Initial commit timestamp set to 0
+                    commit_ts: Timestamp::with_ts(0), // Initial commit timestamp set to 0
                 }),
                 undo_ptr: RwLock::new(Weak::new()),
             }),
@@ -210,7 +210,7 @@ impl VersionedEdge {
     }
 
     pub fn with_modified_ts(initial: Edge, txn_id: Timestamp) -> Self {
-        debug_assert!(txn_id.0 > Timestamp::TXN_ID_START);
+        debug_assert!(txn_id.raw() > Timestamp::TXN_ID_START);
         Self {
             chain: Arc::new(VersionChain {
                 current: RwLock::new(CurrentVersion {
@@ -651,7 +651,7 @@ impl MemoryGraph {
         let next_ptr = entry.chain.undo_ptr.read().unwrap().clone();
         let mut undo_buffer = txn.undo_buffer.write().unwrap();
         let undo_entry = if current.commit_ts == txn.txn_id() {
-            Arc::new(UndoEntry::new(delta, Timestamp(0), next_ptr))
+            Arc::new(UndoEntry::new(delta, Timestamp::with_ts(0), next_ptr))
         } else {
             Arc::new(UndoEntry::new(delta, current.commit_ts, next_ptr))
         };

@@ -5,10 +5,12 @@
 
 use std::sync::Weak;
 
+pub mod error;
 pub mod manager;
 pub mod timestamp;
 pub mod transaction;
 
+pub use error::TimestampError;
 // Re-export commonly used types
 pub use manager::GraphTxnManager;
 pub use timestamp::{
