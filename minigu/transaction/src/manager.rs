@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use crate::Timestamp;
 use crate::transaction::Transaction;
 
 /// Trait for transaction managers supporting MVCC operations.
@@ -15,7 +16,7 @@ use crate::transaction::Transaction;
 /// accessible via `global_timestamp_generator()` and `global_transaction_id_generator()`.
 pub trait GraphTxnManager {
     /// The transaction type that this manager handles
-    type Transaction: Transaction;
+    type Transaction: Transaction + Send + Sync;
     /// The graph/storage context type
     type GraphContext;
     /// The error type for operations
@@ -35,4 +36,8 @@ pub trait GraphTxnManager {
     /// This typically includes removing old transaction records and cleaning up
     /// version chains that are no longer visible to any active transaction.
     fn garbage_collect(&self, graph: &Self::GraphContext) -> Result<(), Self::Error>;
+
+    /// Get the low watermark of the transaction manager.
+    /// The low watermark is the minimum start timestamp of the active transactions.
+    fn low_watermark(&self) -> Timestamp;
 }

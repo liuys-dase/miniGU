@@ -31,7 +31,7 @@ pub struct MemTxnManager {
     pub(super) latest_commit_ts: AtomicU64,
     /// The watermark is the minimum start timestamp of the active transactions.
     /// If there is no active transaction, the watermark is the latest commit timestamp.
-    pub(super) watermark: AtomicU64,
+    watermark: AtomicU64,
     /// Last garbage collection timestamp
     last_gc_ts: AtomicU64,
 }
@@ -85,7 +85,7 @@ impl GraphTxnManager for MemTxnManager {
     }
 
     fn garbage_collect(&self, graph: &Self::GraphContext) -> Result<(), Self::Error> {
-        let min_read_ts = self.watermark.load(Ordering::Acquire);
+        let min_read_ts = self.low_watermark().raw();
         let mut expired_txns = Vec::new();
         let mut expired_undo_entries = Vec::new();
 
@@ -118,6 +118,10 @@ impl GraphTxnManager for MemTxnManager {
         self.last_gc_ts.store(current_ts.raw(), Ordering::SeqCst);
 
         Ok(())
+    }
+
+    fn low_watermark(&self) -> Timestamp {
+        Timestamp::with_ts(self.watermark.load(Ordering::Acquire))
     }
 }
 
@@ -218,7 +222,7 @@ impl MemTxnManager {
             .front()
             .map(|v| v.value().start_ts().raw())
             .unwrap_or(self.latest_commit_ts.load(Ordering::Acquire))
-            .max(self.watermark.load(Ordering::Acquire));
+            .max(self.low_watermark().raw());
         self.watermark.store(min_ts, Ordering::SeqCst);
     }
 

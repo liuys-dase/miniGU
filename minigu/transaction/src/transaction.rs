@@ -19,7 +19,7 @@ pub enum IsolationLevel {
 /// Trait defining the core operations that all transactions must support.
 /// This trait abstracts the fundamental transaction behavior across different
 /// storage implementations.
-pub trait Transaction {
+pub trait Transaction: Send + Sync {
     /// The error type for transaction operations
     type Error;
 

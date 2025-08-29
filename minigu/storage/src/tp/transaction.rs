@@ -480,10 +480,7 @@ mod tests {
         let txn0_start_ts = txn0.start_ts().raw();
 
         // The watermark should be set to the start timestamp of the first active transaction
-        assert_eq!(
-            graph.txn_manager.watermark.load(Ordering::Acquire),
-            txn0_start_ts
-        );
+        assert_eq!(graph.txn_manager.low_watermark().raw(), txn0_start_ts);
 
         {
             let txn_store_1 = graph.txn_manager().begin_transaction().unwrap();
@@ -496,10 +493,7 @@ mod tests {
         }
 
         // Watermark should remain unchanged since txn0 is still active
-        assert_eq!(
-            graph.txn_manager.watermark.load(Ordering::Acquire),
-            txn0.start_ts.raw()
-        );
+        assert_eq!(graph.txn_manager.low_watermark().raw(), txn0_start_ts);
 
         // Start txn1
         let txn1 = graph.txn_manager().begin_transaction().unwrap();
@@ -508,10 +502,7 @@ mod tests {
         assert!(txn1_start_ts > txn0_start_ts);
 
         // Watermark should remain unchanged (still pointing to txn0)
-        assert_eq!(
-            graph.txn_manager.watermark.load(Ordering::Acquire),
-            txn0.start_ts.raw()
-        );
+        assert_eq!(graph.txn_manager.low_watermark().raw(), txn0_start_ts);
 
         // Create and commit txn_store_2
         {
@@ -525,10 +516,7 @@ mod tests {
         }
 
         // Watermark should remain unchanged
-        assert_eq!(
-            graph.txn_manager.watermark.load(Ordering::Acquire),
-            txn0.start_ts.raw()
-        );
+        assert_eq!(graph.txn_manager.low_watermark().raw(), txn0_start_ts);
 
         // Start txn2
         let txn2 = graph.txn_manager().begin_transaction().unwrap();
@@ -537,18 +525,12 @@ mod tests {
         assert!(txn2_start_ts > txn1_start_ts);
 
         // Watermark should remain unchanged (still pointing to txn0)
-        assert_eq!(
-            graph.txn_manager.watermark.load(Ordering::Acquire),
-            txn0.start_ts.raw()
-        );
+        assert_eq!(graph.txn_manager.low_watermark().raw(), txn0_start_ts);
 
         // Abort txn0
         txn0.abort().unwrap();
         // Watermark should update to start_ts of txn1 (now the oldest active transaction)
-        assert_eq!(
-            graph.txn_manager.watermark.load(Ordering::Acquire),
-            txn1.start_ts().raw()
-        );
+        assert_eq!(graph.txn_manager.low_watermark().raw(), txn1_start_ts);
 
         // Create and commit txn_store_3
         {
@@ -562,10 +544,7 @@ mod tests {
         }
 
         // Watermark should remain unchanged (still pointing to txn1)
-        assert_eq!(
-            graph.txn_manager.watermark.load(Ordering::Acquire),
-            txn1.start_ts().raw()
-        );
+        assert_eq!(graph.txn_manager.low_watermark().raw(), txn1_start_ts);
 
         // Start txn3
         let txn3 = graph.txn_manager().begin_transaction().unwrap();
@@ -574,26 +553,17 @@ mod tests {
         assert!(txn3_start_ts > txn2_start_ts);
 
         // Watermark should remain unchanged (still pointing to txn1)
-        assert_eq!(
-            graph.txn_manager.watermark.load(Ordering::Acquire),
-            txn1.start_ts().raw()
-        );
+        assert_eq!(graph.txn_manager.low_watermark().raw(), txn1_start_ts);
 
         // Abort txn1
         txn1.abort().unwrap();
         // Watermark should be updated to txn2's start timestamp (now the oldest active)
-        assert_eq!(
-            graph.txn_manager.watermark.load(Ordering::Acquire),
-            txn2.start_ts().raw()
-        );
+        assert_eq!(graph.txn_manager.low_watermark().raw(), txn2_start_ts);
 
         // Abort txn2
         txn2.abort().unwrap();
         // Watermark should be updated to txn3's start timestamp (now the only active)
-        assert_eq!(
-            graph.txn_manager.watermark.load(Ordering::Acquire),
-            txn3.start_ts().raw()
-        );
+        assert_eq!(graph.txn_manager.low_watermark().raw(), txn3_start_ts);
 
         // Create and commit txn_store_4
         {
@@ -607,10 +577,7 @@ mod tests {
         }
 
         // Watermark should remain unchanged (still pointing to txn3)
-        assert_eq!(
-            graph.txn_manager.watermark.load(Ordering::Acquire),
-            txn3.start_ts().raw()
-        );
+        assert_eq!(graph.txn_manager.low_watermark().raw(), txn3_start_ts);
 
         // Start txn4
         let txn4 = graph.txn_manager().begin_transaction().unwrap();
@@ -619,23 +586,17 @@ mod tests {
         assert!(txn4_start_ts > txn3_start_ts);
 
         // Watermark should remain unchanged (still pointing to txn3)
-        assert_eq!(
-            graph.txn_manager.watermark.load(Ordering::Acquire),
-            txn3.start_ts().raw()
-        );
+        assert_eq!(graph.txn_manager.low_watermark().raw(), txn3_start_ts);
 
         // Abort txn3
         txn3.abort().unwrap();
         // Watermark should be updated to txn4's start timestamp (now the only active)
-        assert_eq!(
-            graph.txn_manager.watermark.load(Ordering::Acquire),
-            txn4.start_ts().raw()
-        );
+        assert_eq!(graph.txn_manager.low_watermark().raw(), txn4_start_ts);
 
         // Abort txn4
         txn4.abort().unwrap();
         // After all transactions are aborted, watermark should be updated
-        let current_watermark = graph.txn_manager.watermark.load(Ordering::Acquire);
+        let current_watermark = graph.txn_manager.low_watermark().raw();
         let latest_commit_ts = graph.txn_manager.latest_commit_ts.load(Ordering::Acquire);
         // Watermark should be at least the latest commit timestamp
         assert!(current_watermark >= latest_commit_ts);
@@ -653,7 +614,7 @@ mod tests {
         };
 
         // The watermark should be updated because there are no active transactions
-        let final_watermark = graph.txn_manager.watermark.load(Ordering::Acquire);
+        let final_watermark = graph.txn_manager.low_watermark().raw();
         // Watermark should be at least the latest commit timestamp
         assert!(final_watermark >= last_commit_ts);
 
@@ -664,15 +625,12 @@ mod tests {
         assert!(txn5_start_ts > last_commit_ts);
 
         // Watermark should now be set to txn5's start timestamp
-        assert_eq!(
-            graph.txn_manager.watermark.load(Ordering::Acquire),
-            txn5.start_ts().raw()
-        );
+        assert_eq!(graph.txn_manager.low_watermark().raw(), txn5_start_ts);
 
         // Abort txn5
         txn5.abort().unwrap();
         // After all transactions are aborted, watermark should be updated
-        let final_watermark_after_all_aborted = graph.txn_manager.watermark.load(Ordering::Acquire);
+        let final_watermark_after_all_aborted = graph.txn_manager.low_watermark().raw();
         // Watermark should be at least the latest commit timestamp
         assert!(final_watermark_after_all_aborted >= last_commit_ts);
     }
