@@ -4,16 +4,16 @@ use crossbeam_skiplist::SkipSet;
 use dashmap::DashMap;
 use minigu_common::types::{EdgeId, VertexId};
 use minigu_common::value::ScalarValue;
-use minigu_transaction::Transaction;
+use minigu_transaction::{IsolationLevel, Timestamp, Transaction};
 
 use super::checkpoint::{CheckpointManager, CheckpointManagerConfig};
 use super::transaction::{MemTransaction, UndoEntry, UndoPtr};
 use super::txn_manager::MemTxnManager;
 use crate::common::model::edge::{Edge, Neighbor};
 use crate::common::model::vertex::Vertex;
-use crate::common::transaction::{DeltaOp, IsolationLevel, SetPropsOp, Timestamp};
 use crate::common::wal::StorageWal;
 use crate::common::wal::graph_wal::{Operation, RedoEntry, WalManager, WalManagerConfig};
+use crate::common::{DeltaOp, SetPropsOp};
 use crate::error::{
     EdgeNotFoundError, StorageError, StorageResult, TransactionError, VertexNotFoundError,
 };

@@ -25,10 +25,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use crc32fast::Hasher;
+use minigu_transaction::{IsolationLevel, Timestamp};
 use serde::{Deserialize, Serialize};
 
 use super::{LogRecord, StorageWal};
-use crate::common::transaction::{DeltaOp, IsolationLevel, Timestamp};
+use crate::common::DeltaOp;
 use crate::error::{StorageError, StorageResult, WalError};
 
 const HEADER_SIZE: usize = 8; // 4 bytes length + 4 bytes crc32
@@ -380,7 +381,7 @@ mod tests {
     use serial_test::serial;
 
     use super::*;
-    use crate::common::transaction::{DeltaOp, SetPropsOp, Timestamp};
+    use crate::common::{DeltaOp, SetPropsOp};
 
     fn temp_wal_path() -> PathBuf {
         let mut path = std::env::temp_dir();

@@ -5,13 +5,14 @@ use std::sync::{Arc, Mutex, Weak};
 use crossbeam_skiplist::SkipMap;
 use minigu_common::types::{EdgeId, VertexId};
 use minigu_transaction::{
-    GraphTxnManager, Transaction, global_timestamp_generator, global_transaction_id_generator,
+    GraphTxnManager, Timestamp, Transaction, global_timestamp_generator,
+    global_transaction_id_generator,
 };
 
 use super::memory_graph::MemoryGraph;
 use super::transaction::{IsolationLevel, MemTransaction, UndoEntry};
+use crate::common::DeltaOp;
 use crate::common::model::edge::{Edge, Neighbor};
-use crate::common::transaction::{DeltaOp, Timestamp};
 use crate::common::wal::StorageWal;
 use crate::common::wal::graph_wal::{Operation, RedoEntry};
 use crate::error::{StorageError, StorageResult, TransactionError};

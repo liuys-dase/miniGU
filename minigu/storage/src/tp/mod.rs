@@ -6,5 +6,5 @@ pub mod txn_manager;
 
 // Re-export commonly used types for OLTP
 pub use memory_graph::MemoryGraph;
-pub use transaction::{IsolationLevel, MemTransaction};
+pub use transaction::MemTransaction;
 pub use txn_manager::MemTxnManager;

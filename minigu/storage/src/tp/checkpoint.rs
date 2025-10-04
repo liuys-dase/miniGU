@@ -15,13 +15,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crc32fast::Hasher;
 use minigu_common::types::{EdgeId, VertexId};
+use minigu_transaction::Timestamp;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::memory_graph::{AdjacencyContainer, MemoryGraph, VersionedEdge, VersionedVertex};
 use crate::common::model::edge::{Edge, Neighbor};
 use crate::common::model::vertex::Vertex;
-use crate::common::transaction::Timestamp;
 use crate::common::wal::StorageWal;
 use crate::common::wal::graph_wal::WalManagerConfig;
 use crate::error::{CheckpointError, StorageError, StorageResult};

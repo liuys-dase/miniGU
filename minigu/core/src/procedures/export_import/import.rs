@@ -32,8 +32,8 @@ use minigu_common::value::ScalarValue;
 use minigu_context::graph::{GraphContainer, GraphStorage};
 use minigu_context::procedure::Procedure;
 use minigu_storage::common::{Edge, PropertyRecord, Vertex};
-use minigu_storage::tp::{IsolationLevel, MemoryGraph};
-use minigu_transaction::{GraphTxnManager, Transaction};
+use minigu_storage::tp::MemoryGraph;
+use minigu_transaction::{GraphTxnManager, IsolationLevel, Transaction};
 
 use crate::procedures::export_import::{Manifest, Result};
 

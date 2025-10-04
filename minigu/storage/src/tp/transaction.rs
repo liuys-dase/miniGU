@@ -7,11 +7,12 @@ use minigu_transaction::{
     GraphTxnManager, Transaction, UndoEntry as GenericUndoEntry, UndoPtr as GenericUndoPtr,
     global_timestamp_generator,
 };
+pub use minigu_transaction::{IsolationLevel, Timestamp};
 
 use super::memory_graph::MemoryGraph;
-pub use crate::common::transaction::{DeltaOp, IsolationLevel, SetPropsOp, Timestamp};
 use crate::common::wal::StorageWal;
 use crate::common::wal::graph_wal::{Operation, RedoEntry};
+use crate::common::{DeltaOp, SetPropsOp};
 use crate::error::{
     EdgeNotFoundError, StorageError, StorageResult, TransactionError, VertexNotFoundError,
 };
