@@ -328,7 +328,10 @@ mod tests {
     fn mock_graph() -> Arc<MemoryGraph> {
         let graph = MemoryGraph::with_config_fresh(mock_checkpoint_config(), mock_wal_config());
 
-        let txn = graph.txn_manager().begin_transaction().unwrap();
+        let txn = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
 
         let alice = create_vertex(1, PERSON, vec![
             ScalarValue::String(Some("Alice".to_string())),

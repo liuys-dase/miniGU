@@ -55,8 +55,11 @@ impl GraphTxnManager for MemTxnManager {
     type GraphContext = MemoryGraph;
     type Transaction = MemTransaction;
 
-    fn begin_transaction(&self) -> Result<Arc<Self::Transaction>, Self::Error> {
-        self.begin_transaction_at(None, None, IsolationLevel::Serializable, false)
+    fn begin_transaction(
+        &self,
+        isolation_level: IsolationLevel,
+    ) -> Result<Arc<Self::Transaction>, Self::Error> {
+        self.begin_transaction_at(None, None, isolation_level, false)
     }
 
     fn finish_transaction(&self, txn: &Self::Transaction) -> Result<(), Self::Error> {

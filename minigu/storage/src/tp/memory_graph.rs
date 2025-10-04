@@ -910,7 +910,7 @@ pub mod tests {
 
     use minigu_common::types::LabelId;
     use minigu_common::value::ScalarValue;
-    use minigu_transaction::{GraphTxnManager, Transaction};
+    use minigu_transaction::{GraphTxnManager, IsolationLevel, Transaction};
     use {Edge, Vertex};
 
     use super::*;
@@ -1012,7 +1012,10 @@ pub mod tests {
         let cleaner = Cleaner::new(&checkpoint_config, &wal_config);
         let graph = MemoryGraph::with_config_recovered(mock_checkpoint_config(), mock_wal_config());
 
-        let txn = graph.txn_manager().begin_transaction().unwrap();
+        let txn = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
 
         let alice = create_vertex(1, PERSON, vec![
             ScalarValue::String(Some("Alice".to_string())),
@@ -1091,13 +1094,19 @@ pub mod tests {
     #[test]
     fn test_basic_commit_flow() {
         let (graph, _cleaner) = mock_graph();
-        let txn1 = graph.txn_manager().begin_transaction().unwrap();
+        let txn1 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
 
         let v1 = create_vertex_eve();
         let vid1 = graph.create_vertex(&txn1, v1.clone()).unwrap();
         let _ = txn1.commit().unwrap();
 
-        let txn2 = graph.txn_manager().begin_transaction().unwrap();
+        let txn2 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
         let read_v1 = graph.get_vertex(&txn2, vid1).unwrap();
         assert_eq!(read_v1, v1);
         assert!(txn2.commit().is_ok());
@@ -1107,12 +1116,18 @@ pub mod tests {
     fn test_mvcc_version_chain() {
         let (graph, _cleaner) = mock_graph();
 
-        let txn1 = graph.txn_manager().begin_transaction().unwrap();
+        let txn1 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
         let v1 = create_vertex_eve();
         let vid1 = graph.create_vertex(&txn1, v1).unwrap();
         assert!(txn1.commit().is_ok());
 
-        let txn2 = graph.txn_manager().begin_transaction().unwrap();
+        let txn2 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
         let old_v1: Vertex = graph.get_vertex(&txn2, vid1).unwrap();
         assert_eq!(old_v1.properties()[1], ScalarValue::Int32(Some(24)));
         assert!(
@@ -1122,7 +1137,10 @@ pub mod tests {
         );
         assert!(txn2.commit().is_ok());
 
-        let txn3 = graph.txn_manager().begin_transaction().unwrap();
+        let txn3 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
         let new_v1: Vertex = graph.get_vertex(&txn3, vid1).unwrap();
         assert_eq!(new_v1.properties()[1], ScalarValue::Int32(Some(25)));
     }
@@ -1131,16 +1149,25 @@ pub mod tests {
     fn test_delete_with_tombstone() {
         let (graph, _cleaner) = mock_graph();
 
-        let txn1 = graph.txn_manager().begin_transaction().unwrap();
+        let txn1 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
         let v1 = create_vertex_eve();
         let vid1 = graph.create_vertex(&txn1, v1).unwrap();
         assert!(txn1.commit().is_ok());
 
-        let txn2 = graph.txn_manager().begin_transaction().unwrap();
+        let txn2 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
         graph.delete_vertex(&txn2, vid1).unwrap();
         assert!(txn2.commit().is_ok());
 
-        let txn3 = graph.txn_manager().begin_transaction().unwrap();
+        let txn3 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
         assert!(graph.get_vertex(&txn3, vid1).is_err());
     }
 
@@ -1148,14 +1175,20 @@ pub mod tests {
     fn test_adjacency_versioning() {
         let (graph, _cleaner) = mock_graph();
 
-        let txn1 = graph.txn_manager().begin_transaction().unwrap();
+        let txn1 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
         let v1 = create_vertex_eve();
 
         let vid1 = graph.create_vertex(&txn1, v1).unwrap();
         assert!(txn1.commit().is_ok());
 
         // Create an edge from alice to eve
-        let txn2 = graph.txn_manager().begin_transaction().unwrap();
+        let txn2 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
         let e1 = create_edge_alice_to_eve();
         let eid1 = graph.create_edge(&txn2, e1).unwrap();
         let v_alice = graph.get_vertex(&txn2, 1).unwrap();
@@ -1163,7 +1196,10 @@ pub mod tests {
         assert!(txn2.commit().is_ok());
 
         // Check the edge from alice to eve
-        let txn3 = graph.txn_manager().begin_transaction().unwrap();
+        let txn3 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
         let e1 = graph.get_edge(&txn3, eid1).unwrap();
         assert!(e1.src_id() == vid_alice && e1.dst_id() == vid1);
 
@@ -1200,11 +1236,17 @@ pub mod tests {
         let _ = txn3.abort();
 
         // Delete the edge from alice to eve
-        let txn4 = graph.txn_manager().begin_transaction().unwrap();
+        let txn4 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
         graph.delete_edge(&txn4, eid1).unwrap();
         assert!(txn4.commit().is_ok());
 
-        let txn5 = graph.txn_manager().begin_transaction().unwrap();
+        let txn5 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
         {
             // Check the adjacency list of alice
             let iter = txn5.iter_adjacency(vid_alice);
@@ -1221,11 +1263,17 @@ pub mod tests {
     fn test_rollback_consistency() {
         let (graph, _cleaner) = mock_graph();
 
-        let txn = graph.txn_manager().begin_transaction().unwrap();
+        let txn = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
         let vid1 = graph.create_vertex(&txn, create_vertex_eve()).unwrap();
         let _ = txn.abort();
 
-        let txn_check = graph.txn_manager().begin_transaction().unwrap();
+        let txn_check = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
         assert!(graph.get_vertex(&txn_check, vid1).is_err());
     }
 
@@ -1233,18 +1281,27 @@ pub mod tests {
     fn test_property_update_flow() {
         let (graph, _cleaner) = mock_graph();
 
-        let txn1 = graph.txn_manager().begin_transaction().unwrap();
+        let txn1 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
         let v1 = create_vertex_eve();
         let vid1 = graph.create_vertex(&txn1, v1).unwrap();
         assert!(txn1.commit().is_ok());
 
-        let txn2 = graph.txn_manager().begin_transaction().unwrap();
+        let txn2 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
         graph
             .set_vertex_property(&txn2, vid1, vec![0], vec![ScalarValue::Int32(Some(25))])
             .unwrap();
         assert!(txn2.commit().is_ok());
 
-        let txn3 = graph.txn_manager().begin_transaction().unwrap();
+        let txn3 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
         let v = graph.get_vertex(&txn3, vid1).unwrap();
         assert_eq!(v.properties()[0], ScalarValue::Int32(Some(25)));
     }
@@ -1253,14 +1310,20 @@ pub mod tests {
     fn test_vertex_iterator() {
         let (graph, _cleaner) = mock_graph();
 
-        let txn1 = graph.txn_manager().begin_transaction().unwrap();
+        let txn1 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
         let v1 = create_vertex_eve();
         let v2 = create_vertex_frank();
         let _ = graph.create_vertex(&txn1, v1).unwrap();
         let _ = graph.create_vertex(&txn1, v2).unwrap();
         assert!(txn1.commit().is_ok());
 
-        let txn2 = graph.txn_manager().begin_transaction().unwrap();
+        let txn2 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
         {
             let iter1 =
                 txn2.iter_vertices()
@@ -1296,7 +1359,10 @@ pub mod tests {
     fn test_edge_iterator() {
         let (graph, _cleaner) = mock_graph();
 
-        let txn1 = graph.txn_manager().begin_transaction().unwrap();
+        let txn1 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
         let v1 = create_vertex_eve();
         let v2 = create_vertex_frank();
         let _ = graph.create_vertex(&txn1, v1).unwrap();
@@ -1305,7 +1371,10 @@ pub mod tests {
         let _ = graph.create_edge(&txn1, e1).unwrap();
         assert!(txn1.commit().is_ok());
 
-        let txn2 = graph.txn_manager().begin_transaction().unwrap();
+        let txn2 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
         {
             let iter1 = txn2
                 .iter_edges()
@@ -1346,7 +1415,10 @@ pub mod tests {
     fn test_adj_iterator() {
         let (graph, _cleaner) = mock_graph();
 
-        let txn1 = graph.txn_manager().begin_transaction().unwrap();
+        let txn1 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
         let v1 = create_vertex_eve();
         let v2 = create_vertex_frank();
         let vid1 = graph.create_vertex(&txn1, v1).unwrap();
@@ -1355,7 +1427,10 @@ pub mod tests {
         let _ = graph.create_edge(&txn1, e1).unwrap();
         assert!(txn1.commit().is_ok());
 
-        let txn2 = graph.txn_manager().begin_transaction().unwrap();
+        let txn2 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
         {
             let iter1 = txn2.iter_adjacency(vid1);
             let mut count = 0;
@@ -1394,12 +1469,18 @@ pub mod tests {
         }
 
         // Delete the edge
-        let txn = graph.txn_manager().begin_transaction().unwrap();
+        let txn = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
         graph.delete_edge(&txn, eid).unwrap();
         assert!(txn.commit().is_ok());
 
         // Commit an empty transaction to update the watermark
-        let txn2 = graph.txn_manager().begin_transaction().unwrap();
+        let txn2 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
         assert!(txn2.commit().is_ok());
 
         // Check before GC
@@ -1489,12 +1570,18 @@ pub mod tests {
         }
 
         // Delete the vertex
-        let txn = graph.txn_manager().begin_transaction().unwrap();
+        let txn = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
         graph.delete_vertex(&txn, vid1).unwrap();
         assert!(txn.commit().is_ok());
 
         // Start a new transaction to update the watermark
-        let txn2 = graph.txn_manager().begin_transaction().unwrap();
+        let txn2 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
         assert!(txn2.commit().is_ok());
 
         // Check before GC
@@ -1536,7 +1623,10 @@ pub mod tests {
             assert!(count == 0);
         }
 
-        let txn3 = graph.txn_manager().begin_transaction().unwrap();
+        let txn3 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
         graph.txn_manager.garbage_collect(&graph).unwrap();
         // Check after GC
         {
@@ -1553,7 +1643,10 @@ pub mod tests {
 
         let vid: u64 = 1;
 
-        let txn1 = graph.txn_manager().begin_transaction().unwrap();
+        let txn1 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
         {
             // Check visible and invisible edges
             let adj = graph.adjacency_list.get(&vid).unwrap();
@@ -1580,7 +1673,10 @@ pub mod tests {
         graph.delete_vertex(&txn1, vid).unwrap();
         assert!(txn1.commit().is_ok());
 
-        let txn2 = graph.txn_manager().begin_transaction().unwrap();
+        let txn2 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
         {
             // Check visible and invisible edges
             let adj = graph.adjacency_list.get(&vid).unwrap();
@@ -1612,9 +1708,15 @@ pub mod tests {
         let (graph, _cleaner) = mock_graph();
 
         let vid: VertexId = 1;
-        let txn1 = graph.txn_manager().begin_transaction().unwrap();
+        let txn1 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
 
-        let txn2 = graph.txn_manager().begin_transaction().unwrap();
+        let txn2 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
         let _ = create_vertex_eve();
         let _ = graph.create_vertex(&txn2, create_vertex_eve()).unwrap();
         let _ = graph
@@ -1635,13 +1737,19 @@ pub mod tests {
         let graph = MemoryGraph::with_config_fresh(checkpoint_config.clone(), wal_config.clone());
 
         // Create and commit a transaction with a vertex
-        let txn1 = graph.txn_manager().begin_transaction().unwrap();
+        let txn1 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
         let v1 = create_vertex_eve();
         let vid1 = graph.create_vertex(&txn1, v1.clone()).unwrap();
         assert!(txn1.commit().is_ok());
 
         // Create and commit a transaction with another vertex
-        let txn2 = graph.txn_manager().begin_transaction().unwrap();
+        let txn2 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
         let v2 = create_vertex_frank();
         let vid2 = graph.create_vertex(&txn2, v2.clone()).unwrap();
 
@@ -1657,7 +1765,10 @@ pub mod tests {
         assert!(txn2.commit().is_ok());
 
         // Verify the graph state before recovery
-        let txn_verify = graph.txn_manager().begin_transaction().unwrap();
+        let txn_verify = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
         assert_eq!(graph.get_vertex(&txn_verify, vid1).unwrap(), v1);
         assert_eq!(graph.get_vertex(&txn_verify, vid2).unwrap(), v2);
         assert_eq!(graph.get_edge(&txn_verify, eid1).unwrap().src_id(), vid1);
@@ -1672,7 +1783,10 @@ pub mod tests {
         assert!(new_graph.recover_from_wal().is_ok());
 
         // Verify the graph state after recovery
-        let txn_after = new_graph.txn_manager().begin_transaction().unwrap();
+        let txn_after = new_graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
         assert_eq!(new_graph.get_vertex(&txn_after, vid1).unwrap(), v1);
         assert_eq!(new_graph.get_vertex(&txn_after, vid2).unwrap(), v2);
         assert_eq!(new_graph.get_edge(&txn_after, eid1).unwrap().src_id(), vid1);
@@ -1689,7 +1803,10 @@ pub mod tests {
         let graph = MemoryGraph::with_config_fresh(checkpoint_config.clone(), wal_config.clone());
 
         // Create initial data (before checkpoint)
-        let txn1 = graph.txn_manager().begin_transaction().unwrap();
+        let txn1 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
         let vertex1 = Vertex::new(
             1,
             LabelId::new(1).unwrap(),
@@ -1715,7 +1832,10 @@ pub mod tests {
         assert_eq!(entries.len(), 0); // Should be empty as we truncate the WAL
 
         // Create more data (after checkpoint)
-        let txn2 = graph.txn_manager().begin_transaction().unwrap();
+        let txn2 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
         let vertex2 = Vertex::new(
             2,
             LabelId::new(1).unwrap(),
@@ -1745,7 +1865,10 @@ pub mod tests {
         assert_eq!(entries.len(), 3); // Should be still 3, since we didn't truncate the WAL
 
         // Verify the recovered graph has both vertices
-        let txn = recovered_graph.txn_manager().begin_transaction().unwrap();
+        let txn = recovered_graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
         let recovered_vertex1 = recovered_graph.get_vertex(&txn, 1).unwrap();
         let recovered_vertex2 = recovered_graph.get_vertex(&txn, 2).unwrap();
 

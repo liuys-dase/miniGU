@@ -5,8 +5,8 @@
 
 use std::sync::Arc;
 
-use crate::Timestamp;
 use crate::transaction::Transaction;
+use crate::{IsolationLevel, Timestamp};
 
 /// Trait for transaction managers supporting MVCC operations.
 /// This trait abstracts the core functionality needed for managing transactions
@@ -25,7 +25,10 @@ pub trait GraphTxnManager {
     /// Begin a new transaction and return it.
     /// This creates a new transaction, adds it to the active transaction set and updates
     /// watermarks.
-    fn begin_transaction(&self) -> Result<Arc<Self::Transaction>, Self::Error>;
+    fn begin_transaction(
+        &self,
+        isolation_level: IsolationLevel,
+    ) -> Result<Arc<Self::Transaction>, Self::Error>;
 
     /// Unregister a transaction when it completes (commits or aborts).
     /// This removes the transaction from active set, updates watermarks,

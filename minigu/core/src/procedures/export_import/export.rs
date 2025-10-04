@@ -179,7 +179,9 @@ pub(crate) fn export<P: AsRef<Path>>(
     manifest_rel_path: P, // relative path
     graph_type: Arc<dyn GraphTypeProvider>,
 ) -> Result<()> {
-    let txn = graph.txn_manager().begin_transaction()?;
+    let txn = graph
+        .txn_manager()
+        .begin_transaction(IsolationLevel::Serializable)?;
 
     // 1. Prepare output paths
     let dir = dir.as_ref();

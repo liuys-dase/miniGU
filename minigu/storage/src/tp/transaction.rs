@@ -465,7 +465,7 @@ impl Drop for MemTransaction {
 
 #[cfg(test)]
 mod tests {
-    use minigu_transaction::GraphTxnManager;
+    use minigu_transaction::{GraphTxnManager, IsolationLevel};
 
     use super::*;
     use crate::tp::memory_graph;
@@ -476,14 +476,20 @@ mod tests {
         let _base_commit_ts = graph.txn_manager.latest_commit_ts.load(Ordering::Acquire);
 
         // Start txn0
-        let txn0 = graph.txn_manager().begin_transaction().unwrap();
+        let txn0 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
         let txn0_start_ts = txn0.start_ts().raw();
 
         // The watermark should be set to the start timestamp of the first active transaction
         assert_eq!(graph.txn_manager.low_watermark().raw(), txn0_start_ts);
 
         {
-            let txn_store_1 = graph.txn_manager().begin_transaction().unwrap();
+            let txn_store_1 = graph
+                .txn_manager()
+                .begin_transaction(IsolationLevel::Serializable)
+                .unwrap();
             let txn1_start_ts = txn_store_1.start_ts().raw();
             // Ensure txn1 started after txn0
             assert!(txn1_start_ts > txn0_start_ts);
@@ -496,7 +502,10 @@ mod tests {
         assert_eq!(graph.txn_manager.low_watermark().raw(), txn0_start_ts);
 
         // Start txn1
-        let txn1 = graph.txn_manager().begin_transaction().unwrap();
+        let txn1 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
         let txn1_start_ts = txn1.start_ts().raw();
         // Ensure txn1 starts after txn0
         assert!(txn1_start_ts > txn0_start_ts);
@@ -506,7 +515,10 @@ mod tests {
 
         // Create and commit txn_store_2
         {
-            let txn_store_2 = graph.txn_manager().begin_transaction().unwrap();
+            let txn_store_2 = graph
+                .txn_manager()
+                .begin_transaction(IsolationLevel::Serializable)
+                .unwrap();
             let txn2_start_ts = txn_store_2.start_ts().raw();
             // Ensure txn2 starts after txn1
             assert!(txn2_start_ts > txn1_start_ts);
@@ -519,7 +531,10 @@ mod tests {
         assert_eq!(graph.txn_manager.low_watermark().raw(), txn0_start_ts);
 
         // Start txn2
-        let txn2 = graph.txn_manager().begin_transaction().unwrap();
+        let txn2 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
         let txn2_start_ts = txn2.start_ts().raw();
         // Ensure txn2 starts after txn1
         assert!(txn2_start_ts > txn1_start_ts);
@@ -534,7 +549,10 @@ mod tests {
 
         // Create and commit txn_store_3
         {
-            let txn_store_3 = graph.txn_manager().begin_transaction().unwrap();
+            let txn_store_3 = graph
+                .txn_manager()
+                .begin_transaction(IsolationLevel::Serializable)
+                .unwrap();
             let txn3_start_ts = txn_store_3.start_ts().raw();
             // Ensure txn3 starts after txn2
             assert!(txn3_start_ts > txn2_start_ts);
@@ -547,7 +565,10 @@ mod tests {
         assert_eq!(graph.txn_manager.low_watermark().raw(), txn1_start_ts);
 
         // Start txn3
-        let txn3 = graph.txn_manager().begin_transaction().unwrap();
+        let txn3 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
         let txn3_start_ts = txn3.start_ts().raw();
         // Ensure txn3 starts after txn2
         assert!(txn3_start_ts > txn2_start_ts);
@@ -567,7 +588,10 @@ mod tests {
 
         // Create and commit txn_store_4
         {
-            let txn_store_4 = graph.txn_manager().begin_transaction().unwrap();
+            let txn_store_4 = graph
+                .txn_manager()
+                .begin_transaction(IsolationLevel::Serializable)
+                .unwrap();
             let txn4_start_ts = txn_store_4.start_ts().raw();
             // Ensure txn4 starts after txn3
             assert!(txn4_start_ts > txn3_start_ts);
@@ -580,7 +604,10 @@ mod tests {
         assert_eq!(graph.txn_manager.low_watermark().raw(), txn3_start_ts);
 
         // Start txn4
-        let txn4 = graph.txn_manager().begin_transaction().unwrap();
+        let txn4 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
         let txn4_start_ts = txn4.start_ts().raw();
         // Ensure txn4 starts after txn3
         assert!(txn4_start_ts > txn3_start_ts);
@@ -603,7 +630,10 @@ mod tests {
 
         // Create and commit txn_store_5
         let last_commit_ts = {
-            let txn_store_5 = graph.txn_manager().begin_transaction().unwrap();
+            let txn_store_5 = graph
+                .txn_manager()
+                .begin_transaction(IsolationLevel::Serializable)
+                .unwrap();
             let txn5_start_ts = txn_store_5.start_ts().raw();
             // Ensure txn5 starts after previous transactions
             assert!(txn5_start_ts > current_watermark);
@@ -619,7 +649,10 @@ mod tests {
         assert!(final_watermark >= last_commit_ts);
 
         // Start txn5
-        let txn5 = graph.txn_manager().begin_transaction().unwrap();
+        let txn5 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
         let txn5_start_ts = txn5.start_ts().raw();
         // Ensure txn5 starts after the last commit
         assert!(txn5_start_ts > last_commit_ts);
