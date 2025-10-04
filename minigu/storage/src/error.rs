@@ -18,8 +18,6 @@ pub enum StorageError {
     Wal(#[from] WalError),
     #[error("Checkpoint error: {0}")]
     Checkpoint(#[from] CheckpointError),
-    #[error("Timestamp error: {0}")]
-    Timestamp(#[from] TimestampError),
 }
 
 #[derive(Error, Debug)]
@@ -52,6 +50,8 @@ pub enum TransactionError {
     TransactionAlreadyCommitted(String),
     #[error("Invalid state: {0}")]
     InvalidState(String),
+    #[error("Timestamp error: {0}")]
+    Timestamp(#[from] TimestampError),
 }
 
 #[derive(Error, Debug)]

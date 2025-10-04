@@ -157,22 +157,22 @@ impl MemTxnManager {
         let txn_id = if let Some(txn_id) = txn_id {
             global_transaction_id_generator()
                 .update_if_greater(txn_id)
-                .map_err(StorageError::Timestamp)?;
+                .map_err(TransactionError::Timestamp)?;
             txn_id
         } else {
             global_transaction_id_generator()
                 .next()
-                .map_err(StorageError::Timestamp)?
+                .map_err(TransactionError::Timestamp)?
         };
         let start_ts = if let Some(start_ts) = start_ts {
             global_timestamp_generator()
                 .update_if_greater(start_ts)
-                .map_err(StorageError::Timestamp)?;
+                .map_err(TransactionError::Timestamp)?;
             start_ts
         } else {
             global_timestamp_generator()
                 .next()
-                .map_err(StorageError::Timestamp)?
+                .map_err(TransactionError::Timestamp)?
         };
 
         // Acquire the checkpoint lock to prevent new transactions from being created

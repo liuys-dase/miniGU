@@ -208,12 +208,12 @@ impl MemTransaction {
         let commit_ts = if let Some(commit_ts) = commit_ts {
             global_timestamp_generator()
                 .update_if_greater(commit_ts)
-                .map_err(StorageError::Timestamp)?;
+                .map_err(TransactionError::Timestamp)?;
             commit_ts
         } else {
             global_timestamp_generator()
                 .next()
-                .map_err(StorageError::Timestamp)?
+                .map_err(TransactionError::Timestamp)?
         };
 
         // Acquire the global commit lock to enforce serial execution of commits.
