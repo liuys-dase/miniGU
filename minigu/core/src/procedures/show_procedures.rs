@@ -3,6 +3,7 @@ use std::sync::Arc;
 use arrow::array::{ArrayRef, StringArray};
 use itertools::Itertools;
 use minigu_catalog::provider::SchemaProvider;
+use minigu_catalog::txn::ReadView;
 use minigu_common::data_chunk;
 use minigu_common::data_chunk::DataChunk;
 use minigu_common::data_type::{DataField, DataSchema, LogicalType};
@@ -17,10 +18,15 @@ pub fn build_procedure() -> Procedure {
     Procedure::new(vec![], Some(schema.clone()), move |context, args| {
         assert!(args.is_empty());
         let chunk = if let Some(current_schema) = context.current_schema {
-            let names = current_schema.procedure_names();
+            let view = if let Some(txn) = &context.current_txn {
+                ReadView::from_txn(txn.as_ref())
+            } else {
+                ReadView::latest()
+            };
+            let names = current_schema.procedure_names_with(&view);
             let procedures: Vec<_> = names
                 .iter()
-                .map(|name| current_schema.get_procedure(name))
+                .map(|name| current_schema.get_procedure_with(name, &view))
                 .try_collect()?;
             let parameters = procedures.into_iter().map(|p| {
                 p.expect("procedure should exist")
