@@ -1,4 +1,5 @@
 use gql_parser::ast::Procedure;
+use minigu_catalog::txn::ReadView;
 use minigu_context::session::SessionContext;
 
 use crate::binder::Binder;
@@ -24,12 +25,18 @@ impl Planner {
     }
 
     pub fn plan_query(&self, query: &Procedure) -> PlanResult<PlanNode> {
+        let read_view = if let Some(txn) = &self.context.current_txn {
+            ReadView::from_txn(txn.as_ref())
+        } else {
+            ReadView::latest()
+        };
         let binder = Binder::new(
             self.context.database().catalog(),
             self.context.current_schema.clone().map(|s| s as _),
             self.context.home_schema.clone().map(|s| s as _),
             self.context.current_graph.clone(),
             self.context.home_graph.clone(),
+            read_view,
         );
         let bound = binder.bind(query)?;
         let logical_plan = LogicalPlanner::new().create_logical_plan(bound)?;
