@@ -190,6 +190,19 @@ impl<V> CatalogVersionChain<V> {
         self.head.read().unwrap().as_ref().cloned()
     }
 
+    /// Read the last committed node of the chain.
+    #[inline]
+    pub fn last_committed(&self) -> Option<Arc<CatalogVersionNode<V>>> {
+        let mut cur = self.head();
+        while let Some(node) = cur {
+            if node.is_committed() {
+                return Some(node);
+            }
+            cur = node.prev();
+        }
+        None
+    }
+
     /// Append an uncommitted version.
     pub fn append_uncommitted(
         &self,
@@ -240,26 +253,35 @@ impl<V> CatalogVersionChain<V> {
         })
     }
 
-    /// Abort the specified node:
-    /// if it is the current head and uncommitted, physically remove it;
-    /// otherwise keep it conservatively (invisible) and let GC handle it later.
-    pub fn abort_node(&self, target: &Arc<CatalogVersionNode<V>>) -> Result<(), CatalogTxnError> {
-        {
-            let head_cur = self.head();
-            if let Some(head_node) = head_cur {
-                if Arc::ptr_eq(&head_node, target) && !target.is_committed() {
-                    let mut guard = self.head.write().unwrap();
-                    // Double-check to avoid TOCTOU.
-                    if let Some(cur_head) = guard.as_ref() {
-                        if Arc::ptr_eq(cur_head, target) {
-                            *guard = target.prev();
-                            return Ok(());
-                        }
-                    }
-                }
-            }
+    /// Abort (rollback) an uncommitted node that was appended by the current transaction.
+    ///
+    /// Rules:
+    /// - Only remove the node if it is EXACTLY the current chain head AND is UNCOMMITTED.
+    /// - If the node is already committed or is not the head, do nothing (no-op).
+    /// - This function is idempotent and safe to call multiple times.
+    pub fn abort_node(&mut self, node: &Arc<CatalogVersionNode<V>>) -> Result<(), CatalogTxnError> {
+        // Fetch the current head (if any).
+        let Some(head) = self.head() else {
+            // Empty chain: nothing to do.
+            return Ok(());
+        };
+
+        // If the current head is already committed, we cannot remove it. No-op.
+        if head.is_committed() {
+            return Ok(());
         }
-        // Not head or already committed: keep conservatively.
+
+        // Only when the uncommitted head is EXACTLY the same node, we pop it.
+        if Arc::ptr_eq(&head, node) {
+            // Move head back to its predecessor (physically dropping this uncommitted node).
+            // NOTE: `prev()` should return the previous node in the version chain (if any).
+            let new_head = head.prev();
+            // We have acquired a write lock, so it's safe to mutate the inner value.
+            *self.head.get_mut().unwrap() = new_head;
+        }
+
+        // If it's not the head (e.g., older uncommitted node), we do nothing to avoid
+        // removing nodes that are not at the top of the chain. No-op.
         Ok(())
     }
 }
