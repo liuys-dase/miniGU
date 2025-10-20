@@ -1,8 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::sync::{Arc, RwLock};
 
-use minigu_transaction::{Timestamp, Transaction, global_timestamp_generator};
+use minigu_transaction::{Timestamp, Transaction};
 
 use crate::txn::catalog_txn::CatalogTxn;
 use crate::txn::error::CatalogTxnError;
@@ -154,72 +154,176 @@ where
         Ok(chain.append_uncommitted(None, true, txn_id))
     }
 
-    /// Batch commit nodes with conflict validation.
-    /// Note: If any node is not in its corresponding chain or already committed, returns an error.
+    /// Commit a batch of writes created by the *same* transaction, atomically (all-or-nothing).
+    ///
+    /// Two-phase algorithm:
+    ///   (A) Validation pass: check ALL items against the *latest* view under a single write lock.
+    ///       - Ensure no intra-batch duplicates.
+    ///       - For Create: the key must not have an existing committed value (latest).
+    ///       - For Replace: the key must have a committed value and (if base_version is Some) that
+    ///         committed head's version id must match `base_version`.
+    ///       - For Delete: similar to Replace, it must have a committed head, and if base_version
+    ///         is Some, it must match.
+    ///       - Also verify the chain's current uncommitted head (if any) is THIS txn's node (i.e.,
+    ///         we are committing the node we previously appended).
+    ///       If ANY item fails, abort without changing state.
+    ///
+    ///   (B) Apply pass: mark ALL nodes committed with `commit_ts`.
+    ///
+    /// Concurrency:
+    ///   We hold a WRITE lock for the entire function. This keeps validation and application
+    ///   atomic w.r.t. other concurrent committers and prevents interleaving after validation.
+    ///
+    /// Returns error on the first detected conflict; no partial commit can occur.
     pub fn commit_batch(
         &self,
         items: &[TouchedItem<K, V>],
         commit_ts: Timestamp,
     ) -> Result<(), CatalogTxnError> {
-        // Use write lock to serialize commit validation and application per map, ensuring
-        // first-committer-wins under concurrent commits on the same key.
-        let guard = self.inner.read().unwrap();
+        use WriteOp::*;
 
-        // Pre-commit validation: name-level conflict detection using the latest committed view
-        // captured while holding the write lock (no concurrent commit in this map can interleave).
-        let latest_view_start = global_timestamp_generator().current();
-        let latest_view_txn = Timestamp::with_ts(Timestamp::TXN_ID_START);
+        // Acquire a WRITE lock to make the whole (validate+apply) critical section atomic.
+        let mut guard = self
+            .inner
+            .write()
+            .map_err(|_| CatalogTxnError::IllegalState {
+                reason: "poisoned lock in VersionedMap::commit_batch".into(),
+            })?;
 
-        for it in items.iter() {
-            let chain = guard
-                .get(&it.key)
-                .ok_or_else(|| CatalogTxnError::IllegalState {
-                    reason: "commit key not found: (exists node, missing chain)".to_string(),
-                })?;
-
-            // Name-level validation based on the latest committed view
-            let latest = chain.visible_at(latest_view_start, latest_view_txn);
-            match it.op {
-                WriteOp::Create => {
-                    if latest.is_some() {
-                        return Err(CatalogTxnError::WriteConflict {
-                            key: format!("{:?}", &it.key),
-                        });
-                    }
-                }
-                // For Delete/Replace: put/delete preconditions ensure no other txn appended
-                // concurrent uncommitted versions on the same key. Therefore name-level latest
-                // committed view validation is not required here; simply allow commit.
-                WriteOp::Delete | WriteOp::Replace => {}
+        // ---------- (A) VALIDATION PASS (no state change) ----------
+        // 1) prevent intra-batch duplicates that could reorder semantics
+        let mut seen: HashSet<&K> = HashSet::new();
+        for it in items {
+            if !seen.insert(&it.key) {
+                return Err(CatalogTxnError::WriteConflict {
+                    key: format!("duplicate key in the same batch: {:?}", &it.key),
+                });
             }
         }
 
-        // Validation passed, commit each node
-        for it in items.iter() {
+        // 2) validate each item against the latest committed head for its key and the current
+        //    uncommitted head (must be this txn's node).
+        // We'll also collect closures to apply later for clarity (not strictly required).
+        struct Plan<'a, K, V> {
+            key: &'a K,
+            node: &'a Arc<CatalogVersionNode<V>>,
+        }
+        let mut plans: Vec<Plan<K, V>> = Vec::with_capacity(items.len());
+
+        for it in items {
             let chain = guard
                 .get(&it.key)
-                .ok_or_else(|| CatalogTxnError::IllegalState {
-                    reason: "commit key not found during apply: (exists node, missing chain)"
-                        .to_string(),
+                .ok_or_else(|| CatalogTxnError::NotFound {
+                    key: format!("key not found: {:?}", &it.key),
                 })?;
-            chain.commit_node(&it.node, commit_ts)?;
+
+            // Check the current uncommitted head is exactly our node.
+            if let Some(head_uncommitted) = chain.head() {
+                if !Arc::ptr_eq(&head_uncommitted, &it.node) {
+                    return Err(CatalogTxnError::WriteConflict {
+                        key: format!(
+                            "uncommitted head is not from this txn for key {:?}",
+                            &it.key
+                        ),
+                    });
+                }
+            } else {
+                // If there is no uncommitted head, we should only be here for a pure-Delete
+                // expressed as "append tombstone" earlier. If your design always appends
+                // an uncommitted node for any write (incl. delete), then reaching here is illegal.
+                return Err(CatalogTxnError::IllegalState {
+                    reason: format!("no uncommitted head to commit for key {:?}", &it.key),
+                });
+            }
+
+            // Latest committed head info (if any).
+            let committed_head = chain.last_committed();
+
+            // Validate the operation against the committed head.
+            match it.op {
+                Create => {
+                    // For create, the key must NOT have a committed value now.
+                    if committed_head.is_some() {
+                        return Err(CatalogTxnError::AlreadyExists {
+                            key: format!(
+                                "cannot Create: key already exists (committed) {:?}",
+                                &it.key
+                            ),
+                        });
+                    }
+                }
+                Replace => {
+                    // For replace, the key MUST have a committed value.
+                    let Some(_) = committed_head else {
+                        return Err(CatalogTxnError::NotFound {
+                            key: format!(
+                                "cannot Replace: no committed value for key {:?}",
+                                &it.key
+                            ),
+                        });
+                    };
+                }
+                Delete => {
+                    // For delete, the key MUST have a committed value.
+                    let Some(_) = committed_head else {
+                        return Err(CatalogTxnError::NotFound {
+                            key: format!("cannot Delete: no committed value for key {:?}", &it.key),
+                        });
+                    };
+                }
+            }
+
+            plans.push(Plan {
+                key: &it.key,
+                node: &it.node,
+            });
+        }
+
+        // ---------- (B) APPLY PASS (state change) ----------
+        // All validations passed; now mark all uncommitted heads as committed.
+        // This must not fail halfway; if your `mark_committed` can fail,
+        // consider making it infallible under the invariants we just checked.
+        for p in &plans {
+            let chain = guard
+                .get_mut(p.key)
+                .ok_or_else(|| CatalogTxnError::IllegalState {
+                    reason: format!("chain not found for key {:?}", p.key),
+                })?;
+            chain
+                .commit_node(p.node, commit_ts)
+                .map_err(|e| CatalogTxnError::IllegalState {
+                    reason: format!("commit apply failed for key {:?}: {}", p.key, e),
+                })?;
         }
         Ok(())
     }
 
-    /// Batch rollback nodes.
-    /// If the node is the head and uncommitted, it will be physically removed; otherwise, it
-    /// remains for safety.
+    /// Batch rollback nodes created by the same transaction.
+    ///
+    /// Semantics:
+    /// - If the node is the current head AND is UNCOMMITTED, we physically remove it by moving the
+    ///   head pointer to its predecessor.
+    /// - Otherwise (already committed or not the head), we do nothing for safety (no-op).
+    /// - Items are processed in reverse append order to maximize the chance that older uncommitted
+    ///   nodes eventually become the head and can be removed.
     pub fn abort_batch(&self, items: &[TouchedItem<K, V>]) -> Result<(), CatalogTxnError> {
-        let guard = self.inner.read().unwrap();
-        // Abort in reverse append order so that we always try to remove the current head first,
-        // then older nodes become head and can be removed subsequently.
+        // Use a WRITE lock because we potentially mutate chains (remove head nodes).
+        let mut guard = self
+            .inner
+            .write()
+            .map_err(|_| CatalogTxnError::IllegalState {
+                reason: "poisoned lock in VersionedMap::abort_batch".into(),
+            })?;
+
+        // Process in reverse order so that the most recently appended nodes are removed first.
         for it in items.iter().rev() {
             let chain = guard
-                .get(&it.key)
+                .get_mut(&it.key)
                 .ok_or_else(|| CatalogTxnError::IllegalState {
                     reason: "abort key not found: (exists node, missing chain)".to_string(),
                 })?;
+
+            // Best-effort rollback of this node; no-op if it's not removable under the rules.
             chain.abort_node(&it.node)?;
         }
         Ok(())
