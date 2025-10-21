@@ -26,9 +26,10 @@ fn decode_commit_ts(raw: u64) -> Option<Timestamp> {
     }
 }
 
-/// Abstract touched set that supports batch commit/abort.
+/// Unified abstraction of "the containers touched by this transaction" - two-phase interface.
 trait TxnTouchedSet: Send + Sync {
-    fn commit(&self, commit_ts: Timestamp) -> CatalogTxnResult<()>;
+    fn validate(&self) -> CatalogTxnResult<()>;
+    fn apply(&self, commit_ts: Timestamp) -> CatalogTxnResult<()>;
     fn abort(&self) -> CatalogTxnResult<()>;
 }
 
@@ -47,11 +48,19 @@ where
     K: Eq + Hash + Clone + Send + Sync + 'static + std::fmt::Debug,
     V: Send + Sync + 'static,
 {
-    fn commit(&self, commit_ts: Timestamp) -> CatalogTxnResult<()> {
+    fn validate(&self) -> CatalogTxnResult<()> {
+        if let Some(map) = self.map.upgrade() {
+            let _ = map.validate_batch(&self.items)?;
+            Ok(())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn apply(&self, commit_ts: Timestamp) -> CatalogTxnResult<()> {
         if let Some(map) = self.map.upgrade() {
             map.commit_batch(&self.items, commit_ts)
         } else {
-            // The map has been dropped; treat as no-op.
             Ok(())
         }
     }
@@ -71,9 +80,10 @@ pub struct CatalogTxn {
     start_ts: Timestamp,
     commit_ts_raw: AtomicU64, // 0 means not committed yet.
     isolation: IsolationLevel,
-    touched: Mutex<Vec<Box<dyn TxnTouchedSet>>>, // Record the touched sets for batch commit/abort.
+    touched: Mutex<Vec<Box<dyn TxnTouchedSet>>>, // Record the touched containers.
     hooks: Mutex<Vec<Box<dyn TxnHook>>>,         // Record the hooks for pre-commit validation.
     mgr: Weak<CatalogTxnManagerInner>,
+    op_mutex: Mutex<()>, // commit/abort mutex.
 }
 
 impl CatalogTxn {
@@ -91,6 +101,7 @@ impl CatalogTxn {
             touched: Mutex::new(Vec::new()),
             hooks: Mutex::new(Vec::new()),
             mgr,
+            op_mutex: Mutex::new(()),
         }
     }
 
@@ -104,6 +115,7 @@ impl CatalogTxn {
             touched: Mutex::new(Vec::new()),
             hooks: Mutex::new(Vec::new()),
             mgr: Weak::new(),
+            op_mutex: Mutex::new(()),
         }
     }
 
@@ -167,7 +179,9 @@ impl Transaction for CatalogTxn {
     }
 
     fn commit(&self) -> Result<Timestamp, Self::Error> {
-        // Run pre-commit validation hooks.
+        let _guard = self.op_mutex.lock().expect("op mutex poisoned");
+
+        // Pre-commit hooks.
         {
             let hooks = self.hooks.lock().expect("poisoned hooks mutex");
             for h in hooks.iter() {
@@ -175,15 +189,26 @@ impl Transaction for CatalogTxn {
             }
         }
 
+        // Assign commit_ts (only write after successful application).
         let commit_ts = global_timestamp_generator().next()?;
 
-        // Batch-commit touched sets.
-        let touched = self.touched.lock().expect("poisoned touched mutex");
-        for set in touched.iter() {
-            set.commit(commit_ts)?;
+        // Phase one: validate all containers.
+        {
+            let touched = self.touched.lock().expect("poisoned touched mutex");
+            for set in touched.iter() {
+                set.validate()?;
+            }
         }
 
-        // Set commit_ts.
+        // Phase two: apply all containers.
+        {
+            let touched = self.touched.lock().expect("poisoned touched mutex");
+            for set in touched.iter() {
+                set.apply(commit_ts)?;
+            }
+        }
+
+        // Write commit_ts and state.
         self.commit_ts_raw
             .store(encode_commit_ts(Some(commit_ts)), Ordering::SeqCst);
 
@@ -196,9 +221,14 @@ impl Transaction for CatalogTxn {
     }
 
     fn abort(&self) -> Result<(), Self::Error> {
-        let touched = self.touched.lock().expect("poisoned touched mutex");
-        for set in touched.iter() {
-            set.abort()?;
+        let _guard = self.op_mutex.lock().expect("op mutex poisoned");
+
+        // Rollback each container (in reverse order).
+        {
+            let touched = self.touched.lock().expect("poisoned touched mutex");
+            for set in touched.iter().rev() {
+                set.abort()?;
+            }
         }
 
         if let Some(mgr) = self.mgr.upgrade() {

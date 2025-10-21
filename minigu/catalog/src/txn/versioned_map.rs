@@ -154,44 +154,22 @@ where
         Ok(chain.append_uncommitted(None, true, txn_id))
     }
 
-    /// Commit a batch of writes created by the *same* transaction, atomically (all-or-nothing).
-    ///
-    /// Two-phase algorithm:
-    ///   (A) Validation pass: check ALL items against the *latest* view under a single write lock.
-    ///       - Ensure no intra-batch duplicates.
-    ///       - For Create: the key must not have an existing committed value (latest).
-    ///       - For Replace: the key must have a committed value and (if base_version is Some) that
-    ///         committed head's version id must match `base_version`.
-    ///       - For Delete: similar to Replace, it must have a committed head, and if base_version
-    ///         is Some, it must match.
-    ///       - Also verify the chain's current uncommitted head (if any) is THIS txn's node (i.e.,
-    ///         we are committing the node we previously appended).
-    ///       If ANY item fails, abort without changing state.
-    ///
-    ///   (B) Apply pass: mark ALL nodes committed with `commit_ts`.
-    ///
-    /// Concurrency:
-    ///   We hold a WRITE lock for the entire function. This keeps validation and application
-    ///   atomic w.r.t. other concurrent committers and prevents interleaving after validation.
-    ///
-    /// Returns error on the first detected conflict; no partial commit can occur.
-    pub fn commit_batch(
-        &self,
-        items: &[TouchedItem<K, V>],
-        commit_ts: Timestamp,
-    ) -> Result<(), CatalogTxnError> {
+    /// (Phase A) Validate only — checks ALL items in a single critical section.
+    /// Returns a vector of plans that can be applied atomically later.
+    pub fn validate_batch<'a>(
+        &'a self,
+        items: &'a [TouchedItem<K, V>],
+    ) -> Result<Vec<CommitPlan<'a, K, V>>, CatalogTxnError> {
         use WriteOp::*;
 
-        // Acquire a WRITE lock to make the whole (validate+apply) critical section atomic.
-        let mut guard = self
+        let guard = self
             .inner
             .write()
             .map_err(|_| CatalogTxnError::IllegalState {
-                reason: "poisoned lock in VersionedMap::commit_batch".into(),
+                reason: "poisoned lock in VersionedMap::validate_batch".into(),
             })?;
 
-        // ---------- (A) VALIDATION PASS (no state change) ----------
-        // 1) prevent intra-batch duplicates that could reorder semantics
+        // 1) Deduplicate.
         let mut seen: HashSet<&K> = HashSet::new();
         for it in items {
             if !seen.insert(&it.key) {
@@ -201,15 +179,8 @@ where
             }
         }
 
-        // 2) validate each item against the latest committed head for its key and the current
-        //    uncommitted head (must be this txn's node).
-        // We'll also collect closures to apply later for clarity (not strictly required).
-        struct Plan<'a, K, V> {
-            key: &'a K,
-            node: &'a Arc<CatalogVersionNode<V>>,
-        }
-        let mut plans: Vec<Plan<K, V>> = Vec::with_capacity(items.len());
-
+        // 2) Validate and generate plans.
+        let mut plans: Vec<CommitPlan<K, V>> = Vec::with_capacity(items.len());
         for it in items {
             let chain = guard
                 .get(&it.key)
@@ -217,32 +188,25 @@ where
                     key: format!("key not found: {:?}", &it.key),
                 })?;
 
-            // Check the current uncommitted head is exactly our node.
-            if let Some(head_uncommitted) = chain.head() {
-                if !Arc::ptr_eq(&head_uncommitted, &it.node) {
-                    return Err(CatalogTxnError::WriteConflict {
-                        key: format!(
-                            "uncommitted head is not from this txn for key {:?}",
-                            &it.key
-                        ),
-                    });
-                }
-            } else {
-                // If there is no uncommitted head, we should only be here for a pure-Delete
-                // expressed as "append tombstone" earlier. If your design always appends
-                // an uncommitted node for any write (incl. delete), then reaching here is illegal.
+            // Confirm the uncommitted head is the node of this transaction.
+            let Some(head_uncommitted) = chain.head() else {
                 return Err(CatalogTxnError::IllegalState {
                     reason: format!("no uncommitted head to commit for key {:?}", &it.key),
                 });
+            };
+            if !Arc::ptr_eq(&head_uncommitted, &it.node) {
+                return Err(CatalogTxnError::WriteConflict {
+                    key: format!(
+                        "uncommitted head is not from this txn for key {:?}",
+                        &it.key
+                    ),
+                });
             }
 
-            // Latest committed head info (if any).
+            // Check the committed head.
             let committed_head = chain.last_committed();
-
-            // Validate the operation against the committed head.
             match it.op {
                 Create => {
-                    // For create, the key must NOT have a committed value now.
                     if committed_head.is_some() {
                         return Err(CatalogTxnError::AlreadyExists {
                             key: format!(
@@ -253,37 +217,46 @@ where
                     }
                 }
                 Replace => {
-                    // For replace, the key MUST have a committed value.
-                    let Some(_) = committed_head else {
+                    if committed_head.is_none() {
                         return Err(CatalogTxnError::NotFound {
                             key: format!(
                                 "cannot Replace: no committed value for key {:?}",
                                 &it.key
                             ),
                         });
-                    };
+                    }
                 }
                 Delete => {
-                    // For delete, the key MUST have a committed value.
-                    let Some(_) = committed_head else {
+                    if committed_head.is_none() {
                         return Err(CatalogTxnError::NotFound {
                             key: format!("cannot Delete: no committed value for key {:?}", &it.key),
                         });
-                    };
+                    }
                 }
             }
 
-            plans.push(Plan {
+            plans.push(CommitPlan {
                 key: &it.key,
                 node: &it.node,
             });
         }
 
-        // ---------- (B) APPLY PASS (state change) ----------
-        // All validations passed; now mark all uncommitted heads as committed.
-        // This must not fail halfway; if your `mark_committed` can fail,
-        // consider making it infallible under the invariants we just checked.
-        for p in &plans {
+        Ok(plans)
+    }
+
+    /// (Phase B) Apply only — mark ALL planned nodes committed with `commit_ts`.
+    pub fn apply_batch<'a>(
+        &'a self,
+        plans: &[CommitPlan<'a, K, V>],
+        commit_ts: Timestamp,
+    ) -> Result<(), CatalogTxnError> {
+        let mut guard = self
+            .inner
+            .write()
+            .map_err(|_| CatalogTxnError::IllegalState {
+                reason: "poisoned lock in VersionedMap::apply_batch".into(),
+            })?;
+        for p in plans {
             let chain = guard
                 .get_mut(p.key)
                 .ok_or_else(|| CatalogTxnError::IllegalState {
@@ -296,6 +269,16 @@ where
                 })?;
         }
         Ok(())
+    }
+
+    /// Backward compatibility: validate → apply wrapper.
+    pub fn commit_batch(
+        &self,
+        items: &[TouchedItem<K, V>],
+        commit_ts: Timestamp,
+    ) -> Result<(), CatalogTxnError> {
+        let plans = self.validate_batch(items)?;
+        self.apply_batch(&plans, commit_ts)
     }
 
     /// Batch rollback nodes created by the same transaction.
@@ -334,6 +317,13 @@ where
         // TODO: Not yet implemented.
         Ok(())
     }
+}
+
+/// Commit plan: the "applicable unit" produced by the validation phase, avoiding lookup and
+/// determination when applying.
+pub struct CommitPlan<'a, K, V> {
+    pub key: &'a K,
+    pub node: &'a Arc<CatalogVersionNode<V>>,
 }
 
 #[cfg(test)]
