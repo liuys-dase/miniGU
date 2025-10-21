@@ -156,10 +156,10 @@ where
 
     /// (Phase A) Validate only — checks ALL items in a single critical section.
     /// Returns a vector of plans that can be applied atomically later.
-    pub fn validate_batch<'a>(
-        &'a self,
-        items: &'a [TouchedItem<K, V>],
-    ) -> Result<Vec<CommitPlan<'a, K, V>>, CatalogTxnError> {
+    pub fn validate_batch(
+        &self,
+        items: &[TouchedItem<K, V>],
+    ) -> Result<Vec<CommitPlan<K, V>>, CatalogTxnError> {
         use WriteOp::*;
 
         let guard = self
@@ -236,8 +236,8 @@ where
             }
 
             plans.push(CommitPlan {
-                key: &it.key,
-                node: &it.node,
+                key: it.key.clone(),
+                node: it.node.clone(),
             });
         }
 
@@ -245,9 +245,9 @@ where
     }
 
     /// (Phase B) Apply only — mark ALL planned nodes committed with `commit_ts`.
-    pub fn apply_batch<'a>(
-        &'a self,
-        plans: &[CommitPlan<'a, K, V>],
+    pub fn apply_batch(
+        &self,
+        plans: &[CommitPlan<K, V>],
         commit_ts: Timestamp,
     ) -> Result<(), CatalogTxnError> {
         let mut guard = self
@@ -258,12 +258,12 @@ where
             })?;
         for p in plans {
             let chain = guard
-                .get_mut(p.key)
+                .get_mut(&p.key)
                 .ok_or_else(|| CatalogTxnError::IllegalState {
                     reason: format!("chain not found for key {:?}", p.key),
                 })?;
             chain
-                .commit_node(p.node, commit_ts)
+                .commit_node(&p.node, commit_ts)
                 .map_err(|e| CatalogTxnError::IllegalState {
                     reason: format!("commit apply failed for key {:?}: {}", p.key, e),
                 })?;
@@ -321,9 +321,9 @@ where
 
 /// Commit plan: the "applicable unit" produced by the validation phase, avoiding lookup and
 /// determination when applying.
-pub struct CommitPlan<'a, K, V> {
-    pub key: &'a K,
-    pub node: &'a Arc<CatalogVersionNode<V>>,
+pub struct CommitPlan<K, V> {
+    pub key: K,
+    pub node: Arc<CatalogVersionNode<V>>,
 }
 
 #[cfg(test)]
