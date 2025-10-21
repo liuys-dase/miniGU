@@ -9,7 +9,7 @@ use crate::txn::ReadView;
 use crate::txn::error::{CatalogTxnError, CatalogTxnResult};
 use crate::txn::manager::CatalogTxnManagerInner;
 use crate::txn::versioned::CatalogVersionNode;
-use crate::txn::versioned_map::{TouchedItem, VersionedMap, WriteOp};
+use crate::txn::versioned_map::{CommitPlan, TouchedItem, VersionedMap, WriteOp};
 
 fn encode_commit_ts(opt: Option<Timestamp>) -> u64 {
     match opt {
@@ -41,6 +41,7 @@ where
 {
     map: Weak<VersionedMap<K, V>>,
     items: Vec<TouchedItem<K, V>>,
+    plans: Mutex<Option<Vec<CommitPlan<K, V>>>>,
 }
 
 impl<K, V> TxnTouchedSet for VersionedMapTouched<K, V>
@@ -50,7 +51,9 @@ where
 {
     fn validate(&self) -> CatalogTxnResult<()> {
         if let Some(map) = self.map.upgrade() {
-            let _ = map.validate_batch(&self.items)?;
+            let plans = map.validate_batch(&self.items)?;
+            let mut slot = self.plans.lock().expect("plans mutex poisoned");
+            *slot = Some(plans);
             Ok(())
         } else {
             Ok(())
@@ -59,7 +62,13 @@ where
 
     fn apply(&self, commit_ts: Timestamp) -> CatalogTxnResult<()> {
         if let Some(map) = self.map.upgrade() {
-            map.commit_batch(&self.items, commit_ts)
+            if let Some(plans) = self.plans.lock().expect("plans mutex poisoned").as_ref() {
+                map.apply_batch(plans, commit_ts)
+            } else {
+                return Err(CatalogTxnError::IllegalState {
+                    reason: "apply without prior validate".into(),
+                });
+            }
         } else {
             Ok(())
         }
@@ -131,6 +140,7 @@ impl CatalogTxn {
         let touched = VersionedMapTouched {
             map: Arc::downgrade(map),
             items,
+            plans: Mutex::new(None),
         };
         self.touched
             .lock()
