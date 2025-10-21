@@ -253,3 +253,210 @@ impl Transaction for CatalogTxn {
 pub trait TxnHook: Send + Sync {
     fn precommit(&self) -> CatalogTxnResult<()>;
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use minigu_transaction::GraphTxnManager;
+
+    use super::*;
+    use crate::txn::manager::CatalogTxnManager;
+    use crate::txn::versioned_map::{VersionedMap, WriteOp};
+
+    fn begin_txn(mgr: &CatalogTxnManager) -> Arc<CatalogTxn> {
+        mgr.begin_transaction(minigu_transaction::IsolationLevel::Snapshot)
+            .expect("begin txn")
+    }
+
+    #[test]
+    fn commit_should_make_data_visible() {
+        let mgr = CatalogTxnManager::new();
+        let map: Arc<VersionedMap<String, i32>> = Arc::new(VersionedMap::new());
+
+        // txn1 writes a record
+        let txn1 = begin_txn(&mgr);
+        let key = "foo".to_string();
+        assert!(map.get(&key, &txn1).is_none());
+
+        // write node (simulate put)
+        let node = map.put(key.clone(), Arc::new(10), &txn1).expect("put ok");
+        txn1.record_write(&map, key.clone(), node, WriteOp::Create);
+
+        // commit transaction
+        let commit_ts = txn1.commit().expect("commit ok");
+        assert!(commit_ts.raw() > 0);
+
+        // new transaction should see the committed value
+        let txn2 = begin_txn(&mgr);
+        let val = map.get(&key, &txn2).unwrap();
+        assert_eq!(*val, 10);
+    }
+
+    #[test]
+    fn abort_should_discard_uncommitted_data() {
+        let mgr = CatalogTxnManager::new();
+        let map: Arc<VersionedMap<String, i32>> = Arc::new(VersionedMap::new());
+
+        // txn1 writes but does not commit
+        let txn1 = begin_txn(&mgr);
+        let key = "bar".to_string();
+        let node = map.put(key.clone(), Arc::new(99), &txn1).expect("put ok");
+        txn1.record_write(&map, key.clone(), node, WriteOp::Create);
+
+        // abort transaction
+        txn1.abort().expect("abort ok");
+
+        // new transaction should not see the aborted value
+        let txn2 = begin_txn(&mgr);
+        assert!(map.get(&key, &txn2).is_none());
+    }
+
+    #[test]
+    fn cross_container_commit_should_be_atomic() {
+        // simulate two independent VersionedMaps
+        let mgr = CatalogTxnManager::new();
+        let map_a: Arc<VersionedMap<String, i32>> = Arc::new(VersionedMap::new());
+        let map_b: Arc<VersionedMap<String, i32>> = Arc::new(VersionedMap::new());
+
+        let txn = begin_txn(&mgr);
+        let node_a = map_a
+            .put("a".to_string(), Arc::new(1), &txn)
+            .expect("put A");
+        txn.record_write(&map_a, "a".to_string(), node_a, WriteOp::Create);
+
+        let node_b = map_b
+            .put("b".to_string(), Arc::new(2), &txn)
+            .expect("put B");
+        txn.record_write(&map_b, "b".to_string(), node_b, WriteOp::Create);
+
+        // commit should succeed and both containers should see committed values
+        txn.commit().expect("commit ok");
+
+        let check_txn = begin_txn(&mgr);
+        assert_eq!(map_a.get(&"a".to_string(), &check_txn).map(|v| *v), Some(1));
+        assert_eq!(map_b.get(&"b".to_string(), &check_txn).map(|v| *v), Some(2));
+    }
+
+    #[test]
+    fn concurrent_txns_should_isolate_uncommitted_changes() {
+        let mgr = CatalogTxnManager::new();
+        let map: Arc<VersionedMap<String, i32>> = Arc::new(VersionedMap::new());
+        let key = "k1".to_string();
+
+        // txn1 starts first
+        let txn1 = begin_txn(&mgr);
+        let node1 = map
+            .put(key.clone(), Arc::new(100), &txn1)
+            .expect("txn1 put ok");
+        txn1.record_write(&map, key.clone(), node1, WriteOp::Create);
+
+        // txn2 starts while txn1 is still uncommitted
+        let txn2 = begin_txn(&mgr);
+        // txn2 should not see txn1's uncommitted write
+        assert!(map.get(&key, &txn2).is_none());
+
+        // commit txn1
+        txn1.commit().expect("txn1 commit ok");
+
+        // txn2 should still not see txn1's commit (snapshot isolation)
+        assert!(map.get(&key, &txn2).is_none());
+
+        // a new transaction should see txn1's committed value
+        let txn3 = begin_txn(&mgr);
+        let val = map.get(&key, &txn3).unwrap();
+        assert_eq!(*val, 100);
+    }
+
+    #[test]
+    fn two_txns_writing_same_key_should_conflict() {
+        let mgr = CatalogTxnManager::new();
+        let map: Arc<VersionedMap<String, i32>> = Arc::new(VersionedMap::new());
+        let key = "x".to_string();
+
+        // txn1 writes first
+        let txn1 = begin_txn(&mgr);
+        let node1 = map
+            .put(key.clone(), Arc::new(1), &txn1)
+            .expect("txn1 put ok");
+        txn1.record_write(&map, key.clone(), node1, WriteOp::Create);
+
+        // txn2 tries to write the same key before txn1 commits
+        let txn2 = begin_txn(&mgr);
+        let node2 = map.put(key.clone(), Arc::new(2), &txn2);
+        assert!(
+            node2.is_err(),
+            "txn2 should be blocked by txn1 uncommitted version"
+        );
+
+        // txn1 commits successfully
+        txn1.commit().expect("txn1 commit ok");
+    }
+
+    #[test]
+    fn interleaved_commit_and_abort_should_keep_map_consistent() {
+        let mgr = CatalogTxnManager::new();
+        let map: Arc<VersionedMap<String, i32>> = Arc::new(VersionedMap::new());
+        let key1 = "key1".to_string();
+        let key2 = "key2".to_string();
+
+        // txn1 writes to key1
+        let txn1 = begin_txn(&mgr);
+        let node1 = map
+            .put(key1.clone(), Arc::new(10), &txn1)
+            .expect("txn1 put ok");
+        txn1.record_write(&map, key1.clone(), node1, WriteOp::Create);
+
+        // txn2 writes to key2
+        let txn2 = begin_txn(&mgr);
+        let node2 = map
+            .put(key2.clone(), Arc::new(20), &txn2)
+            .expect("txn2 put ok");
+        txn2.record_write(&map, key2.clone(), node2, WriteOp::Create);
+
+        // txn1 aborts, txn2 commits
+        txn1.abort().expect("txn1 abort ok");
+        txn2.commit().expect("txn2 commit ok");
+
+        // a new transaction should only see key2
+        let txn3 = begin_txn(&mgr);
+        assert!(map.get(&key1, &txn3).is_none());
+        assert_eq!(map.get(&key2, &txn3).map(|v| *v), Some(20));
+    }
+
+    #[test]
+    fn multiple_txns_commit_should_create_correct_versions() {
+        let mgr = CatalogTxnManager::new();
+        let map: Arc<VersionedMap<String, i32>> = Arc::new(VersionedMap::new());
+        let key = "ver".to_string();
+
+        // txn1 creates version 1
+        let txn1 = begin_txn(&mgr);
+        let node1 = map
+            .put(key.clone(), Arc::new(1), &txn1)
+            .expect("txn1 put ok");
+        txn1.record_write(&map, key.clone(), node1, WriteOp::Create);
+        txn1.commit().expect("txn1 commit ok");
+
+        // txn2 creates version 2
+        let txn2 = begin_txn(&mgr);
+        let node2 = map
+            .put(key.clone(), Arc::new(2), &txn2)
+            .expect("txn2 put ok");
+        txn2.record_write(&map, key.clone(), node2, WriteOp::Replace);
+        txn2.commit().expect("txn2 commit ok");
+
+        // txn3 creates version 3
+        let txn3 = begin_txn(&mgr);
+        let node3 = map
+            .put(key.clone(), Arc::new(3), &txn3)
+            .expect("txn3 put ok");
+        txn3.record_write(&map, key.clone(), node3, WriteOp::Replace);
+        txn3.commit().expect("txn3 commit ok");
+
+        // a fresh transaction should see latest committed value = 3
+        let check_txn = begin_txn(&mgr);
+        let val = map.get(&key, &check_txn).unwrap();
+        assert_eq!(*val, 3);
+    }
+}
