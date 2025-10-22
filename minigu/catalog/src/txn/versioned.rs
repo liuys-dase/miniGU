@@ -286,45 +286,103 @@ impl<V> CatalogVersionChain<V> {
     }
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//     use minigu_transaction::global_timestamp_generator;
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
 
-//     #[test]
-//     fn visible_at_prefers_committed_before_start_ts() {
-//         let chain: CatalogVersionChain<i32> = CatalogVersionChain::new();
-//         let txn_a = Timestamp::with_ts(1001);
-//         let txn_b = Timestamp::with_ts(1002);
+    use minigu_transaction::{Timestamp, global_timestamp_generator};
 
-//         // Append uncommitted by A, then commit it at ts = t1
-//         let n1 = chain.append_uncommitted_value(Arc::new(1), txn_a);
-//         let t1 = global_timestamp_generator().next().unwrap();
-//         chain.commit_node(&n1, t1).unwrap();
+    use super::*;
 
-//         // Append uncommitted by B (newer head)
-//         let _n2 = chain.append_uncommitted_value(Arc::new(2), txn_b);
+    fn collect_values<V: Clone>(chain: &CatalogVersionChain<V>) -> Vec<V> {
+        let mut vals = Vec::new();
+        let mut cur = chain.head();
+        while let Some(node) = cur {
+            if let Some(v) = node.value() {
+                vals.push((*v).clone());
+            }
+            cur = node.prev();
+        }
+        vals
+    }
 
-//         // A latest view at start >= t1 but not B's txn should see committed 1
-//         let start = global_timestamp_generator().current();
-//         let vis = chain.visible_at(start, Timestamp::with_ts(Timestamp::TXN_ID_START));
-//         assert!(vis.is_some());
-//         let node = vis.unwrap();
-//         assert_eq!(node.value().map(|v| *v), Some(1));
+    #[test]
+    fn append_and_iter_should_form_chain() {
+        let chain: CatalogVersionChain<i32> = CatalogVersionChain::new();
+        let ts_gen = global_timestamp_generator();
 
-//         // B sees its own uncommitted write
-//         let vis_b = chain.visible_at(start, txn_b).unwrap();
-//         assert_eq!(vis_b.value().map(|v| *v), Some(2));
-//     }
+        let _ = chain.append_uncommitted(Some(Arc::new(1)), false, ts_gen.next().unwrap());
+        let _ = chain.append_uncommitted(Some(Arc::new(2)), false, ts_gen.next().unwrap());
+        let n3 = chain.append_uncommitted(Some(Arc::new(3)), false, ts_gen.next().unwrap());
 
-//     #[test]
-//     fn abort_head_removes_uncommitted_head() {
-//         let chain: CatalogVersionChain<i32> = CatalogVersionChain::new();
-//         let txn = Timestamp::with_ts(2001);
-//         let n = chain.append_uncommitted_value(Arc::new(9), txn);
-//         assert!(chain.head().is_some());
-//         chain.abort_node(&n).unwrap();
-//         // Head removed
-//         assert!(chain.head().is_none());
-//     }
-// }
+        assert!(Arc::ptr_eq(&chain.head().unwrap(), &n3));
+
+        let values: Vec<i32> = collect_values(&chain);
+        assert_eq!(values, vec![3, 2, 1]);
+    }
+
+    #[test]
+    fn commit_node_should_set_commit_ts() {
+        let chain: CatalogVersionChain<i32> = CatalogVersionChain::new();
+        let ts_gen = global_timestamp_generator();
+
+        let n1 = chain.append_uncommitted(Some(Arc::new(100)), false, ts_gen.next().unwrap());
+        let commit_ts = ts_gen.next().unwrap();
+
+        chain.commit_node(&n1, commit_ts).expect("commit ok");
+
+        assert_eq!(n1.commit_ts(), Some(commit_ts));
+        assert!(n1.is_committed());
+    }
+
+    #[test]
+    fn abort_should_remove_uncommitted_head() {
+        let mut chain: CatalogVersionChain<i32> = CatalogVersionChain::new();
+        let ts_gen = global_timestamp_generator();
+
+        let n1 = chain.append_uncommitted(Some(Arc::new(10)), false, ts_gen.next().unwrap());
+        let n2 = chain.append_uncommitted(Some(Arc::new(20)), false, ts_gen.next().unwrap());
+
+        chain.abort_node(&n2).expect("abort ok");
+
+        assert!(Arc::ptr_eq(&chain.head().unwrap(), &n1));
+        let vals: Vec<i32> = collect_values(&chain);
+        assert_eq!(vals, vec![10]);
+    }
+
+    #[test]
+    fn visible_to_should_respect_snapshot_isolation() {
+        let chain: CatalogVersionChain<i32> = CatalogVersionChain::new();
+        let ts_gen = global_timestamp_generator();
+
+        let n1 = chain.append_uncommitted(Some(Arc::new(1)), false, ts_gen.next().unwrap());
+        let _n2 = chain.append_uncommitted(Some(Arc::new(2)), false, ts_gen.next().unwrap());
+
+        // commit n1, leave n2 uncommitted
+        let commit_ts1 = ts_gen.next().unwrap();
+        chain.commit_node(&n1, commit_ts1).expect("commit ok");
+
+        // txn snapshot that is not the creator of n2
+        let read_ts = ts_gen.next().unwrap();
+        let visible = chain.visible_at(read_ts, Timestamp::with_ts(0)).unwrap();
+
+        assert_eq!(visible.value().map(|v| *v), Some(1));
+    }
+
+    #[test]
+    fn commit_then_append_new_version_should_keep_chain_order() {
+        let chain: CatalogVersionChain<i32> = CatalogVersionChain::new();
+        let ts_gen = global_timestamp_generator();
+
+        // first version committed
+        let v1 = chain.append_uncommitted(Some(Arc::new(1)), false, ts_gen.next().unwrap());
+        let commit_ts1 = ts_gen.next().unwrap();
+        chain.commit_node(&v1, commit_ts1).expect("commit ok");
+
+        // new uncommitted version
+        let _v2 = chain.append_uncommitted(Some(Arc::new(2)), false, ts_gen.next().unwrap());
+
+        let vals: Vec<i32> = collect_values(&chain);
+        assert_eq!(vals, vec![2, 1]);
+    }
+}
