@@ -1,9 +1,10 @@
 use gql_parser::ast::Procedure;
-use minigu_catalog::txn::ReadView;
 use minigu_context::session::SessionContext;
+use minigu_transaction::IsolationLevel;
+use minigu_transaction::manager::GraphTxnManager;
 
 use crate::binder::Binder;
-use crate::error::PlanResult;
+use crate::error::{PlanError, PlanResult};
 use crate::logical_planner::LogicalPlanner;
 use crate::optimizer::Optimizer;
 use crate::plan::PlanNode;
@@ -25,10 +26,13 @@ impl Planner {
     }
 
     pub fn plan_query(&self, query: &Procedure) -> PlanResult<PlanNode> {
-        let read_view = if let Some(txn) = &self.context.current_txn {
-            ReadView::from_txn(txn.as_ref())
+        let txn = if let Some(txn) = &self.context.current_txn {
+            txn.clone()
         } else {
-            ReadView::latest()
+            self.context
+                .catalog_txn_mgr
+                .begin_transaction(IsolationLevel::Snapshot)
+                .map_err(|e| PlanError::Transaction(e))?
         };
         let binder = Binder::new(
             self.context.database().catalog(),
@@ -36,7 +40,7 @@ impl Planner {
             self.context.home_schema.clone().map(|s| s as _),
             self.context.current_graph.clone(),
             self.context.home_graph.clone(),
-            read_view,
+            txn.as_ref(),
         );
         let bound = binder.bind(query)?;
         let logical_plan = LogicalPlanner::new().create_logical_plan(bound)?;

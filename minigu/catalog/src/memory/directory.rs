@@ -5,7 +5,6 @@ use minigu_transaction::Transaction;
 
 use crate::error::CatalogResult;
 use crate::provider::{DirectoryOrSchema, DirectoryProvider, DirectoryRef};
-use crate::txn::ReadView;
 use crate::txn::catalog_txn::CatalogTxn;
 use crate::txn::versioned_map::{VersionedMap, WriteOp};
 
@@ -29,11 +28,11 @@ impl MemoryDirectoryCatalog {
         }
     }
 
-    /// Add child with transaction. If the child is visible in the read view, return
+    /// Add child with transaction. If the child is visible in the txn, return
     /// `AlreadyExists` error; otherwise, add a uncommitted version and record it in the
     /// transaction write set
     #[inline]
-    pub fn add_child_txn(
+    pub fn add_child(
         &self,
         name: String,
         child: DirectoryOrSchema,
@@ -47,10 +46,10 @@ impl MemoryDirectoryCatalog {
         Ok(())
     }
 
-    /// Remove child with transaction. If the child is not visible in the read view, return
+    /// Remove child with transaction. If the child is not visible in the txn, return
     /// `NotFound` error; otherwise, add a tombstone and record it in the transaction write set
     #[inline]
-    pub fn remove_child_txn(
+    pub fn remove_child(
         &self,
         name: &str,
         txn: &CatalogTxn,
@@ -73,31 +72,16 @@ impl DirectoryProvider for MemoryDirectoryCatalog {
     }
 
     #[inline]
-    fn get_child(&self, name: &str) -> CatalogResult<Option<DirectoryOrSchema>> {
-        self.get_child_with(name, &ReadView::latest())
-    }
-
-    #[inline]
-    fn get_child_with(
-        &self,
-        name: &str,
-        _view: &ReadView,
-    ) -> CatalogResult<Option<DirectoryOrSchema>> {
-        let view = _view;
+    fn get_child(&self, name: &str, txn: &CatalogTxn) -> CatalogResult<Option<DirectoryOrSchema>> {
         Ok(self
             .children
-            .get(&name.to_string(), &CatalogTxn::from_view(view))
+            .get(&name.to_string(), txn)
             .map(|arc| arc.as_ref().clone()))
     }
 
     #[inline]
-    fn children_names(&self) -> Vec<String> {
-        self.children_names_with(&ReadView::latest())
-    }
-
-    #[inline]
-    fn children_names_with(&self, view: &ReadView) -> Vec<String> {
-        self.children.visible_keys(view.start_ts, view.txn_id)
+    fn children_names(&self, txn: &CatalogTxn) -> Vec<String> {
+        self.children.visible_keys(txn.start_ts(), txn.txn_id())
     }
 
     #[inline]

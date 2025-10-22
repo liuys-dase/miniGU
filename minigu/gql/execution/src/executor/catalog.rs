@@ -7,7 +7,6 @@ use minigu_catalog::memory::graph_type::{
 use minigu_catalog::provider::{
     CatalogProvider, EdgeTypeProvider, GraphTypeProvider, SchemaProvider,
 };
-use minigu_catalog::txn::ReadView;
 use minigu_catalog::txn::catalog_txn::CatalogTxn;
 use minigu_common::data_chunk::DataChunk;
 use minigu_context::graph::{GraphContainer, GraphStorage};
@@ -83,18 +82,14 @@ impl CatalogDdlExec {
         let txn = self.begin_txn()?;
         // Resolve source graph type provider and deep copy to a new MemoryGraphTypeCatalog
         let (gt, _id_map) = match &s.source {
-            BoundGraphType::Ref(named) => Self::deep_copy_graph_type_with_view(
-                named.object().clone(),
-                &ReadView::from_txn(txn.as_ref()),
-                txn.as_ref(),
-            ),
+            BoundGraphType::Ref(named) => Self::deep_copy_graph_type(named.object().clone(), &txn),
             BoundGraphType::Nested(_elems) => {
                 Ok((Arc::new(MemoryGraphTypeCatalog::new()), HashMap::new()))
             }
         }?;
         // Handle create kind
         let exists = schema
-            .get_graph_type_with(&s.name, &ReadView::from_txn(txn.as_ref()))
+            .get_graph_type(&s.name, txn.as_ref())
             .map_err(|e| ExecutionError::Custom(Box::new(e)))?
             .is_some();
         match s.kind {
@@ -128,7 +123,7 @@ impl CatalogDdlExec {
         let schema = self.current_schema()?;
         let txn = self.begin_txn()?;
         let exists = schema
-            .get_graph_type_with(&s.name, &ReadView::from_txn(txn.as_ref()))
+            .get_graph_type(&s.name, txn.as_ref())
             .map_err(|e| ExecutionError::Custom(Box::new(e)))?
             .is_some();
         if !exists {
@@ -150,18 +145,16 @@ impl CatalogDdlExec {
         let txn = self.begin_txn()?;
         // Decide graph type: deep copy to ensure independence
         let (gt, id_map) = match &s.graph_type {
-            BoundGraphType::Ref(named) => Self::deep_copy_graph_type_with_view(
-                named.object().clone(),
-                &ReadView::from_txn(txn.as_ref()),
-                txn.as_ref(),
-            ),
+            BoundGraphType::Ref(named) => {
+                Self::deep_copy_graph_type(named.object().clone(), txn.as_ref())
+            }
             BoundGraphType::Nested(_elems) => {
                 Ok((Arc::new(MemoryGraphTypeCatalog::new()), HashMap::new()))
             }
         }?;
         // Handle kind
         let exists = schema
-            .get_graph_with(&s.name, &ReadView::from_txn(txn.as_ref()))
+            .get_graph(&s.name, txn.as_ref())
             .map_err(|e| ExecutionError::Custom(Box::new(e)))?
             .is_some();
         match s.kind {
@@ -202,7 +195,7 @@ impl CatalogDdlExec {
         let schema = self.current_schema()?;
         let txn = self.begin_txn()?;
         let exists = schema
-            .get_graph_with(&s.name, &ReadView::from_txn(txn.as_ref()))
+            .get_graph(&s.name, txn.as_ref())
             .map_err(|e| ExecutionError::Custom(Box::new(e)))?
             .is_some();
         if !exists {
@@ -219,9 +212,8 @@ impl CatalogDdlExec {
         Ok(())
     }
 
-    fn deep_copy_graph_type_with_view(
+    fn deep_copy_graph_type(
         src: Arc<dyn GraphTypeProvider>,
-        view: &ReadView,
         txn: &CatalogTxn,
     ) -> ExecutionResult<(
         Arc<MemoryGraphTypeCatalog>,
@@ -232,22 +224,22 @@ impl CatalogDdlExec {
         use minigu_catalog::label_set::LabelSet;
         use minigu_common::types::LabelId;
         let mut id_map: HashMap<LabelId, LabelId> = HashMap::new();
-        for name in src.label_names_with(view) {
+        for name in src.label_names(txn) {
             let old_id = src
-                .get_label_id_with(&name, view)
+                .get_label_id(&name, txn)
                 .map_err(|e| ExecutionError::Custom(Box::new(e)))?
                 .expect("label id exists");
             let new_id = dst
-                .add_label_txn(name, txn)
+                .add_label(name, txn)
                 .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
             id_map.insert(old_id, new_id);
         }
         // 2) Copy vertex types
         let mut new_vertex_types: HashMap<LabelSet, Arc<MemoryVertexTypeCatalog>> = HashMap::new();
-        for key in src.vertex_type_keys_with(view) {
+        for key in src.vertex_type_keys(txn) {
             let mapped: LabelSet = key.iter().map(|lid| *id_map.get(&lid).unwrap()).collect();
             let vt = src
-                .get_vertex_type_with(&key, view)
+                .get_vertex_type(&key, txn)
                 .map_err(|e| ExecutionError::Custom(Box::new(e)))?
                 .expect("vertex type present");
             let props = vt.properties().into_iter().map(|(_, p)| p).collect();
@@ -255,10 +247,10 @@ impl CatalogDdlExec {
             new_vertex_types.insert(mapped, new_vt);
         }
         // 3) Copy edge types
-        for key in src.edge_type_keys_with(view) {
+        for key in src.edge_type_keys(txn) {
             let mapped: LabelSet = key.iter().map(|lid| *id_map.get(&lid).unwrap()).collect();
             let et = src
-                .get_edge_type_with(&key, view)
+                .get_edge_type(&key, txn)
                 .map_err(|e| ExecutionError::Custom(Box::new(e)))?
                 .expect("edge type present");
             let props = et.properties().into_iter().map(|(_, p)| p).collect();
@@ -282,13 +274,13 @@ impl CatalogDdlExec {
                 .clone() as _;
             let new_et = Arc::new(MemoryEdgeTypeCatalog::new(mapped, new_src, new_dst, props));
             let et_ref: minigu_catalog::provider::EdgeTypeRef = new_et.clone() as _;
-            dst.add_edge_type_txn(new_et.label_set(), et_ref, txn)
+            dst.add_edge_type(new_et.label_set(), et_ref, txn)
                 .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
         }
         // 4) Register vertex types into dst
         for (k, vt) in new_vertex_types.into_iter() {
             let vt_ref: minigu_catalog::provider::VertexTypeRef = vt as _;
-            dst.add_vertex_type_txn(k, vt_ref, txn)
+            dst.add_vertex_type(k, vt_ref, txn)
                 .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
         }
         Ok((Arc::new(dst), id_map))
@@ -318,7 +310,7 @@ impl CatalogDdlExec {
                 continue;
             }
             let existing = current_dir
-                .get_child_with(seg, &ReadView::from_txn(txn.as_ref()))
+                .get_child(seg, txn.as_ref())
                 .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
             match (existing, is_last) {
                 (Some(child), false) => {
@@ -355,7 +347,7 @@ impl CatalogDdlExec {
                         )),
                     );
                     mem_dir
-                        .add_child_txn(
+                        .add_child(
                             seg.to_string(),
                             minigu_catalog::provider::DirectoryOrSchema::Directory(
                                 new_dir.clone() as _
@@ -375,7 +367,7 @@ impl CatalogDdlExec {
                             Some(Arc::downgrade(&current_dir)),
                         ));
                     mem_dir
-                        .add_child_txn(
+                        .add_child(
                             seg.to_string(),
                             minigu_catalog::provider::DirectoryOrSchema::Schema(new_schema as _),
                             txn.as_ref(),
@@ -401,10 +393,7 @@ impl CatalogDdlExec {
             return Err(ExecutionError::Custom("empty schema path".into()));
         }
 
-        // Begin a catalog transaction, and use the same read view throughout the path parsing,
-        // empty check, and deletion process
         let txn = self.begin_txn()?;
-        let view = ReadView::from_txn(txn.as_ref());
 
         let mut current = root;
         for seg in &s.schema_path[..s.schema_path.len() - 1] {
@@ -418,12 +407,11 @@ impl CatalogDdlExec {
                 .as_directory()
                 .ok_or_else(|| ExecutionError::Custom("not a directory in path".into()))?;
             let child = dir
-                .get_child_with(seg, &view)
+                .get_child(seg, txn.as_ref())
                 .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
             current = match child {
                 Some(c) => c,
                 None => {
-                    // Not exists in the current transaction view, if exists, return directly
                     if s.if_exists {
                         txn.abort().ok();
                         return Ok(());
@@ -446,7 +434,7 @@ impl CatalogDdlExec {
             .as_directory()
             .ok_or_else(|| ExecutionError::Custom("parent is not a directory".into()))?;
         let child = parent_dir
-            .get_child_with(last, &view)
+            .get_child(last, txn.as_ref())
             .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
         let Some(child) = child else {
             if s.if_exists {
@@ -464,11 +452,9 @@ impl CatalogDdlExec {
                 format!("'{}' is not a schema", last).into(),
             ));
         };
-        // Use the read view of the current transaction to check if the schema is empty, ensuring
-        // snapshot consistency
-        if !schema.graph_names_with(&view).is_empty()
-            || !schema.graph_type_names_with(&view).is_empty()
-            || !schema.procedure_names_with(&view).is_empty()
+        if !schema.graph_names(txn.as_ref()).is_empty()
+            || !schema.graph_type_names(txn.as_ref()).is_empty()
+            || !schema.procedure_names(txn.as_ref()).is_empty()
         {
             txn.abort().ok();
             return Err(ExecutionError::Custom("schema is not empty".into()));
@@ -478,7 +464,7 @@ impl CatalogDdlExec {
             .downcast_ref::<minigu_catalog::memory::directory::MemoryDirectoryCatalog>()
             .ok_or_else(|| ExecutionError::Custom("not a memory directory".into()))?;
         mem_dir
-            .remove_child_txn(last, txn.as_ref())
+            .remove_child(last, txn.as_ref())
             .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
         txn.commit()
             .map_err(|e| ExecutionError::Custom(Box::new(e)))?;

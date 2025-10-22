@@ -32,13 +32,8 @@ pub fn build_procedure() -> Procedure {
         let txn = context
             .catalog_txn_mgr
             .begin_transaction(IsolationLevel::Snapshot)?;
-        // Existence check (by transaction view)
-        let exists = schema
-            .get_graph_with(
-                graph_name,
-                &minigu_catalog::txn::ReadView::from_txn(txn.as_ref()),
-            )?
-            .is_some();
+        // Existence check
+        let exists = schema.get_graph(graph_name, txn.as_ref())?.is_some();
         if exists {
             txn.abort()?;
             return Err(anyhow::anyhow!(format!("graph {} already exists", graph_name)).into());

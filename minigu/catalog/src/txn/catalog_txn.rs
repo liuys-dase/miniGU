@@ -27,17 +27,18 @@ fn decode_commit_ts(raw: u64) -> Option<Timestamp> {
 }
 
 /// Unified abstraction of "the containers touched by this transaction" - two-phase interface.
-trait TxnTouchedSet: Send + Sync {
+trait TxnTouchedSet: Send + Sync + std::fmt::Debug {
     fn validate(&self) -> CatalogTxnResult<()>;
     fn apply(&self, commit_ts: Timestamp) -> CatalogTxnResult<()>;
     fn abort(&self) -> CatalogTxnResult<()>;
 }
 
 /// Touched-set implementation for `VersionedMap<K, V>`.
+#[derive(Debug)]
 struct VersionedMapTouched<K, V>
 where
     K: Eq + Hash + Clone + Send + Sync + 'static + std::fmt::Debug,
-    V: Send + Sync + 'static,
+    V: Send + Sync + 'static + std::fmt::Debug,
 {
     map: Weak<VersionedMap<K, V>>,
     items: Vec<TouchedItem<K, V>>,
@@ -47,7 +48,7 @@ where
 impl<K, V> TxnTouchedSet for VersionedMapTouched<K, V>
 where
     K: Eq + Hash + Clone + Send + Sync + 'static + std::fmt::Debug,
-    V: Send + Sync + 'static,
+    V: Send + Sync + 'static + std::fmt::Debug,
 {
     fn validate(&self) -> CatalogTxnResult<()> {
         if let Some(map) = self.map.upgrade() {
@@ -65,9 +66,9 @@ where
             if let Some(plans) = self.plans.lock().expect("plans mutex poisoned").as_ref() {
                 map.apply_batch(plans, commit_ts)
             } else {
-                return Err(CatalogTxnError::IllegalState {
+                Err(CatalogTxnError::IllegalState {
                     reason: "apply without prior validate".into(),
-                });
+                })
             }
         } else {
             Ok(())
@@ -83,6 +84,7 @@ where
     }
 }
 
+#[derive(Debug)]
 /// Catalog transaction object.
 pub struct CatalogTxn {
     txn_id: Timestamp,
@@ -135,7 +137,7 @@ impl CatalogTxn {
         items: Vec<TouchedItem<K, V>>,
     ) where
         K: Eq + Hash + Clone + Send + Sync + 'static + std::fmt::Debug,
-        V: Send + Sync + 'static,
+        V: Send + Sync + 'static + std::fmt::Debug,
     {
         let touched = VersionedMapTouched {
             map: Arc::downgrade(map),
@@ -162,7 +164,7 @@ impl CatalogTxn {
         op: WriteOp,
     ) where
         K: Eq + Hash + Clone + Send + Sync + 'static + std::fmt::Debug,
-        V: Send + Sync + 'static,
+        V: Send + Sync + 'static + std::fmt::Debug,
     {
         let item = TouchedItem { key, node, op };
         self.record_versioned_map_writes(map, vec![item]);
@@ -250,7 +252,7 @@ impl Transaction for CatalogTxn {
 }
 
 /// Transaction hook interface exposed to external users (e.g., pre-commit checks).
-pub trait TxnHook: Send + Sync {
+pub trait TxnHook: Send + Sync + std::fmt::Debug {
     fn precommit(&self) -> CatalogTxnResult<()>;
 }
 

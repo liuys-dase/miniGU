@@ -61,7 +61,7 @@ fn init_memory_catalog() -> Result<(MemoryCatalog, Arc<MemorySchemaCatalog>)> {
     let root = Arc::new(MemoryDirectoryCatalog::new(None));
     let parent = Arc::downgrade(&root);
     let default_schema = Arc::new(MemorySchemaCatalog::new(Some(parent)));
-    // 单事务初始化默认过程与默认 schema 节点
+    // Set default procedures and default schema node in a single transaction
     let mgr = CatalogTxnManager::new();
     let txn = mgr
         .begin_transaction(IsolationLevel::Snapshot)
@@ -78,7 +78,7 @@ fn init_memory_catalog() -> Result<(MemoryCatalog, Arc<MemorySchemaCatalog>)> {
             })?;
     }
     root.as_ref()
-        .add_child_txn(
+        .add_child(
             DEFAULT_SCHEMA_NAME.into(),
             DirectoryOrSchema::Schema(default_schema.clone()),
             txn.as_ref(),

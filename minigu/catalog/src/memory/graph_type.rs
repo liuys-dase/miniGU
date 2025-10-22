@@ -50,7 +50,7 @@ impl MemoryGraphTypeCatalog {
 
     // ================= Transactional write APIs =================
     #[inline]
-    pub fn add_label_txn(
+    pub fn add_label(
         &self,
         name: String,
         txn: &CatalogTxn,
@@ -73,7 +73,7 @@ impl MemoryGraphTypeCatalog {
     }
 
     #[inline]
-    pub fn remove_label_txn(
+    pub fn remove_label(
         &self,
         name: &str,
         txn: &CatalogTxn,
@@ -102,7 +102,7 @@ impl MemoryGraphTypeCatalog {
     }
 
     #[inline]
-    pub fn add_vertex_type_txn(
+    pub fn add_vertex_type(
         &self,
         label_set: LabelSet,
         vertex_type: VertexTypeRef,
@@ -124,7 +124,7 @@ impl MemoryGraphTypeCatalog {
     }
 
     #[inline]
-    pub fn remove_vertex_type_txn(
+    pub fn remove_vertex_type(
         &self,
         label_set: &LabelSet,
         txn: &CatalogTxn,
@@ -151,7 +151,7 @@ impl MemoryGraphTypeCatalog {
     }
 
     #[inline]
-    pub fn add_edge_type_txn(
+    pub fn add_edge_type(
         &self,
         label_set: LabelSet,
         edge_type: EdgeTypeRef,
@@ -160,15 +160,8 @@ impl MemoryGraphTypeCatalog {
         // Referential integrity: source/destination vertex types must exist.
         let src_ls = edge_type.src().label_set();
         let dst_ls = edge_type.dst().label_set();
-        let view = ReadView::from_txn(txn);
-        if self
-            .vertex_type_map
-            .get(&src_ls, &CatalogTxn::from_view(&view))
-            .is_none()
-            || self
-                .vertex_type_map
-                .get(&dst_ls, &CatalogTxn::from_view(&view))
-                .is_none()
+        if self.vertex_type_map.get(&src_ls, txn).is_none()
+            || self.vertex_type_map.get(&dst_ls, txn).is_none()
         {
             return Err(crate::txn::error::CatalogTxnError::ReferentialIntegrity {
                 reason: "edge src/dst vertex type not found".to_string(),
@@ -194,7 +187,7 @@ impl MemoryGraphTypeCatalog {
     }
 
     #[inline]
-    pub fn remove_edge_type_txn(
+    pub fn remove_edge_type(
         &self,
         label_set: &LabelSet,
         txn: &CatalogTxn,
@@ -217,7 +210,7 @@ impl MemoryGraphTypeCatalog {
 
     // ================= REPLACE (property changes) =================
     #[inline]
-    pub fn replace_vertex_type_txn(
+    pub fn replace_vertex_type(
         &self,
         label_set: &LabelSet,
         new_vertex_type: VertexTypeRef,
@@ -242,7 +235,7 @@ impl MemoryGraphTypeCatalog {
     }
 
     #[inline]
-    pub fn replace_edge_type_txn(
+    pub fn replace_edge_type(
         &self,
         label_set: &LabelSet,
         new_edge_type: EdgeTypeRef,
@@ -251,15 +244,8 @@ impl MemoryGraphTypeCatalog {
         // Referential integrity: the newly defined src/dst must exist.
         let src_ls = new_edge_type.src().label_set();
         let dst_ls = new_edge_type.dst().label_set();
-        let view = ReadView::from_txn(txn);
-        if self
-            .vertex_type_map
-            .get(&src_ls, &CatalogTxn::from_view(&view))
-            .is_none()
-            || self
-                .vertex_type_map
-                .get(&dst_ls, &CatalogTxn::from_view(&view))
-                .is_none()
+        if self.vertex_type_map.get(&src_ls, txn).is_none()
+            || self.vertex_type_map.get(&dst_ls, txn).is_none()
         {
             return Err(crate::txn::error::CatalogTxnError::ReferentialIntegrity {
                 reason: "edge src/dst vertex type not found".to_string(),
@@ -292,6 +278,7 @@ impl MemoryGraphTypeCatalog {
 }
 
 // ================ Pre-commit validation hook implementation ================
+#[derive(Debug)]
 struct GraphTypeIntegrityHook {
     // Hold the containers directly to avoid requiring weak references to Self.
     vertex_type_map: Arc<VersionedMap<LabelSet, VertexTypeRef>>,
@@ -299,6 +286,7 @@ struct GraphTypeIntegrityHook {
     kind: IntegrityKind,
 }
 
+#[derive(Debug)]
 enum IntegrityKind {
     LabelDelete { label_id: LabelId },
     VertexDelete { vertex_label_set: LabelSet },
@@ -412,51 +400,52 @@ impl TxnHook for GraphTypeIntegrityHook {
 
 impl GraphTypeProvider for MemoryGraphTypeCatalog {
     #[inline]
-    fn get_label_id_with(&self, name: &str, view: &ReadView) -> CatalogResult<Option<LabelId>> {
+    fn get_label_id(&self, name: &str, txn: &CatalogTxn) -> CatalogResult<Option<LabelId>> {
         Ok(self
             .label_map
-            .get(&name.to_string(), &CatalogTxn::from_view(view))
+            .get(&name.to_string(), txn)
             .map(|arc| *arc.as_ref()))
     }
 
     #[inline]
-    fn label_names_with(&self, view: &ReadView) -> Vec<String> {
-        self.label_map.visible_keys(view.start_ts, view.txn_id)
+    fn label_names(&self, txn: &CatalogTxn) -> Vec<String> {
+        self.label_map.visible_keys(txn.start_ts(), txn.txn_id())
     }
 
     #[inline]
-    fn get_vertex_type_with(
+    fn get_vertex_type(
         &self,
         key: &LabelSet,
-        view: &ReadView,
+        txn: &CatalogTxn,
     ) -> CatalogResult<Option<VertexTypeRef>> {
         Ok(self
             .vertex_type_map
-            .get(key, &CatalogTxn::from_view(view))
+            .get(key, txn)
             .map(|arc| arc.as_ref().clone()))
     }
 
     #[inline]
-    fn vertex_type_keys_with(&self, view: &ReadView) -> Vec<LabelSet> {
+    fn vertex_type_keys(&self, txn: &CatalogTxn) -> Vec<LabelSet> {
         self.vertex_type_map
-            .visible_keys(view.start_ts, view.txn_id)
+            .visible_keys(txn.start_ts(), txn.txn_id())
     }
 
     #[inline]
-    fn get_edge_type_with(
+    fn get_edge_type(
         &self,
         key: &LabelSet,
-        view: &ReadView,
+        txn: &CatalogTxn,
     ) -> CatalogResult<Option<EdgeTypeRef>> {
         Ok(self
             .edge_type_map
-            .get(key, &CatalogTxn::from_view(view))
+            .get(key, txn)
             .map(|arc| arc.as_ref().clone()))
     }
 
     #[inline]
-    fn edge_type_keys_with(&self, view: &ReadView) -> Vec<LabelSet> {
-        self.edge_type_map.visible_keys(view.start_ts, view.txn_id)
+    fn edge_type_keys(&self, txn: &CatalogTxn) -> Vec<LabelSet> {
+        self.edge_type_map
+            .visible_keys(txn.start_ts(), txn.txn_id())
     }
 }
 

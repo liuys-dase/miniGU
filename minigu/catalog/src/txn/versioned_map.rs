@@ -17,12 +17,14 @@ pub enum WriteOp {
 }
 
 /// Touched item: records the written node, operation, and expected base version
+#[derive(Debug)]
 pub struct TouchedItem<K, V> {
     pub key: K,
     pub node: Arc<CatalogVersionNode<V>>,
     pub op: WriteOp,
 }
 
+#[derive(Debug)]
 pub struct VersionedMap<K, V>
 where
     K: Eq + Hash + Clone + std::fmt::Debug,
@@ -62,7 +64,13 @@ where
     ) -> Option<Arc<CatalogVersionNode<V>>> {
         let guard = self.inner.read().unwrap();
         let chain = guard.get(key)?;
-        chain.visible_at(start_ts, txn_id)
+        let node = chain.visible_at(start_ts, txn_id)?;
+
+        if node.is_tombstone() {
+            return None;
+        }
+
+        Some(node)
     }
 
     /// Get the visible value of the key (returns None if it's a tombstone or nonexistent)
@@ -321,6 +329,7 @@ where
 
 /// Commit plan: the "applicable unit" produced by the validation phase, avoiding lookup and
 /// determination when applying.
+#[derive(Debug)]
 pub struct CommitPlan<K, V> {
     pub key: K,
     pub node: Arc<CatalogVersionNode<V>>,
