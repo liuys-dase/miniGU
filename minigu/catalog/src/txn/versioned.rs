@@ -25,6 +25,7 @@ fn decode_commit_ts(raw: u64) -> Option<Timestamp> {
 }
 
 /// Version node: stores value or tombstone, creator txn, and commit timestamp.
+#[derive(Debug)]
 pub struct CatalogVersionNode<V> {
     // None means tombstone
     value: RwLock<Option<Arc<V>>>,
@@ -166,6 +167,7 @@ impl<V> CatalogVersionNode<V> {
 }
 
 /// Version chain: a singly-linked list from newest to oldest (`head` points to the latest).
+#[derive(Debug)]
 pub struct CatalogVersionChain<V> {
     head: RwLock<Option<Arc<CatalogVersionNode<V>>>>,
 }

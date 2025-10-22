@@ -7,7 +7,6 @@ use crate::error::CatalogResult;
 use crate::provider::{
     DirectoryProvider, DirectoryRef, GraphRef, GraphTypeRef, ProcedureRef, SchemaProvider,
 };
-use crate::txn::ReadView;
 use crate::txn::catalog_txn::CatalogTxn;
 use crate::txn::versioned_map::{VersionedMap, WriteOp};
 
@@ -141,83 +140,44 @@ impl SchemaProvider for MemorySchemaCatalog {
     }
 
     #[inline]
-    fn graph_names(&self) -> Vec<String> {
-        self.graph_names_with(&ReadView::latest())
-    }
-
-    #[inline]
-    fn get_graph(&self, name: &str) -> CatalogResult<Option<GraphRef>> {
-        self.get_graph_with(name, &ReadView::latest())
-    }
-
-    #[inline]
-    fn get_graph_with(&self, name: &str, _view: &ReadView) -> CatalogResult<Option<GraphRef>> {
-        let view = _view;
+    fn get_graph(&self, name: &str, txn: &CatalogTxn) -> CatalogResult<Option<GraphRef>> {
         Ok(self
             .graph_map
-            .get(&name.to_string(), &CatalogTxn::from_view(view))
+            .get(&name.to_string(), txn)
             .map(|arc| (*arc).clone()))
     }
 
     #[inline]
-    fn graph_names_with(&self, view: &ReadView) -> Vec<String> {
-        self.graph_map.visible_keys(view.start_ts, view.txn_id)
+    fn graph_names(&self, txn: &CatalogTxn) -> Vec<String> {
+        self.graph_map.visible_keys(txn.start_ts(), txn.txn_id())
     }
 
     #[inline]
-    fn graph_type_names(&self) -> Vec<String> {
-        self.graph_type_names_with(&ReadView::latest())
-    }
-
-    #[inline]
-    fn get_graph_type(&self, name: &str) -> CatalogResult<Option<GraphTypeRef>> {
-        self.get_graph_type_with(name, &ReadView::latest())
-    }
-
-    #[inline]
-    fn get_graph_type_with(
-        &self,
-        name: &str,
-        _view: &ReadView,
-    ) -> CatalogResult<Option<GraphTypeRef>> {
-        let view = _view;
+    fn get_graph_type(&self, name: &str, txn: &CatalogTxn) -> CatalogResult<Option<GraphTypeRef>> {
         Ok(self
             .graph_type_map
-            .get(&name.to_string(), &CatalogTxn::from_view(view))
+            .get(&name.to_string(), txn)
             .map(|arc| (*arc).clone()))
     }
 
     #[inline]
-    fn graph_type_names_with(&self, view: &ReadView) -> Vec<String> {
-        self.graph_type_map.visible_keys(view.start_ts, view.txn_id)
+    fn graph_type_names(&self, txn: &CatalogTxn) -> Vec<String> {
+        self.graph_type_map
+            .visible_keys(txn.start_ts(), txn.txn_id())
     }
 
     #[inline]
-    fn procedure_names(&self) -> Vec<String> {
-        self.procedure_names_with(&ReadView::latest())
-    }
-
-    #[inline]
-    fn get_procedure(&self, name: &str) -> CatalogResult<Option<ProcedureRef>> {
-        self.get_procedure_with(name, &ReadView::latest())
-    }
-
-    #[inline]
-    fn get_procedure_with(
-        &self,
-        name: &str,
-        _view: &ReadView,
-    ) -> CatalogResult<Option<ProcedureRef>> {
-        let view = _view;
+    fn get_procedure(&self, name: &str, txn: &CatalogTxn) -> CatalogResult<Option<ProcedureRef>> {
         Ok(self
             .procedure_map
-            .get(&name.to_string(), &CatalogTxn::from_view(view))
+            .get(&name.to_string(), txn)
             .map(|arc| (*arc).clone()))
     }
 
     #[inline]
-    fn procedure_names_with(&self, view: &ReadView) -> Vec<String> {
-        self.procedure_map.visible_keys(view.start_ts, view.txn_id)
+    fn procedure_names(&self, txn: &CatalogTxn) -> Vec<String> {
+        self.procedure_map
+            .visible_keys(txn.start_ts(), txn.txn_id())
     }
 
     #[inline]

@@ -30,6 +30,7 @@ use minigu_catalog::label_set::LabelSet;
 use minigu_catalog::property::Property;
 use minigu_catalog::provider::GraphTypeProvider;
 use minigu_catalog::txn::ReadView;
+use minigu_catalog::txn::catalog_txn::CatalogTxn;
 use minigu_common::types::LabelId;
 use serde::{Deserialize, Serialize};
 
@@ -41,25 +42,25 @@ type RecordType = Vec<String>;
 
 /// Cached lookup information derived from `GraphTypeProvider`.
 #[derive(Debug)]
-struct SchemaMetadata {
+struct SchemaMetadata<'a> {
     label_map: HashMap<LabelId, String>,
     vertex_labels: HashSet<LabelId>,
     edge_infos: HashMap<LabelId, (LabelId, LabelId)>,
     schema: Arc<dyn GraphTypeProvider>,
-    view: ReadView,
+    txn: &'a CatalogTxn,
 }
 
-impl SchemaMetadata {
-    fn from_schema_with_view(
+impl<'a> SchemaMetadata<'a> {
+    fn from_schema(
         graph_type: Arc<dyn GraphTypeProvider>,
-        view: &ReadView,
+        catalog_txn: &'a CatalogTxn,
     ) -> Result<Self> {
         // Build a label map LabelId -> String
-        let label_names = graph_type.label_names_with(view);
+        let label_names = graph_type.label_names(catalog_txn);
         let mut label_map = HashMap::with_capacity(label_names.len());
         for name in label_names {
             let label_id = graph_type
-                .get_label_id_with(&name, view)?
+                .get_label_id(&name, catalog_txn)?
                 .expect("label id not found");
             label_map.insert(label_id, name);
         }
@@ -71,7 +72,7 @@ impl SchemaMetadata {
             let label_set = LabelSet::from_iter(vec![id]);
 
             if let Some(edge_type) = graph_type
-                .get_edge_type_with(&label_set, view)
+                .get_edge_type(&label_set, catalog_txn)
                 .expect("edge type not found")
             {
                 let src_label_set = edge_type.src().label_set();
@@ -99,7 +100,7 @@ impl SchemaMetadata {
             vertex_labels,
             edge_infos,
             schema: Arc::clone(&graph_type),
-            view: *view,
+            txn: catalog_txn,
         })
     }
 }
@@ -198,11 +199,15 @@ impl Manifest {
         let mut vertex_specs = Vec::with_capacity(vertex_labels.len());
 
         for &id in vertex_labels {
-            let name = metadata.label_map.get(&id).expect("label id not found");
+            let name = metadata
+                .label_map
+                .get(&id)
+                .cloned()
+                .unwrap_or_else(|| format!("vertex_{}", id.get()));
             let path = format!("{}.csv", name);
             let props_schema = metadata
                 .schema
-                .get_vertex_type_with(&LabelSet::from_iter(vec![id]), &metadata.view)? // will return None for vertex (inverse call later)
+                .get_vertex_type(&LabelSet::from_iter(vec![id]), metadata.txn)? // will return None for vertex (inverse call later)
                 .expect("vertex type not found")
                 .properties()
                 .into_iter()
@@ -210,7 +215,7 @@ impl Manifest {
                 .collect::<Vec<_>>();
 
             vertex_specs.push(VertexSpec::new(
-                name.clone(),
+                name,
                 FileSpec::new(path, "csv".to_string()),
                 props_schema,
             ))
@@ -220,22 +225,34 @@ impl Manifest {
         let mut edge_specs = Vec::with_capacity(edge_infos.len());
 
         for (&id, (src_id, dst_id)) in edge_infos {
-            let name = metadata.label_map.get(&id).expect("label id not found");
+            let name = metadata
+                .label_map
+                .get(&id)
+                .cloned()
+                .unwrap_or_else(|| format!("edge_{}", id.get()));
             let path = format!("{}.csv", name);
             let props_schema = metadata
                 .schema
-                .get_edge_type_with(&LabelSet::from_iter(vec![id]), &metadata.view)? // will return None for vertex (inverse call later)
+                .get_edge_type(&LabelSet::from_iter(vec![id]), metadata.txn)? // will return None for vertex (inverse call later)
                 .expect("edge type not found")
                 .properties()
                 .into_iter()
                 .map(|prop| prop.1) // drop index key
                 .collect::<Vec<_>>();
 
-            let src_label = metadata.label_map.get(src_id).unwrap().clone();
-            let dst_label = metadata.label_map.get(dst_id).unwrap().clone();
+            let src_label = metadata
+                .label_map
+                .get(src_id)
+                .cloned()
+                .unwrap_or_else(|| format!("vertex_{}", src_id.get()));
+            let dst_label = metadata
+                .label_map
+                .get(dst_id)
+                .cloned()
+                .unwrap_or_else(|| format!("vertex_{}", dst_id.get()));
 
             edge_specs.push(EdgeSpec::new(
-                name.clone(),
+                name,
                 src_label,
                 dst_label,
                 FileSpec::new(path, "csv".to_string()),
@@ -274,6 +291,7 @@ mod tests {
     use minigu_catalog::memory::graph_type::{
         MemoryEdgeTypeCatalog, MemoryGraphTypeCatalog, MemoryVertexTypeCatalog,
     };
+    use minigu_catalog::txn::manager::CatalogTxnManager;
     use minigu_common::data_type::LogicalType;
     use minigu_common::types::{EdgeId, VertexId};
     use minigu_common::value::ScalarValue;
@@ -287,8 +305,6 @@ mod tests {
     use super::*;
     use crate::procedures::export_import::export::export;
     use crate::procedures::export_import::import::import;
-
-    // 不再硬编码 LabelId，改为从 graph_type 查询
 
     fn create_vertex(vid: VertexId, label_id: LabelId, properties: Vec<ScalarValue>) -> Vertex {
         Vertex::new(vid, label_id, PropertyRecord::new(properties))
@@ -394,22 +410,23 @@ mod tests {
         graph
     }
 
-    fn mock_graph_type() -> (MemoryGraphTypeCatalog, LabelId, LabelId, LabelId) {
+    fn mock_graph_type(
+        mgr: &CatalogTxnManager,
+    ) -> (MemoryGraphTypeCatalog, LabelId, LabelId, LabelId) {
         use minigu_catalog::txn::manager::CatalogTxnManager;
         use minigu_transaction::{GraphTxnManager, IsolationLevel, Transaction};
         let graph_type = MemoryGraphTypeCatalog::new();
-        let mgr = CatalogTxnManager::new();
 
         // Txn 1: Create labels and vertex types, and commit
         let txn1 = mgr.begin_transaction(IsolationLevel::Snapshot).unwrap();
         let person_id = graph_type
-            .add_label_txn("person".to_string(), txn1.as_ref())
+            .add_label("person".to_string(), txn1.as_ref())
             .unwrap();
         let friend_id = graph_type
-            .add_label_txn("friend".to_string(), txn1.as_ref())
+            .add_label("friend".to_string(), txn1.as_ref())
             .unwrap();
         let follow_id = graph_type
-            .add_label_txn("follow".to_string(), txn1.as_ref())
+            .add_label("follow".to_string(), txn1.as_ref())
             .unwrap();
 
         let person_label_set = LabelSet::from_iter([person_id]);
@@ -425,14 +442,14 @@ mod tests {
         ));
 
         graph_type
-            .add_vertex_type_txn(person_label_set.clone(), vertex_type.clone(), txn1.as_ref())
+            .add_vertex_type(person_label_set.clone(), vertex_type.clone(), txn1.as_ref())
             .unwrap();
         txn1.commit().unwrap();
 
         // Txn 2: Create edge types based on committed vertex types, and commit
         let txn2 = mgr.begin_transaction(IsolationLevel::Snapshot).unwrap();
         graph_type
-            .add_edge_type_txn(
+            .add_edge_type(
                 friend_label_set.clone(),
                 Arc::new(MemoryEdgeTypeCatalog::new(
                     friend_label_set,
@@ -448,7 +465,7 @@ mod tests {
             )
             .unwrap();
         graph_type
-            .add_edge_type_txn(
+            .add_edge_type(
                 follow_label_set.clone(),
                 Arc::new(MemoryEdgeTypeCatalog::new(
                     follow_label_set,
@@ -531,17 +548,36 @@ mod tests {
 
     #[test]
     fn test_mock_graph_type() {
-        let (gt, person_id, friend_id, follow_id) = mock_graph_type();
+        let mgr = CatalogTxnManager::new();
+        let (gt, person_id, friend_id, follow_id) = mock_graph_type(&mgr);
         assert_eq!(
-            gt.get_label_id_with("person", &ReadView::latest()).unwrap(),
+            gt.get_label_id(
+                "person",
+                mgr.begin_transaction(IsolationLevel::Snapshot)
+                    .unwrap()
+                    .as_ref()
+            )
+            .unwrap(),
             Some(person_id)
         );
         assert_eq!(
-            gt.get_label_id_with("friend", &ReadView::latest()).unwrap(),
+            gt.get_label_id(
+                "friend",
+                mgr.begin_transaction(IsolationLevel::Snapshot)
+                    .unwrap()
+                    .as_ref()
+            )
+            .unwrap(),
             Some(friend_id)
         );
         assert_eq!(
-            gt.get_label_id_with("follow", &ReadView::latest()).unwrap(),
+            gt.get_label_id(
+                "follow",
+                mgr.begin_transaction(IsolationLevel::Snapshot)
+                    .unwrap()
+                    .as_ref()
+            )
+            .unwrap(),
             Some(follow_id)
         );
     }
@@ -556,9 +592,11 @@ mod tests {
 
         let manifest_rel_path = "manifest.json";
 
-        let (gt, person_id, friend_id, follow_id) = mock_graph_type();
+        let mgr = CatalogTxnManager::new();
+        let (gt, person_id, friend_id, follow_id) = mock_graph_type(&mgr);
         let graph_type: Arc<dyn GraphTypeProvider> = Arc::new(gt);
         {
+            let txn = mgr.begin_transaction(IsolationLevel::Snapshot).unwrap();
             let graph = mock_graph(person_id, friend_id, follow_id);
 
             export(
@@ -566,12 +604,14 @@ mod tests {
                 export_dir1,
                 manifest_rel_path.as_ref(),
                 Arc::clone(&graph_type),
-                ReadView::latest(),
+                txn.as_ref(),
             )
             .unwrap();
+            let _ = txn.commit().unwrap();
         }
 
         {
+            let txn = mgr.begin_transaction(IsolationLevel::Snapshot).unwrap();
             let manifest_path = export_dir1.join(manifest_rel_path);
             let (graph, graph_type) = import(manifest_path).unwrap();
 
@@ -580,9 +620,10 @@ mod tests {
                 export_dir2,
                 manifest_rel_path.as_ref(),
                 graph_type.clone(),
-                ReadView::latest(),
+                txn.as_ref(),
             )
             .unwrap();
+            let _ = txn.commit().unwrap();
         }
 
         assert!(export_dirs_equal_semantically(export_dir1, export_dir2));
