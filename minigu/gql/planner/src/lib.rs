@@ -32,7 +32,7 @@ impl Planner {
             self.context
                 .catalog_txn_mgr
                 .begin_transaction(IsolationLevel::Snapshot)
-                .map_err(|e| PlanError::Transaction(e))?
+                .map_err(PlanError::Transaction)?
         };
         let binder = Binder::new(
             self.context.database().catalog(),

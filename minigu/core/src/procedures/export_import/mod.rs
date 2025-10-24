@@ -42,25 +42,27 @@ type RecordType = Vec<String>;
 
 /// Cached lookup information derived from `GraphTypeProvider`.
 #[derive(Debug)]
-struct SchemaMetadata<'a> {
+struct SchemaMetadata {
     label_map: HashMap<LabelId, String>,
     vertex_labels: HashSet<LabelId>,
     edge_infos: HashMap<LabelId, (LabelId, LabelId)>,
     schema: Arc<dyn GraphTypeProvider>,
-    txn: &'a CatalogTxn,
+    // Use an owned read-only txn built from the latest committed view to avoid
+    // missing labels/types due to caller's snapshot being older.
+    txn: Arc<CatalogTxn>,
 }
 
-impl<'a> SchemaMetadata<'a> {
+impl SchemaMetadata {
     fn from_schema(
         graph_type: Arc<dyn GraphTypeProvider>,
-        catalog_txn: &'a CatalogTxn,
+        catalog_txn: Arc<CatalogTxn>,
     ) -> Result<Self> {
         // Build a label map LabelId -> String
-        let label_names = graph_type.label_names(catalog_txn);
+        let label_names = graph_type.label_names(&catalog_txn);
         let mut label_map = HashMap::with_capacity(label_names.len());
         for name in label_names {
             let label_id = graph_type
-                .get_label_id(&name, catalog_txn)?
+                .get_label_id(&name, &catalog_txn)?
                 .expect("label id not found");
             label_map.insert(label_id, name);
         }
@@ -72,7 +74,7 @@ impl<'a> SchemaMetadata<'a> {
             let label_set = LabelSet::from_iter(vec![id]);
 
             if let Some(edge_type) = graph_type
-                .get_edge_type(&label_set, catalog_txn)
+                .get_edge_type(&label_set, &catalog_txn)
                 .expect("edge type not found")
             {
                 let src_label_set = edge_type.src().label_set();
@@ -207,7 +209,7 @@ impl Manifest {
             let path = format!("{}.csv", name);
             let props_schema = metadata
                 .schema
-                .get_vertex_type(&LabelSet::from_iter(vec![id]), metadata.txn)? // will return None for vertex (inverse call later)
+                .get_vertex_type(&LabelSet::from_iter(vec![id]), &metadata.txn)? // will return None for vertex (inverse call later)
                 .expect("vertex type not found")
                 .properties()
                 .into_iter()
@@ -233,7 +235,7 @@ impl Manifest {
             let path = format!("{}.csv", name);
             let props_schema = metadata
                 .schema
-                .get_edge_type(&LabelSet::from_iter(vec![id]), metadata.txn)? // will return None for vertex (inverse call later)
+                .get_edge_type(&LabelSet::from_iter(vec![id]), &metadata.txn)? // will return None for vertex (inverse call later)
                 .expect("edge type not found")
                 .properties()
                 .into_iter()
@@ -482,6 +484,19 @@ mod tests {
             .unwrap();
         txn2.commit().unwrap();
 
+        // Verification - check all labels are visible
+        let txn3 = mgr.begin_transaction(IsolationLevel::Snapshot).unwrap();
+
+        let fetched_person_id = graph_type.get_label_id("person", txn3.as_ref()).unwrap();
+        let fetched_friend_id = graph_type.get_label_id("friend", txn3.as_ref()).unwrap();
+        let fetched_follow_id = graph_type.get_label_id("follow", txn3.as_ref()).unwrap();
+
+        assert_eq!(fetched_person_id, Some(person_id), "person label mismatch");
+        assert_eq!(fetched_friend_id, Some(friend_id), "friend label mismatch");
+        assert_eq!(fetched_follow_id, Some(follow_id), "follow label mismatch");
+
+        txn3.commit().unwrap();
+
         (graph_type, person_id, friend_id, follow_id)
     }
 
@@ -604,23 +619,23 @@ mod tests {
                 export_dir1,
                 manifest_rel_path.as_ref(),
                 Arc::clone(&graph_type),
-                txn.as_ref(),
+                txn.clone(),
             )
             .unwrap();
             let _ = txn.commit().unwrap();
         }
 
         {
-            let txn = mgr.begin_transaction(IsolationLevel::Snapshot).unwrap();
             let manifest_path = export_dir1.join(manifest_rel_path);
-            let (graph, graph_type) = import(manifest_path).unwrap();
+            let (graph, graph_type) = import(manifest_path, &mgr).unwrap();
+            let txn = mgr.begin_transaction(IsolationLevel::Snapshot).unwrap();
 
             export(
                 graph,
                 export_dir2,
                 manifest_rel_path.as_ref(),
                 graph_type.clone(),
-                txn.as_ref(),
+                txn.clone(),
             )
             .unwrap();
             let _ = txn.commit().unwrap();

@@ -101,11 +101,11 @@ fn build_properties<'a>(
 
 pub(crate) fn import<P: AsRef<Path>>(
     manifest_path: P,
+    mgr: &CatalogTxnManager,
 ) -> Result<(Arc<MemoryGraph>, Arc<MemoryGraphTypeCatalog>)> {
     // Graph type
     let manifest = build_manifest(&manifest_path)?;
-    let mgr: CatalogTxnManager = CatalogTxnManager::new();
-    let graph_type = get_graph_type_from_manifest(&manifest, &mgr)?;
+    let graph_type = get_graph_type_from_manifest(&manifest, mgr)?;
 
     // Graph
     let graph = MemoryGraph::with_config_fresh(Default::default(), Default::default());
@@ -122,10 +122,10 @@ pub(crate) fn import<P: AsRef<Path>>(
     // Map each original vertex ID to it's newly assigned ID.
     let mut vid_mapping = HashMap::new();
 
-    let catalog_txn = mgr.begin_transaction(IsolationLevel::Snapshot)?;
     // 1. Vertices
     let mut vid = 1;
     for vertex_spec in manifest.vertices.iter() {
+        let catalog_txn = mgr.begin_transaction(IsolationLevel::Snapshot)?;
         let path = manifest_parent_dir.join(&vertex_spec.file.path);
         let mut rdr = ReaderBuilder::new().has_headers(false).from_path(path)?;
 
@@ -152,14 +152,13 @@ pub(crate) fn import<P: AsRef<Path>>(
             vid_mapping.insert(old_vid, vid);
             vid += 1;
         }
+        catalog_txn.commit()?;
     }
-
-    let _ = catalog_txn.commit()?;
-    let catalog_txn = mgr.begin_transaction(IsolationLevel::Snapshot)?;
 
     // 2. Edges
     let mut eid = 1;
     for edge_spec in manifest.edges.iter() {
+        let catalog_txn = mgr.begin_transaction(IsolationLevel::Snapshot)?;
         let path = manifest_parent_dir.join(&edge_spec.file.path);
         let label_id = graph_type
             .get_label_id(&edge_spec.label, catalog_txn.as_ref())?
@@ -188,10 +187,10 @@ pub(crate) fn import<P: AsRef<Path>>(
             graph.create_edge(&txn, edge)?;
             eid += 1;
         }
+        catalog_txn.commit()?;
     }
 
-    let _ = txn.commit()?;
-    let _ = catalog_txn.commit()?;
+    txn.commit()?;
 
     Ok((graph, graph_type))
 }
@@ -203,27 +202,27 @@ fn get_graph_type_from_manifest(
     let graph_type = MemoryGraphTypeCatalog::new();
     let mut label_vertex_type = HashMap::new();
 
-    // Txn 1: Create labels and vertex types, make them visible.
-    let txn1 = mgr.begin_transaction(IsolationLevel::Snapshot)?;
     for vs in manifest.vertices_spec().iter() {
+        // Create labels and vertex types, make them visible.
+        let txn = mgr.begin_transaction(IsolationLevel::Snapshot)?;
         let label = vs.label_name();
-        let label_id = graph_type.add_label(label.clone(), txn1.as_ref())?;
+        let label_id = graph_type.add_label(label.clone(), txn.as_ref())?;
         let label_set = LabelSet::from_iter(vec![label_id]);
         let vertex_type = Arc::new(MemoryVertexTypeCatalog::new(
             label_set.clone(),
             vs.properties().clone(),
         ));
         let vt: minigu_catalog::provider::VertexTypeRef = Arc::clone(&vertex_type) as _;
-        graph_type.add_vertex_type(label_set, vt, txn1.as_ref())?;
+        graph_type.add_vertex_type(label_set, vt, txn.as_ref())?;
 
         label_vertex_type.insert(label.clone(), vertex_type);
+        txn.commit()?;
     }
-    txn1.commit()?;
 
-    // Txn 2: Create edge labels and edge types; pre-commit will check if src/dst vertex types exist
-    let txn2 = mgr.begin_transaction(IsolationLevel::Snapshot)?;
     for es in manifest.edges_spec().iter() {
-        let label_id = graph_type.add_label(es.label_name().clone(), txn2.as_ref())?;
+        // Create edge labels and edge types; pre-commit will check if src/dst vertex types exist
+        let txn = mgr.begin_transaction(IsolationLevel::Snapshot)?;
+        let label_id = graph_type.add_label(es.label_name().clone(), txn.as_ref())?;
         let label_set = LabelSet::from_iter(vec![label_id]);
         let src_type = label_vertex_type
             .get(es.src_label())
@@ -239,9 +238,9 @@ fn get_graph_type_from_manifest(
             es.properties().clone(),
         );
         let et: minigu_catalog::provider::EdgeTypeRef = Arc::new(edge_type) as _;
-        graph_type.add_edge_type(label_set, et, txn2.as_ref())?;
+        graph_type.add_edge_type(label_set, et, txn.as_ref())?;
+        txn.commit()?;
     }
-    txn2.commit()?;
 
     Ok(Arc::new(graph_type))
 }
@@ -277,7 +276,7 @@ pub fn build_procedure() -> Procedure {
             .current_schema
             .ok_or_else(|| anyhow::anyhow!("current schema not set"))?;
 
-        let (graph, graph_type) = import(manifest_path)?;
+        let (graph, graph_type) = import(manifest_path, &context.catalog_txn_mgr)?;
 
         let container = GraphContainer::new(
             Arc::clone(&graph_type),

@@ -32,6 +32,7 @@ use minigu_storage::tp::MemoryGraph;
 use minigu_transaction::{GraphTxnManager, IsolationLevel, Transaction};
 
 use crate::procedures::export_import::{Manifest, RecordType, Result, SchemaMetadata};
+use crate::session;
 
 /// Convert a [`ScalarValue`] back into a *CSV‑ready* string. `NULL` becomes an
 /// empty string.
@@ -192,7 +193,7 @@ pub(crate) fn export<P: AsRef<Path>>(
     dir: P,
     manifest_rel_path: P, // relative path
     graph_type: Arc<dyn GraphTypeProvider>,
-    catalog_txn: &CatalogTxn,
+    catalog_txn: Arc<CatalogTxn>,
 ) -> Result<()> {
     let txn = graph
         .txn_manager()
@@ -202,7 +203,7 @@ pub(crate) fn export<P: AsRef<Path>>(
     let dir = dir.as_ref();
     std::fs::create_dir_all(dir)?;
 
-    let metadata = SchemaMetadata::from_schema(Arc::clone(&graph_type), catalog_txn)?;
+    let metadata = SchemaMetadata::from_schema(Arc::clone(&graph_type), catalog_txn.clone())?;
 
     let mut vertice_builder = VerticesBuilder::new(dir, &metadata.label_map)?;
     let mut edges_builder = EdgesBuilder::new(dir, &metadata.label_map)?;
@@ -259,24 +260,21 @@ pub fn build_procedure() -> Procedure {
 
         let schema = context
             .current_schema
+            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("current schema not set"))?;
 
-        let txn = if let Some(txn) = &context.current_txn {
-            txn.clone()
-        } else {
-            context
-                .catalog_txn_mgr
-                .begin_transaction(IsolationLevel::Snapshot)?
-        };
+        let txn = context.begin_txn()?;
         let graph_container = schema
             .get_graph(&graph_name, txn.as_ref())?
             .ok_or_else(|| anyhow::anyhow!("graph type named with {} not found", graph_name))?;
         let graph_type = graph_container.graph_type();
         let graph = get_graph_from_graph_container(graph_container)?;
-
-        export(graph, dir_path, manifest_rel_path, graph_type, txn.as_ref())?;
-
         let _ = txn.commit()?;
+
+        let txn = context.begin_txn()?;
+        export(graph, dir_path, manifest_rel_path, graph_type, txn.clone())?;
+        let _ = txn.commit()?;
+
         Ok(vec![])
     })
 }

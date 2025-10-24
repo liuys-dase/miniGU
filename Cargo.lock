@@ -1498,6 +1498,7 @@ dependencies = [
  "minigu-catalog",
  "minigu-common",
  "minigu-storage",
+ "minigu-transaction",
  "rayon",
 ]
 
