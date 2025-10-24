@@ -29,7 +29,6 @@ use std::sync::Arc;
 use minigu_catalog::label_set::LabelSet;
 use minigu_catalog::property::Property;
 use minigu_catalog::provider::GraphTypeProvider;
-use minigu_catalog::txn::ReadView;
 use minigu_catalog::txn::catalog_txn::CatalogTxn;
 use minigu_common::types::LabelId;
 use serde::{Deserialize, Serialize};

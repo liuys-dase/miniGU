@@ -19,8 +19,8 @@ use std::sync::Arc;
 
 use csv::{Writer, WriterBuilder};
 use minigu_catalog::provider::{GraphProvider, GraphTypeProvider, SchemaProvider};
+use minigu_catalog::txn::catalog_txn;
 use minigu_catalog::txn::catalog_txn::CatalogTxn;
-use minigu_catalog::txn::{ReadView, catalog_txn};
 use minigu_common::data_type::LogicalType;
 use minigu_common::error::not_implemented;
 use minigu_common::types::{EdgeId, LabelId, VertexId};

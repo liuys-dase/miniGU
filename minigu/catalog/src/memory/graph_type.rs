@@ -11,7 +11,6 @@ use crate::provider::{
     EdgeTypeProvider, EdgeTypeRef, GraphTypeProvider, PropertiesProvider, VertexTypeProvider,
     VertexTypeRef,
 };
-use crate::txn::ReadView;
 use crate::txn::catalog_txn::{CatalogTxn, TxnHook};
 use crate::txn::versioned_map::{VersionedMap, WriteOp};
 
@@ -335,15 +334,14 @@ impl GraphTypeIntegrityHook {
 }
 
 impl TxnHook for GraphTypeIntegrityHook {
-    fn precommit(&self) -> Result<(), crate::txn::error::CatalogTxnError> {
+    fn precommit(&self, txn: &CatalogTxn) -> Result<(), crate::txn::error::CatalogTxnError> {
         use crate::txn::error::CatalogTxnError;
-        let latest = ReadView::latest();
         match &self.kind {
             IntegrityKind::LabelDelete { label_id } => {
                 // (1) Vertex-type keys must not contain this label.
                 let v_keys = self
                     .vertex_type_map
-                    .visible_keys(latest.start_ts, latest.txn_id);
+                    .visible_keys(txn.start_ts(), txn.txn_id());
                 if v_keys.iter().any(|k| k.contains(*label_id)) {
                     return Err(CatalogTxnError::ReferentialIntegrity {
                         reason: format!("label {:?} is still used by vertex types", label_id),
@@ -352,7 +350,7 @@ impl TxnHook for GraphTypeIntegrityHook {
                 // (2) Edge-type keys must not contain this label.
                 let e_keys = self
                     .edge_type_map
-                    .visible_keys(latest.start_ts, latest.txn_id);
+                    .visible_keys(txn.start_ts(), txn.txn_id());
                 if e_keys.iter().any(|k| k.contains(*label_id)) {
                     return Err(CatalogTxnError::ReferentialIntegrity {
                         reason: format!("label {:?} is still used by edge types", label_id),
@@ -364,10 +362,9 @@ impl TxnHook for GraphTypeIntegrityHook {
                 // No edge type should reference this vertex type.
                 let e_keys = self
                     .edge_type_map
-                    .visible_keys(latest.start_ts, latest.txn_id);
+                    .visible_keys(txn.start_ts(), txn.txn_id());
                 for k in e_keys.into_iter() {
-                    if let Some(edge) = self.edge_type_map.get(&k, &CatalogTxn::from_view(&latest))
-                    {
+                    if let Some(edge) = self.edge_type_map.get(&k, txn) {
                         let edge = edge.as_ref();
                         if edge.src().label_set() == *vertex_label_set
                             || edge.dst().label_set() == *vertex_label_set
@@ -382,14 +379,8 @@ impl TxnHook for GraphTypeIntegrityHook {
             }
             IntegrityKind::EdgeSrcDstExist { src, dst } => {
                 // In the latest committed view, both src and dst vertex types must exist.
-                let s = self
-                    .vertex_type_map
-                    .get(src, &CatalogTxn::from_view(&latest))
-                    .is_some();
-                let d = self
-                    .vertex_type_map
-                    .get(dst, &CatalogTxn::from_view(&latest))
-                    .is_some();
+                let s = self.vertex_type_map.get(src, txn).is_some();
+                let d = self.vertex_type_map.get(dst, txn).is_some();
                 if s && d {
                     Ok(())
                 } else {
