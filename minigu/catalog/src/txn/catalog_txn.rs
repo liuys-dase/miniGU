@@ -5,7 +5,6 @@ use std::sync::{Arc, Mutex, Weak};
 use minigu_transaction::timestamp::Timestamp;
 use minigu_transaction::{IsolationLevel, Transaction, global_timestamp_generator};
 
-use crate::txn::ReadView;
 use crate::txn::error::{CatalogTxnError, CatalogTxnResult};
 use crate::txn::manager::CatalogTxnManagerInner;
 use crate::txn::versioned::CatalogVersionNode;
@@ -134,20 +133,6 @@ impl CatalogTxn {
         }
     }
 
-    /// Create a transaction from a read view. Only used for `get_xxx_with`.
-    pub fn from_view(view: &ReadView) -> Self {
-        Self {
-            txn_id: view.txn_id,
-            start_ts: view.start_ts,
-            commit_ts_raw: AtomicU64::new(0),
-            isolation: IsolationLevel::Snapshot,
-            touched: Mutex::new(Vec::new()),
-            hooks: Mutex::new(Vec::new()),
-            mgr: Weak::new(),
-            op_mutex: Mutex::new(()),
-        }
-    }
-
     /// Record a set of writes to a `VersionedMap` for subsequent batch commit/abort.
     pub fn record_versioned_map_writes<K, V>(
         &self,
@@ -215,7 +200,7 @@ impl Transaction for CatalogTxn {
         {
             let hooks = self.hooks.lock().expect("poisoned hooks mutex");
             for h in hooks.iter() {
-                h.precommit()?;
+                h.precommit(self)?;
             }
         }
 
@@ -271,7 +256,7 @@ impl Transaction for CatalogTxn {
 
 /// Transaction hook interface exposed to external users (e.g., pre-commit checks).
 pub trait TxnHook: Send + Sync + std::fmt::Debug {
-    fn precommit(&self) -> CatalogTxnResult<()>;
+    fn precommit(&self, txn: &CatalogTxn) -> CatalogTxnResult<()>;
 }
 
 #[cfg(test)]

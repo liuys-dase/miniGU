@@ -13,7 +13,6 @@ mod value_expr;
 use gql_parser::ast::Procedure;
 use minigu_catalog::named_ref::NamedGraphRef;
 use minigu_catalog::provider::{CatalogProvider, SchemaRef};
-use minigu_catalog::txn::ReadView;
 use minigu_catalog::txn::catalog_txn::CatalogTxn;
 use minigu_common::data_type::DataSchema;
 
