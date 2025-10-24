@@ -48,7 +48,7 @@ where
 impl<K, V> VersionedMap<K, V>
 where
     K: Eq + Hash + Clone + std::fmt::Debug,
-    V: Send + Sync + 'static,
+    V: Send + Sync + 'static + std::fmt::Debug,
 {
     #[inline]
     pub fn new() -> Self {

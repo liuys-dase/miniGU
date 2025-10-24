@@ -26,7 +26,11 @@ pub struct MemoryGraphTypeCatalog {
 
 impl fmt::Debug for MemoryGraphTypeCatalog {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("MemoryGraphTypeCatalog").finish()
+        f.debug_struct("MemoryGraphTypeCatalog")
+            .field("label_map", &self.label_map)
+            .field("vertex_type_map", &self.vertex_type_map)
+            .field("edge_type_map", &self.edge_type_map)
+            .finish()
     }
 }
 

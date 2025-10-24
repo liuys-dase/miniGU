@@ -97,6 +97,24 @@ pub struct CatalogTxn {
     op_mutex: Mutex<()>, // commit/abort mutex.
 }
 
+impl Clone for CatalogTxn {
+    fn clone(&self) -> Self {
+        Self {
+            txn_id: self.txn_id,
+            start_ts: self.start_ts,
+            commit_ts_raw: AtomicU64::new(self.commit_ts_raw.load(Ordering::Relaxed)),
+            isolation: self.isolation,
+
+            touched: Mutex::new(Vec::new()),
+            hooks: Mutex::new(Vec::new()),
+
+            mgr: self.mgr.clone(),
+
+            op_mutex: Mutex::new(()),
+        }
+    }
+}
+
 impl CatalogTxn {
     pub(crate) fn new(
         txn_id: Timestamp,
