@@ -153,17 +153,6 @@ impl<V> CatalogVersionNode<V> {
             self.creator_txn == txn_id
         }
     }
-
-    /// Encode this node's "version identifier" as `u64`
-    /// (prefer commit timestamp; otherwise use creator txn id).
-    #[inline]
-    pub fn version_id(&self) -> u64 {
-        if let Some(cts) = self.commit_ts() {
-            cts.raw()
-        } else {
-            self.creator_txn.raw()
-        }
-    }
 }
 
 /// Version chain: a singly-linked list from newest to oldest (`head` points to the latest).

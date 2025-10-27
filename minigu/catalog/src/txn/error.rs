@@ -41,6 +41,11 @@ pub enum CatalogTxnError {
     /// Other external error (propagated).
     #[error(transparent)]
     External(#[from] Box<dyn Error + Send + Sync + 'static>),
+
+    /// Serializable conflict: a key read by this transaction was modified by another
+    /// transaction after this transaction's snapshot (start_ts).
+    #[error("serialization conflict on key: {key}")]
+    SerializationConflict { key: String },
 }
 
 /// Unified result type for Catalog transaction operations.

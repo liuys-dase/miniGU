@@ -158,6 +158,12 @@ impl CatalogTxn {
         self.hooks.lock().expect("poisoned hooks mutex").push(hook);
     }
 
+    /// Convenience: whether this transaction runs under Serializable isolation
+    #[inline]
+    pub fn is_serializable(&self) -> bool {
+        matches!(self.isolation, IsolationLevel::Serializable)
+    }
+
     /// Construct and record a single write entry.
     pub fn record_write<K, V>(
         &self,
@@ -463,5 +469,46 @@ mod tests {
         let check_txn = begin_txn(&mgr);
         let val = map.get(&key, &check_txn).unwrap();
         assert_eq!(*val, 3);
+    }
+
+    #[test]
+    fn serializable_read_conflict_on_commit() {
+        let mgr = CatalogTxnManager::new();
+        let map: Arc<VersionedMap<String, i32>> = Arc::new(VersionedMap::new());
+        let key = "s1".to_string();
+
+        // Seed an initial committed value = 1
+        let seed = mgr
+            .begin_transaction(minigu_transaction::IsolationLevel::Snapshot)
+            .expect("begin seed txn");
+        let n1 = map
+            .put(key.clone(), Arc::new(1), &seed)
+            .expect("seed put ok");
+        seed.record_write(&map, key.clone(), n1, WriteOp::Create);
+        seed.commit().expect("seed commit ok");
+
+        // T1 (Serializable) reads value 1
+        let t1 = mgr
+            .begin_transaction(minigu_transaction::IsolationLevel::Serializable)
+            .expect("begin t1");
+        let v_read = map.get(&key, &t1).expect("t1 should read value");
+        assert_eq!(*v_read, 1);
+
+        // T2 writes a new version (=2) and commits
+        let t2 = mgr
+            .begin_transaction(minigu_transaction::IsolationLevel::Serializable)
+            .expect("begin t2");
+        let n2 = map.put(key.clone(), Arc::new(2), &t2).expect("t2 put ok");
+        t2.record_write(&map, key.clone(), n2, WriteOp::Replace);
+        t2.commit().expect("t2 commit ok");
+
+        // T1 tries to commit and should hit serialization conflict
+        let r = t1.commit();
+        match r {
+            Err(CatalogTxnError::SerializationConflict { key: k }) => {
+                assert!(k.contains("s1"), "conflict key should be s1, got {}", k);
+            }
+            other => panic!("expected serialization conflict, got {:?}", other),
+        }
     }
 }

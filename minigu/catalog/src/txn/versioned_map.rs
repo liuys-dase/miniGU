@@ -1,11 +1,11 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, Weak};
 
-use minigu_transaction::{Timestamp, Transaction};
+use minigu_transaction::{IsolationLevel, Timestamp, Transaction};
 
-use crate::txn::catalog_txn::CatalogTxn;
-use crate::txn::error::CatalogTxnError;
+use crate::txn::catalog_txn::{CatalogTxn, TxnHook};
+use crate::txn::error::{CatalogTxnError, CatalogTxnResult};
 use crate::txn::versioned::{CatalogVersionChain, CatalogVersionNode};
 
 /// Type of write operation (used for commit validation)
@@ -47,7 +47,7 @@ where
 
 impl<K, V> VersionedMap<K, V>
 where
-    K: Eq + Hash + Clone + std::fmt::Debug,
+    K: Eq + Hash + Clone + std::fmt::Debug + Send + Sync + 'static,
     V: Send + Sync + 'static + std::fmt::Debug,
 {
     #[inline]
@@ -73,16 +73,59 @@ where
         Some(node)
     }
 
-    /// Get the visible value of the key (returns None if it's a tombstone or nonexistent)
-    pub fn get(&self, key: &K, txn: &CatalogTxn) -> Option<Arc<V>> {
+    /// Get the visible value; when txn is Serializable, register a read-validation hook.
+    pub fn get(self: &Arc<Self>, key: &K, txn: &CatalogTxn) -> Option<Arc<V>> {
+        let start_ts = txn.start_ts();
+        let txn_id = txn.txn_id();
+
         let guard = self.inner.read().unwrap();
         let chain: &CatalogVersionChain<V> = guard.get(key)?;
-        let node = chain.visible_at(txn.start_ts(), txn.txn_id())?;
+        let node = chain.visible_at(start_ts, txn_id)?;
         if node.is_tombstone() {
-            None
-        } else {
-            node.value()
+            return None;
         }
+        let val = node.value();
+
+        // When the transaction is Serializable, register a read-validation hook.
+        if matches!(txn.isolation_level(), IsolationLevel::Serializable) {
+            let hook = ReadValidateHook {
+                map: Arc::downgrade(self),
+                key: key.clone(),
+                start_ts,
+            };
+            txn.add_hook(Box::new(hook));
+        }
+        val
+    }
+
+    /// Whether the key was modified by OTHER transactions after `start_ts`.
+    /// This checks the head node and returns true if:
+    /// - it exists, and
+    /// - its commit_ts > start_ts, and
+    /// - its creator_txn != `txn_id` (ignore self-modifications)
+    pub fn was_modified_after(
+        &self,
+        key: &K,
+        start_ts: Timestamp,
+        txn_id: Timestamp,
+    ) -> CatalogTxnResult<bool> {
+        let guard = self
+            .inner
+            .read()
+            .map_err(|_| CatalogTxnError::IllegalState {
+                reason: "map rwlock poisoned".into(),
+            })?;
+
+        if let Some(chain) = guard.get(key) {
+            if let Some(head) = chain.head() {
+                if let Some(commit_ts) = head.commit_ts() {
+                    if commit_ts > start_ts && head.creator_txn() != txn_id {
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+        Ok(false)
     }
 
     /// Return the set of keys that are visible and non-tombstone under the given read view
@@ -333,6 +376,39 @@ where
 pub struct CommitPlan<K, V> {
     pub key: K,
     pub node: Arc<CatalogVersionNode<V>>,
+}
+
+// =============== Serializable read validation hook ===============
+#[derive(Debug)]
+struct ReadValidateHook<K, V>
+where
+    K: Eq + Hash + Clone + std::fmt::Debug + Send + Sync + 'static,
+    V: Send + Sync + 'static + std::fmt::Debug,
+{
+    map: Weak<VersionedMap<K, V>>,
+    key: K,
+    start_ts: Timestamp,
+}
+
+impl<K, V> TxnHook for ReadValidateHook<K, V>
+where
+    K: Eq + Hash + Clone + std::fmt::Debug + Send + Sync + 'static,
+    V: Send + Sync + 'static + std::fmt::Debug,
+{
+    fn precommit(&self, txn: &CatalogTxn) -> CatalogTxnResult<()> {
+        if let Some(map) = self.map.upgrade() {
+            if map.was_modified_after(&self.key, self.start_ts, txn.txn_id())? {
+                return Err(CatalogTxnError::SerializationConflict {
+                    key: format!("{:?}", &self.key),
+                });
+            }
+            Ok(())
+        } else {
+            Err(CatalogTxnError::IllegalState {
+                reason: "map weak reference expired".into(),
+            })
+        }
+    }
 }
 
 #[cfg(test)]
