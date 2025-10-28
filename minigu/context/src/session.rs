@@ -18,6 +18,7 @@ pub struct SessionContext {
     pub current_graph: Option<NamedGraphRef>,
     pub current_txn: Option<Arc<CatalogTxn>>,
     pub catalog_txn_mgr: CatalogTxnManager,
+    isolation_level: Option<IsolationLevel>,
 }
 
 impl SessionContext {
@@ -30,6 +31,7 @@ impl SessionContext {
             current_graph: None,
             current_txn: None,
             catalog_txn_mgr: CatalogTxnManager::new(),
+            isolation_level: None,
         }
     }
 
@@ -37,13 +39,21 @@ impl SessionContext {
         &self.database
     }
 
-    /// Begin a new transaction using the catalog transaction manager.
-    /// Returns a `Arc<CatalogTxn>`.
+    /// Set default isolation level for implicitly created transactions.
+    #[inline]
+    pub fn set_default_isolation(&mut self, iso: IsolationLevel) {
+        self.isolation_level = Some(iso);
+    }
+
+    /// Begin a new transaction using the default isolation level.
     fn begin_txn(&self) -> CatalogTxnResult<Arc<CatalogTxn>> {
+        if let Some(iso) = self.isolation_level {
+            let txn_arc = self.catalog_txn_mgr.begin_transaction(iso)?;
+            return Ok(txn_arc);
+        }
         let txn_arc = self
             .catalog_txn_mgr
-            .begin_transaction(IsolationLevel::Snapshot)?;
-
+            .begin_transaction(IsolationLevel::Serializable)?;
         Ok(txn_arc)
     }
 
