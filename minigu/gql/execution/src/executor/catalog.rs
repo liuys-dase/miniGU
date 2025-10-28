@@ -111,6 +111,8 @@ impl CatalogDdlExec {
             .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
         txn.commit()
             .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
+        // auto-commit: clear session.current_txn to avoid reusing committed txn
+        self.session.clear_current_txn();
         Ok(())
     }
 
@@ -135,6 +137,7 @@ impl CatalogDdlExec {
             .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
         txn.commit()
             .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
+        self.session.clear_current_txn();
         Ok(())
     }
 
@@ -189,6 +192,7 @@ impl CatalogDdlExec {
         }
         txn.commit()
             .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
+        self.session.clear_current_txn();
         Ok(())
     }
 
@@ -213,6 +217,7 @@ impl CatalogDdlExec {
             .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
         txn.commit()
             .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
+        self.session.clear_current_txn();
         Ok(())
     }
 
@@ -385,6 +390,7 @@ impl CatalogDdlExec {
         }
         txn.commit()
             .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
+        self.session.clear_current_txn();
         Ok(())
     }
 
@@ -478,6 +484,7 @@ impl CatalogDdlExec {
             .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
         txn.commit()
             .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
+        self.session.clear_current_txn();
         Ok(())
     }
 

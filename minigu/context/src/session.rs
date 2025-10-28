@@ -39,7 +39,7 @@ impl SessionContext {
 
     /// Begin a new transaction using the catalog transaction manager.
     /// Returns a `Arc<CatalogTxn>`.
-    pub fn begin_txn(&self) -> CatalogTxnResult<Arc<CatalogTxn>> {
+    fn begin_txn(&self) -> CatalogTxnResult<Arc<CatalogTxn>> {
         let txn_arc = self
             .catalog_txn_mgr
             .begin_transaction(IsolationLevel::Snapshot)?;
@@ -56,5 +56,15 @@ impl SessionContext {
         let txn = self.begin_txn()?;
         self.current_txn = Some(txn.clone());
         Ok(txn)
+    }
+
+    /// Clear the current transaction reference (without committing or rolling back).
+    /// This is used in auto-commit mode, where the transaction is committed successfully,
+    /// and the `current_txn` is removed to avoid mistakenly reusing the committed transaction.
+    /// Note: This method only clears the session-level reference, does not affect the lifecycle of
+    /// the transaction itself.
+    #[inline]
+    pub fn clear_current_txn(&mut self) {
+        self.current_txn = None;
     }
 }
