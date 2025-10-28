@@ -13,5 +13,9 @@ smallvec = { workspace = true, features = ["union", "serde"] }
 smol_str = { workspace = true }
 thiserror = { workspace = true }
 
+[dev-dependencies]
+minigu-context = { workspace = true }
+minigu-storage = { workspace = true }
+
 [lints]
 workspace = true

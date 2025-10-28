@@ -1452,6 +1452,8 @@ name = "minigu-catalog"
 version = "0.1.0"
 dependencies = [
  "minigu-common",
+ "minigu-context",
+ "minigu-storage",
  "minigu-transaction",
  "serde",
  "smallvec",

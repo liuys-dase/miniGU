@@ -286,4 +286,95 @@ mod tests {
         let t5 = mgr.begin_transaction(IsolationLevel::Serializable).unwrap();
         assert!(schema.get_procedure("P1", &t5).unwrap().is_none());
     }
+
+    #[test]
+    fn add_memory_graph_and_basic_storage_ops() {
+        use minigu_common::value::ScalarValue;
+        use minigu_storage::common::model::properties::PropertyRecord;
+        use minigu_storage::common::model::vertex::Vertex;
+        use minigu_storage::tp::MemoryGraph;
+
+        // Prepare schema and graph type
+        let mgr = CatalogTxnManager::new();
+        let schema = MemorySchemaCatalog::new(None);
+        let gt = Arc::new(GT::new());
+
+        // Create a label in graph type under a catalog txn
+        let t0 = mgr
+            .begin_transaction(minigu_transaction::IsolationLevel::Serializable)
+            .unwrap();
+        let person = gt.add_label("Person".to_string(), &t0).unwrap();
+        t0.commit().unwrap();
+
+        // Define a GraphProvider wrapping MemoryGraph to insert into catalog
+        struct DummyMemGraph {
+            gt: Arc<GT>,
+            mem: Arc<MemoryGraph>,
+        }
+        impl std::fmt::Debug for DummyMemGraph {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.debug_struct("DummyMemGraph").finish()
+            }
+        }
+        impl GraphProvider for DummyMemGraph {
+            fn graph_type(&self) -> GraphTypeRef {
+                self.gt.clone() as _
+            }
+
+            fn as_any(&self) -> &dyn Any {
+                self
+            }
+        }
+
+        // Add MemoryGraph wrapped by our DummyMemGraph into catalog schema
+        let mem_graph = MemoryGraph::new();
+        let container: Arc<dyn GraphProvider> = Arc::new(DummyMemGraph {
+            gt: gt.clone(),
+            mem: mem_graph.clone(),
+        });
+
+        let t1 = mgr
+            .begin_transaction(minigu_transaction::IsolationLevel::Serializable)
+            .unwrap();
+        schema
+            .add_graph_txn("G1".to_string(), container.clone(), &t1)
+            .unwrap();
+        t1.commit().unwrap();
+
+        // Read back the graph via catalog and operate storage-layer txn
+        let t2 = mgr
+            .begin_transaction(minigu_transaction::IsolationLevel::Serializable)
+            .unwrap();
+        let gref = schema.get_graph("G1", &t2).unwrap().expect("graph exists");
+        let d = gref
+            .as_any()
+            .downcast_ref::<DummyMemGraph>()
+            .expect("dummy mem graph");
+        let mem = d.mem.clone();
+
+        // storage-layer: create a vertex and read it back
+        let stx = mem
+            .txn_manager()
+            .begin_transaction(minigu_transaction::IsolationLevel::Serializable)
+            .unwrap();
+        let v = Vertex::new(
+            100u64,
+            person,
+            PropertyRecord::new(vec![ScalarValue::String(Some("Alice".to_string()))]),
+        );
+        mem.create_vertex(&stx, v).unwrap();
+        stx.commit().unwrap();
+
+        let stx2 = mem
+            .txn_manager()
+            .begin_transaction(minigu_transaction::IsolationLevel::Serializable)
+            .unwrap();
+        let rv = mem.get_vertex(&stx2, 100u64).unwrap();
+        assert_eq!(rv.vid(), 100u64);
+        assert_eq!(rv.label_id, person);
+        stx2.abort().ok();
+
+        // catalog read still sees the graph via the same t2 snapshot
+        assert!(schema.get_graph("G1", &t2).unwrap().is_some());
+    }
 }
