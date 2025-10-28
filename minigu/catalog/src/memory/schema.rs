@@ -185,3 +185,105 @@ impl SchemaProvider for MemorySchemaCatalog {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::any::Any;
+
+    use minigu_transaction::{GraphTxnManager, IsolationLevel, Transaction};
+
+    use super::*;
+    use crate::memory::graph_type::MemoryGraphTypeCatalog as GT;
+    use crate::provider::{GraphProvider, ProcedureProvider};
+    use crate::txn::manager::CatalogTxnManager;
+
+    #[derive(Debug)]
+    struct DummyGraph {
+        gt: Arc<GT>,
+    }
+    impl GraphProvider for DummyGraph {
+        fn graph_type(&self) -> GraphTypeRef {
+            self.gt.clone() as _
+        }
+
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+
+    #[derive(Debug)]
+    struct DummyProcedure;
+    impl ProcedureProvider for DummyProcedure {
+        fn parameters(&self) -> &[minigu_common::data_type::LogicalType] {
+            &[]
+        }
+
+        fn schema(&self) -> Option<minigu_common::data_type::DataSchemaRef> {
+            None
+        }
+
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+
+    #[test]
+    fn add_remove_graph_and_type_visibility() {
+        let mgr = CatalogTxnManager::new();
+        let schema = MemorySchemaCatalog::new(None);
+        let gt = Arc::new(GT::new());
+        let graph = Arc::new(DummyGraph { gt: gt.clone() });
+
+        let t1 = mgr.begin_transaction(IsolationLevel::Serializable).unwrap();
+        schema
+            .add_graph_type_txn("GT1".to_string(), gt.clone() as _, &t1)
+            .unwrap();
+        schema
+            .add_graph_txn("G1".to_string(), graph.clone() as _, &t1)
+            .unwrap();
+        assert!(schema.get_graph_type("GT1", &t1).unwrap().is_some());
+        let t2 = mgr.begin_transaction(IsolationLevel::Serializable).unwrap();
+        assert!(schema.get_graph_type("GT1", &t2).unwrap().is_none());
+        t1.commit().unwrap();
+        let t3 = mgr.begin_transaction(IsolationLevel::Serializable).unwrap();
+        assert!(schema.get_graph("G1", &t3).unwrap().is_some());
+
+        let t4 = mgr.begin_transaction(IsolationLevel::Serializable).unwrap();
+        schema.remove_graph_txn("G1", &t4).unwrap();
+        assert!(schema.get_graph("G1", &t4).unwrap().is_none());
+        t4.commit().unwrap();
+        let t5 = mgr.begin_transaction(IsolationLevel::Serializable).unwrap();
+        assert!(schema.get_graph("G1", &t5).unwrap().is_none());
+
+        let t6 = mgr.begin_transaction(IsolationLevel::Serializable).unwrap();
+        schema.remove_graph_type_txn("GT1", &t6).unwrap();
+        t6.commit().unwrap();
+        let t7 = mgr.begin_transaction(IsolationLevel::Serializable).unwrap();
+        assert!(schema.get_graph_type("GT1", &t7).unwrap().is_none());
+    }
+
+    #[test]
+    fn add_remove_procedure_visibility() {
+        let mgr = CatalogTxnManager::new();
+        let schema = MemorySchemaCatalog::new(None);
+        let proc_ref: ProcedureRef = Arc::new(DummyProcedure) as _;
+
+        let t1 = mgr.begin_transaction(IsolationLevel::Serializable).unwrap();
+        schema
+            .add_procedure_txn("P1".to_string(), proc_ref.clone(), &t1)
+            .unwrap();
+        assert!(schema.get_procedure("P1", &t1).unwrap().is_some());
+        let t2 = mgr.begin_transaction(IsolationLevel::Serializable).unwrap();
+        assert!(schema.get_procedure("P1", &t2).unwrap().is_none());
+        t1.commit().unwrap();
+
+        let t3 = mgr.begin_transaction(IsolationLevel::Serializable).unwrap();
+        assert!(schema.get_procedure("P1", &t3).unwrap().is_some());
+
+        let t4 = mgr.begin_transaction(IsolationLevel::Serializable).unwrap();
+        schema.remove_procedure_txn("P1", &t4).unwrap();
+        t4.commit().unwrap();
+        let t5 = mgr.begin_transaction(IsolationLevel::Serializable).unwrap();
+        assert!(schema.get_procedure("P1", &t5).unwrap().is_none());
+    }
+}

@@ -364,23 +364,35 @@ impl TxnHook for GraphTypeIntegrityHook {
                     .edge_type_map
                     .visible_keys(txn.start_ts(), txn.txn_id());
                 for k in e_keys.into_iter() {
-                    if let Some(edge) = self.edge_type_map.get(&k, txn) {
-                        let edge = edge.as_ref();
-                        if edge.src().label_set() == *vertex_label_set
-                            || edge.dst().label_set() == *vertex_label_set
-                        {
-                            return Err(CatalogTxnError::ReferentialIntegrity {
-                                reason: "vertex type is still referenced by edge types".to_string(),
-                            });
+                    if let Some(node) =
+                        self.edge_type_map
+                            .get_node_visible(&k, txn.start_ts(), txn.txn_id())
+                    {
+                        if let Some(edge) = node.value() {
+                            let edge = edge.as_ref();
+                            if edge.src().label_set() == *vertex_label_set
+                                || edge.dst().label_set() == *vertex_label_set
+                            {
+                                return Err(CatalogTxnError::ReferentialIntegrity {
+                                    reason: "vertex type is still referenced by edge types"
+                                        .to_string(),
+                                });
+                            }
                         }
                     }
                 }
                 Ok(())
             }
             IntegrityKind::EdgeSrcDstExist { src, dst } => {
-                // In the latest committed view, both src and dst vertex types must exist.
-                let s = self.vertex_type_map.get(src, txn).is_some();
-                let d = self.vertex_type_map.get(dst, txn).is_some();
+                // In the latest committed/snapshot view, both src and dst vertex types must exist.
+                let s = self
+                    .vertex_type_map
+                    .get_node_visible(src, txn.start_ts(), txn.txn_id())
+                    .is_some();
+                let d = self
+                    .vertex_type_map
+                    .get_node_visible(dst, txn.start_ts(), txn.txn_id())
+                    .is_some();
                 if s && d {
                     Ok(())
                 } else {
@@ -546,5 +558,103 @@ impl PropertiesProvider for MemoryEdgeTypeCatalog {
             .enumerate()
             .map(|(i, p)| (i as PropertyId, p.clone()))
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use minigu_transaction::{GraphTxnManager, IsolationLevel, Transaction};
+
+    use super::*;
+    use crate::label_set::LabelSet;
+    use crate::txn::manager::CatalogTxnManager;
+
+    #[test]
+    fn add_label_and_visibility_commit() {
+        let mgr = CatalogTxnManager::new();
+        let gt = MemoryGraphTypeCatalog::new();
+
+        let t1 = mgr.begin_transaction(IsolationLevel::Serializable).unwrap();
+        let id = gt.add_label("Person".to_string(), &t1).unwrap();
+        // visible to self
+        assert_eq!(gt.get_label_id("Person", &t1).unwrap(), Some(id));
+        // not visible to other txn before commit
+        let t2 = mgr.begin_transaction(IsolationLevel::Serializable).unwrap();
+        assert_eq!(gt.get_label_id("Person", &t2).unwrap(), None);
+        // commit then new txn sees it
+        t1.commit().unwrap();
+        let t3 = mgr.begin_transaction(IsolationLevel::Serializable).unwrap();
+        assert_eq!(gt.get_label_id("Person", &t3).unwrap(), Some(id));
+    }
+
+    #[test]
+    fn add_vertex_and_edge_types_with_refs() {
+        let mgr = CatalogTxnManager::new();
+        let gt = MemoryGraphTypeCatalog::new();
+
+        // Seed labels
+        let seed = mgr.begin_transaction(IsolationLevel::Serializable).unwrap();
+        let l_a = gt.add_label("A".to_string(), &seed).unwrap();
+        let l_b = gt.add_label("B".to_string(), &seed).unwrap();
+        seed.commit().unwrap();
+
+        // Add vertex types and edge type in a txn
+        let t1 = mgr.begin_transaction(IsolationLevel::Serializable).unwrap();
+        let ls_a: LabelSet = [l_a].into_iter().collect();
+        let ls_b: LabelSet = [l_b].into_iter().collect();
+        let vt_a = Arc::new(MemoryVertexTypeCatalog::new(ls_a.clone(), vec![]));
+        let vt_b = Arc::new(MemoryVertexTypeCatalog::new(ls_b.clone(), vec![]));
+        gt.add_vertex_type(ls_a.clone(), vt_a.clone() as _, &t1)
+            .unwrap();
+        gt.add_vertex_type(ls_b.clone(), vt_b.clone() as _, &t1)
+            .unwrap();
+
+        // Edge type requires src/dst exist
+        let et = Arc::new(MemoryEdgeTypeCatalog::new(
+            [l_a, l_b].into_iter().collect(),
+            vt_a.clone() as _,
+            vt_b.clone() as _,
+            vec![],
+        ));
+        gt.add_edge_type(et.label_set(), et.clone() as _, &t1)
+            .unwrap();
+
+        // visibility
+        assert!(gt.get_vertex_type(&ls_a, &t1).unwrap().is_some());
+        let t2 = mgr.begin_transaction(IsolationLevel::Serializable).unwrap();
+        assert!(gt.get_vertex_type(&ls_a, &t2).unwrap().is_none());
+
+        t1.commit().unwrap();
+        let t3 = mgr.begin_transaction(IsolationLevel::Serializable).unwrap();
+        assert!(
+            gt.get_edge_type(&([l_a, l_b].into_iter().collect()), &t3)
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn remove_types_visibility() {
+        let mgr = CatalogTxnManager::new();
+        let gt = MemoryGraphTypeCatalog::new();
+
+        // Seed labels and vertex type
+        let seed = mgr.begin_transaction(IsolationLevel::Serializable).unwrap();
+        let l = gt.add_label("X".to_string(), &seed).unwrap();
+        let ls: LabelSet = [l].into_iter().collect();
+        let vt = Arc::new(MemoryVertexTypeCatalog::new(ls.clone(), vec![]));
+        gt.add_vertex_type(ls.clone(), vt.clone() as _, &seed)
+            .unwrap();
+        seed.commit().unwrap();
+
+        // Remove vertex type in txn
+        let t1 = mgr.begin_transaction(IsolationLevel::Serializable).unwrap();
+        gt.remove_vertex_type(&ls, &t1).unwrap();
+        assert!(gt.get_vertex_type(&ls, &t1).unwrap().is_none());
+        let t2 = mgr.begin_transaction(IsolationLevel::Serializable).unwrap();
+        assert!(gt.get_vertex_type(&ls, &t2).unwrap().is_some());
+        t1.commit().unwrap();
+        let t3 = mgr.begin_transaction(IsolationLevel::Serializable).unwrap();
+        assert!(gt.get_vertex_type(&ls, &t3).unwrap().is_none());
     }
 }
