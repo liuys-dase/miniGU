@@ -11,7 +11,7 @@ logos = { workspace = true }
 macro_rules_attribute = { workspace = true }
 miette = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
-smol_str = { workspace = true }
+smol_str = { workspace = true, default-features = false }
 thiserror = { workspace = true }
 winnow = { workspace = true }
 
@@ -27,7 +27,7 @@ cmake = { workspace = true, optional = true }
 bench-antlr4 = ["std", "dep:cmake"]
 default = ["std"]
 miette = ["std", "dep:miette"]
-serde = ["dep:serde", "smol_str/serde"]
+serde = ["dep:serde", "smol_str/serde", "serde?/alloc"]
 std = [
     "logos/std",
     "serde?/std",
