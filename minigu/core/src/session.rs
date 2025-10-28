@@ -101,14 +101,6 @@ impl Session {
                                 minigu_catalog::error::CatalogError::External(Box::new(e)),
                             )
                         })?;
-                        self.context
-                            .catalog_txn_mgr
-                            .finish_transaction(&txn)
-                            .map_err(|e| {
-                                crate::error::Error::Catalog(
-                                    minigu_catalog::error::CatalogError::External(Box::new(e)),
-                                )
-                            })?;
                     }
                     EndTransaction::Rollback => {
                         txn.abort().map_err(|e| {
@@ -116,14 +108,6 @@ impl Session {
                                 minigu_catalog::error::CatalogError::External(Box::new(e)),
                             )
                         })?;
-                        self.context
-                            .catalog_txn_mgr
-                            .finish_transaction(&txn)
-                            .map_err(|e| {
-                                crate::error::Error::Catalog(
-                                    minigu_catalog::error::CatalogError::External(Box::new(e)),
-                                )
-                            })?;
                     }
                 }
             }
