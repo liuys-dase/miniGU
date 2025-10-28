@@ -11,7 +11,7 @@ logos = { workspace = true }
 macro_rules_attribute = { workspace = true }
 miette = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
-smol_str = { workspace = true}
+smol_str = { workspace = true }
 thiserror = { workspace = true }
 winnow = { workspace = true }
 
