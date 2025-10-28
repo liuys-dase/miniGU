@@ -1453,8 +1453,11 @@ version = "0.1.0"
 dependencies = [
  "minigu-common",
  "minigu-context",
+ "minigu-execution",
+ "minigu-planner",
  "minigu-storage",
  "minigu-transaction",
+ "rayon",
  "serde",
  "smallvec",
  "smol_str",
