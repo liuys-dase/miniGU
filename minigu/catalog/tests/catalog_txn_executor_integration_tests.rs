@@ -8,6 +8,12 @@ use minigu_catalog::provider::{
 };
 use minigu_context::database::DatabaseContext;
 use minigu_context::session::SessionContext;
+use minigu_execution::executor::Executor;
+use minigu_execution::executor::catalog::CatalogDdlBuilder;
+use minigu_planner::bound::{
+    BoundCatalogModifyingStatement, BoundCreateGraphTypeStatement, BoundCreateSchemaStatement,
+    BoundGraphType, CreateKind,
+};
 use minigu_transaction::Transaction;
 use rayon::ThreadPoolBuilder;
 use smol_str::SmolStr;
@@ -20,36 +26,28 @@ fn make_db() -> Arc<DatabaseContext> {
     Arc::new(DatabaseContext::new(catalog, pool))
 }
 
-// Note: Executor for DDL currently returns an empty DataChunk which panics in DataChunk::new.
-// These tests focus on end-to-end behavior using SessionContext + provider APIs directly.
+fn run_ddl(session: SessionContext, stmt: BoundCatalogModifyingStatement) {
+    let mut exec = CatalogDdlBuilder::new(session, stmt).into_executor();
+    while let Some(res) = exec.next_chunk() {
+        res.unwrap();
+    }
+}
 
 #[test]
 fn two_sessions_auto_commit_visibility() {
     let db = make_db();
-    let mut s1 = SessionContext::new(db.clone());
+    let s1 = SessionContext::new(db.clone());
     let mut s2 = SessionContext::new(db.clone());
 
     // s2 starts a txn before s1 creates schema
     let t2_old = s2.get_or_begin_txn().unwrap();
 
-    // s1: create schema `s` via provider APIs under a session-managed txn
-    let t1 = s1.get_or_begin_txn().unwrap();
-    let root = db.catalog().get_root().unwrap();
-    let dir = root.as_directory().unwrap();
-    let mem_dir = dir
-        .as_any()
-        .downcast_ref::<MemoryDirectoryCatalog>()
-        .expect("memory dir");
-    let new_schema = Arc::new(MemorySchemaCatalog::new(Some(Arc::downgrade(dir))));
-    mem_dir
-        .add_child(
-            SmolStr::new("s").to_string(),
-            DirectoryOrSchema::Schema(new_schema as _),
-            &t1,
-        )
-        .unwrap();
-    t1.commit().unwrap();
-    s1.clear_current_txn();
+    // s1: create schema `s` via DDL executor
+    let stmt = BoundCatalogModifyingStatement::CreateSchema(BoundCreateSchemaStatement {
+        schema_path: vec![SmolStr::new("s")],
+        if_not_exists: false,
+    });
+    run_ddl(s1.clone(), stmt);
 
     // s2 old txn should not see it (SI)
     {
@@ -84,15 +82,13 @@ fn two_sessions_graph_type_visibility_and_current_schema() {
     // s2 begins a txn before s1 creates graph type
     let t2_old = s2.get_or_begin_txn().unwrap();
 
-    // s1: create a graph type `gt` by provider APIs under a txn
-    let t1 = s1.get_or_begin_txn().unwrap();
-    use minigu_catalog::memory::graph_type::MemoryGraphTypeCatalog;
-    let gt = Arc::new(MemoryGraphTypeCatalog::new());
-    schema
-        .add_graph_type_txn("gt".to_string(), gt as _, &t1)
-        .unwrap();
-    t1.commit().unwrap();
-    s1.clear_current_txn();
+    // s1: create a graph type `gt` via DDL executor (Nested -> new empty graph type)
+    let stmt = BoundCatalogModifyingStatement::CreateGraphType(BoundCreateGraphTypeStatement {
+        name: SmolStr::new("gt"),
+        kind: CreateKind::Create,
+        source: BoundGraphType::Nested(vec![]),
+    });
+    run_ddl(s1.clone(), stmt);
 
     // s2 old txn should not see it
     assert!(schema.get_graph_type("gt", &t2_old).unwrap().is_none());

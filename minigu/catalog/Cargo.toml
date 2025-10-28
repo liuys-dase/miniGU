@@ -15,9 +15,9 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 minigu-context = { workspace = true }
-minigu-storage = { workspace = true }
 minigu-execution = { workspace = true }
 minigu-planner = { workspace = true }
+minigu-storage = { workspace = true }
 rayon = { workspace = true }
 
 [lints]

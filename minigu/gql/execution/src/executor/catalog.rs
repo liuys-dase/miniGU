@@ -560,7 +560,7 @@ impl Executor for CatalogDdlExec {
         if let Err(e) = self.run() {
             return Some(Err(e));
         }
-        // Return an empty chunk as acknowledgment
-        Some(Ok(DataChunk::new(Vec::new())))
+        // DDL produces no data; signal completion with None on next call
+        None
     }
 }
