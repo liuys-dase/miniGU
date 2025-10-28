@@ -46,4 +46,15 @@ impl SessionContext {
 
         Ok(txn_arc)
     }
+
+    /// Get the current transaction if present; otherwise begin one and store it.
+    pub fn get_or_begin_txn(&mut self) -> CatalogTxnResult<Arc<CatalogTxn>> {
+        if let Some(txn) = &self.current_txn {
+            return Ok(txn.clone());
+        }
+
+        let txn = self.begin_txn()?;
+        self.current_txn = Some(txn.clone());
+        Ok(txn)
+    }
 }

@@ -49,13 +49,13 @@ struct CatalogDdlExec {
 
 impl CatalogDdlExec {
     fn run(&mut self) -> ExecutionResult<()> {
-        match &self.stmt {
-            BoundCatalogModifyingStatement::CreateGraphType(s) => self.exec_create_graph_type(s),
-            BoundCatalogModifyingStatement::DropGraphType(s) => self.exec_drop_graph_type(s),
-            BoundCatalogModifyingStatement::CreateGraph(s) => self.exec_create_graph(s),
-            BoundCatalogModifyingStatement::DropGraph(s) => self.exec_drop_graph(s),
-            BoundCatalogModifyingStatement::CreateSchema(s) => self.exec_create_schema(s),
-            BoundCatalogModifyingStatement::DropSchema(s) => self.exec_drop_schema(s),
+        match self.stmt.clone() {
+            BoundCatalogModifyingStatement::CreateGraphType(s) => self.exec_create_graph_type(&s),
+            BoundCatalogModifyingStatement::DropGraphType(s) => self.exec_drop_graph_type(&s),
+            BoundCatalogModifyingStatement::CreateGraph(s) => self.exec_create_graph(&s),
+            BoundCatalogModifyingStatement::DropGraph(s) => self.exec_drop_graph(&s),
+            BoundCatalogModifyingStatement::CreateSchema(s) => self.exec_create_schema(&s),
+            BoundCatalogModifyingStatement::DropSchema(s) => self.exec_drop_schema(&s),
             BoundCatalogModifyingStatement::Call(_) => unreachable!(),
         }
     }
@@ -69,17 +69,12 @@ impl CatalogDdlExec {
             .ok_or_else(|| ExecutionError::Custom("current schema not set".into()))
     }
 
-    fn begin_txn(&self) -> Result<Arc<CatalogTxn>, ExecutionError> {
-        use minigu_transaction::IsolationLevel;
-        self.session
-            .catalog_txn_mgr
-            .begin_transaction(IsolationLevel::Snapshot)
-            .map_err(|e| ExecutionError::Custom(Box::new(e)))
-    }
-
-    fn exec_create_graph_type(&self, s: &BoundCreateGraphTypeStatement) -> ExecutionResult<()> {
+    fn exec_create_graph_type(&mut self, s: &BoundCreateGraphTypeStatement) -> ExecutionResult<()> {
         let schema = self.current_schema()?;
-        let txn = self.begin_txn()?;
+        let txn = self
+            .session
+            .get_or_begin_txn()
+            .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
         // Resolve source graph type provider and deep copy to a new MemoryGraphTypeCatalog
         let (gt, _id_map) = match &s.source {
             BoundGraphType::Ref(named) => Self::deep_copy_graph_type(named.object().clone(), &txn),
@@ -119,9 +114,12 @@ impl CatalogDdlExec {
         Ok(())
     }
 
-    fn exec_drop_graph_type(&self, s: &BoundDropGraphTypeStatement) -> ExecutionResult<()> {
+    fn exec_drop_graph_type(&mut self, s: &BoundDropGraphTypeStatement) -> ExecutionResult<()> {
         let schema = self.current_schema()?;
-        let txn = self.begin_txn()?;
+        let txn = self
+            .session
+            .get_or_begin_txn()
+            .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
         let exists = schema
             .get_graph_type(&s.name, txn.as_ref())
             .map_err(|e| ExecutionError::Custom(Box::new(e)))?
@@ -140,9 +138,12 @@ impl CatalogDdlExec {
         Ok(())
     }
 
-    fn exec_create_graph(&self, s: &BoundCreateGraphStatement) -> ExecutionResult<()> {
+    fn exec_create_graph(&mut self, s: &BoundCreateGraphStatement) -> ExecutionResult<()> {
         let schema = self.current_schema()?;
-        let txn = self.begin_txn()?;
+        let txn = self
+            .session
+            .get_or_begin_txn()
+            .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
         // Decide graph type: deep copy to ensure independence
         let (gt, id_map) = match &s.graph_type {
             BoundGraphType::Ref(named) => {
@@ -191,9 +192,12 @@ impl CatalogDdlExec {
         Ok(())
     }
 
-    fn exec_drop_graph(&self, s: &BoundDropGraphStatement) -> ExecutionResult<()> {
+    fn exec_drop_graph(&mut self, s: &BoundDropGraphStatement) -> ExecutionResult<()> {
         let schema = self.current_schema()?;
-        let txn = self.begin_txn()?;
+        let txn = self
+            .session
+            .get_or_begin_txn()
+            .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
         let exists = schema
             .get_graph(&s.name, txn.as_ref())
             .map_err(|e| ExecutionError::Custom(Box::new(e)))?
@@ -287,7 +291,7 @@ impl CatalogDdlExec {
     }
 
     fn exec_create_schema(
-        &self,
+        &mut self,
         s: &minigu_planner::bound::BoundCreateSchemaStatement,
     ) -> ExecutionResult<()> {
         let root = self
@@ -300,7 +304,10 @@ impl CatalogDdlExec {
             .as_directory()
             .ok_or_else(|| ExecutionError::Custom("root is not a directory".into()))?
             .clone();
-        let txn = self.begin_txn()?;
+        let txn = self
+            .session
+            .get_or_begin_txn()
+            .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
         for (i, seg) in s.schema_path.iter().enumerate() {
             let is_last = i + 1 == s.schema_path.len();
             if seg.as_str() == ".." {
@@ -381,7 +388,7 @@ impl CatalogDdlExec {
         Ok(())
     }
 
-    fn exec_drop_schema(&self, s: &BoundDropSchemaStatement) -> ExecutionResult<()> {
+    fn exec_drop_schema(&mut self, s: &BoundDropSchemaStatement) -> ExecutionResult<()> {
         use minigu_catalog::provider::DirectoryOrSchema;
         let root = self
             .session
@@ -393,7 +400,10 @@ impl CatalogDdlExec {
             return Err(ExecutionError::Custom("empty schema path".into()));
         }
 
-        let txn = self.begin_txn()?;
+        let txn = self
+            .session
+            .get_or_begin_txn()
+            .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
 
         let mut current = root;
         for seg in &s.schema_path[..s.schema_path.len() - 1] {
