@@ -19,7 +19,6 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use csv::ReaderBuilder;
-use gql_parser::ast::catalog;
 use minigu_catalog::label_set::LabelSet;
 use minigu_catalog::memory::graph_type::{
     MemoryEdgeTypeCatalog, MemoryGraphTypeCatalog, MemoryVertexTypeCatalog,

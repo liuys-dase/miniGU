@@ -82,7 +82,13 @@ impl<V> CatalogVersionNode<V> {
         self.prev.as_ref().cloned()
     }
 
-    /// Overwrite the current uncommitted node to a value version (clear tombstone)
+    /// Overwrite the current uncommitted node.
+    ///
+    /// Invariants for arguments:
+    /// - When `tombstone == false`, `new_value` must be `Some(Arc<V>)`.
+    /// - When `tombstone == true`, `new_value` must be `None`.
+    ///
+    /// Violations of the above invariants return an error instead of panicking.
     pub fn overwrite_uncommitted(
         &self,
         creator_txn: Timestamp,
@@ -99,25 +105,40 @@ impl<V> CatalogVersionNode<V> {
                 reason: "cannot overwrite node of another txn".into(),
             });
         }
-        // If the node is not a tombstone, overwrite the value and clear the tombstone
-        if !tombstone {
-            {
-                let mut v = self.value.write().unwrap();
-                *v = Some(new_value.unwrap());
+        match (tombstone, new_value) {
+            // Clear tombstone and set a concrete value
+            (false, Some(val)) => {
+                {
+                    let mut v = self.value.write().unwrap();
+                    *v = Some(val);
+                }
+                {
+                    let mut t = self.tombstone.write().unwrap();
+                    *t = false;
+                }
             }
-            {
-                let mut t = self.tombstone.write().unwrap();
-                *t = false;
+            // Set tombstone and clear any value
+            (true, None) => {
+                {
+                    let mut v = self.value.write().unwrap();
+                    *v = None;
+                }
+                {
+                    let mut t = self.tombstone.write().unwrap();
+                    *t = true;
+                }
             }
-        } else {
-            // If the node is a tombstone, overwrite the tombstone and clear the value
-            {
-                let mut v = self.value.write().unwrap();
-                *v = None;
+            // Reject invalid combinations to avoid panic and silent misuse
+            (false, None) => {
+                return Err(CatalogTxnError::IllegalState {
+                    reason: "overwrite_uncommitted: expected Some(value) when tombstone=false"
+                        .into(),
+                });
             }
-            {
-                let mut t = self.tombstone.write().unwrap();
-                *t = true;
+            (true, Some(_)) => {
+                return Err(CatalogTxnError::IllegalState {
+                    reason: "overwrite_uncommitted: expected None when tombstone=true".into(),
+                });
             }
         }
         Ok(())
