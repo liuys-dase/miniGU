@@ -9,7 +9,7 @@ use minigu_transaction::{GraphTxnManager, IsolationLevel};
 
 use crate::database::DatabaseContext;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SessionContext {
     database: Arc<DatabaseContext>,
     pub home_schema: Option<Arc<MemorySchemaCatalog>>,
