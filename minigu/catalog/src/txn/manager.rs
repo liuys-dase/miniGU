@@ -12,6 +12,7 @@ use crate::txn::catalog_txn::CatalogTxn;
 use crate::txn::error::{CatalogTxnError, CatalogTxnResult};
 use crate::txn::runtime::CatalogRuntime;
 
+#[derive(Debug)]
 pub struct CatalogTxnManagerInner {
     active: RwLock<HashMap<u64, Timestamp>>, // txn_id.raw() -> start_ts
     low_watermark_raw: AtomicU64,
@@ -42,7 +43,7 @@ impl CatalogTxnManagerInner {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct CatalogTxnManager {
     inner: Arc<CatalogTxnManagerInner>,
 }
