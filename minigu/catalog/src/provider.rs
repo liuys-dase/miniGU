@@ -2,6 +2,7 @@ use std::any::Any;
 use std::fmt::Debug;
 use std::sync::Arc;
 
+use downcast_rs::{DowncastSync, impl_downcast};
 use minigu_common::data_type::{DataSchemaRef, LogicalType};
 use minigu_common::types::{LabelId, PropertyId};
 
@@ -40,7 +41,7 @@ pub trait DirectoryProvider: Debug + Send + Sync + 'static {
 }
 
 /// Represents a logical schema, which contains graphs and graph type definitions.
-pub trait SchemaProvider: Debug + Send + Sync + 'static {
+pub trait SchemaProvider: Debug + Send + Sync + DowncastSync {
     /// Returns the parent directory ID of the schema.
     fn parent(&self) -> Option<DirectoryRef>;
 
@@ -71,6 +72,8 @@ pub trait SchemaProvider: Debug + Send + Sync + 'static {
     /// Downcast support for concrete implementations
     fn as_any(&self) -> &dyn Any;
 }
+
+impl_downcast!(sync SchemaProvider);
 
 /// Represents a graph, which is an instance of a graph type.
 ///

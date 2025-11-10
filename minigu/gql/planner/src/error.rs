@@ -18,6 +18,9 @@ pub enum PlanError {
     #[error(transparent)]
     #[diagnostic(code(planner::transaction))]
     Transaction(#[from] CatalogTxnError),
+
+    #[error("internal error: {0}")]
+    InvalidOperation(String),
 }
 
 pub type PlanResult<T> = std::result::Result<T, PlanError>;
