@@ -71,154 +71,176 @@ impl CatalogDdlExec {
 
     fn exec_create_graph_type(&mut self, s: &BoundCreateGraphTypeStatement) -> ExecutionResult<()> {
         let schema = self.current_schema()?;
-        let txn = self
-            .session
-            .get_or_begin_txn()
-            .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
-        // Resolve source graph type provider and deep copy to a new MemoryGraphTypeCatalog
-        let (gt, _id_map) = match &s.source {
-            BoundGraphType::Ref(named) => Self::deep_copy_graph_type(named.object().clone(), &txn),
-            BoundGraphType::Nested(_elems) => {
-                Ok((Arc::new(MemoryGraphTypeCatalog::new()), HashMap::new()))
-            }
-        }?;
-        // Handle create kind
-        let exists = schema
-            .get_graph_type(&s.name, txn.as_ref())
-            .map_err(|e| ExecutionError::Custom(Box::new(e)))?
-            .is_some();
-        match s.kind {
-            CreateKind::Create => {
-                if exists {
-                    return Err(ExecutionError::Custom("graph type already exists".into()));
+        self.session
+            .with_statement_txn(|txn| {
+                // Resolve source graph type provider and deep copy to a new MemoryGraphTypeCatalog
+                let (gt, _id_map) = match &s.source {
+                    BoundGraphType::Ref(named) => {
+                        Self::deep_copy_graph_type(named.object().clone(), txn).map_err(|e| {
+                            minigu_catalog::txn::error::CatalogTxnError::External(Box::new(e))
+                        })?
+                    }
+                    BoundGraphType::Nested(_elems) => {
+                        (Arc::new(MemoryGraphTypeCatalog::new()), HashMap::new())
+                    }
+                };
+                // Handle create kind
+                let exists = schema
+                    .get_graph_type(&s.name, txn)
+                    .map_err(|e| {
+                        minigu_catalog::txn::error::CatalogTxnError::External(Box::new(e))
+                    })?
+                    .is_some();
+                match s.kind {
+                    CreateKind::Create => {
+                        if exists {
+                            return Err(
+                                minigu_catalog::txn::error::CatalogTxnError::IllegalState {
+                                    reason: "graph type already exists".into(),
+                                },
+                            );
+                        }
+                    }
+                    CreateKind::CreateIfNotExists => {
+                        if exists {
+                            return Ok(());
+                        }
+                    }
+                    CreateKind::CreateOrReplace => {
+                        if exists {
+                            schema.remove_graph_type_txn(&s.name, txn).map_err(|e| {
+                                minigu_catalog::txn::error::CatalogTxnError::External(Box::new(e))
+                            })?;
+                        }
+                    }
                 }
-            }
-            CreateKind::CreateIfNotExists => {
-                if exists {
-                    return Ok(());
-                }
-            }
-            CreateKind::CreateOrReplace => {
-                if exists {
-                    schema
-                        .remove_graph_type_txn(&s.name, txn.as_ref())
-                        .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
-                }
-            }
-        }
-        schema
-            .add_graph_type_txn(s.name.to_string(), gt as _, txn.as_ref())
-            .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
-        txn.commit()
-            .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
-        // auto-commit: clear session.current_txn to avoid reusing committed txn
-        self.session.clear_current_txn();
-        Ok(())
+                schema
+                    .add_graph_type_txn(s.name.to_string(), gt as _, txn)
+                    .map_err(|e| {
+                        minigu_catalog::txn::error::CatalogTxnError::External(Box::new(e))
+                    })?;
+                Ok(())
+            })
+            .map_err(|e| ExecutionError::Custom(Box::new(e)))
     }
 
     fn exec_drop_graph_type(&mut self, s: &BoundDropGraphTypeStatement) -> ExecutionResult<()> {
         let schema = self.current_schema()?;
-        let txn = self
-            .session
-            .get_or_begin_txn()
-            .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
-        let exists = schema
-            .get_graph_type(&s.name, txn.as_ref())
-            .map_err(|e| ExecutionError::Custom(Box::new(e)))?
-            .is_some();
-        if !exists {
-            if s.if_exists {
-                return Ok(());
-            }
-            return Err(ExecutionError::Custom("graph type not found".into()));
-        }
-        schema
-            .remove_graph_type_txn(&s.name, txn.as_ref())
-            .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
-        txn.commit()
-            .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
-        self.session.clear_current_txn();
-        Ok(())
+        self.session
+            .with_statement_txn(|txn| {
+                let exists = schema
+                    .get_graph_type(&s.name, txn)
+                    .map_err(|e| {
+                        minigu_catalog::txn::error::CatalogTxnError::External(Box::new(e))
+                    })?
+                    .is_some();
+                if !exists {
+                    if s.if_exists {
+                        return Ok(());
+                    }
+                    return Err(minigu_catalog::txn::error::CatalogTxnError::IllegalState {
+                        reason: "graph type not found".into(),
+                    });
+                }
+                schema.remove_graph_type_txn(&s.name, txn).map_err(|e| {
+                    minigu_catalog::txn::error::CatalogTxnError::External(Box::new(e))
+                })?;
+                Ok(())
+            })
+            .map_err(|e| ExecutionError::Custom(Box::new(e)))
     }
 
     fn exec_create_graph(&mut self, s: &BoundCreateGraphStatement) -> ExecutionResult<()> {
         let schema = self.current_schema()?;
-        let txn = self
+        let (target_graph, id_map) = self
             .session
-            .get_or_begin_txn()
+            .with_statement_txn(|txn| {
+                // Decide graph type: deep copy to ensure independence
+                let (gt, id_map) = match &s.graph_type {
+                    BoundGraphType::Ref(named) => {
+                        Self::deep_copy_graph_type(named.object().clone(), txn).map_err(|e| {
+                            minigu_catalog::txn::error::CatalogTxnError::External(Box::new(e))
+                        })?
+                    }
+                    BoundGraphType::Nested(_elems) => {
+                        (Arc::new(MemoryGraphTypeCatalog::new()), HashMap::new())
+                    }
+                };
+                // Handle kind
+                let exists = schema
+                    .get_graph(&s.name, txn)
+                    .map_err(|e| {
+                        minigu_catalog::txn::error::CatalogTxnError::External(Box::new(e))
+                    })?
+                    .is_some();
+                match s.kind {
+                    CreateKind::Create => {
+                        if exists {
+                            return Err(
+                                minigu_catalog::txn::error::CatalogTxnError::IllegalState {
+                                    reason: "graph already exists".into(),
+                                },
+                            );
+                        }
+                    }
+                    CreateKind::CreateIfNotExists => {
+                        if exists {
+                            return Ok((None, HashMap::new()));
+                        }
+                    }
+                    CreateKind::CreateOrReplace => {
+                        if exists {
+                            schema.remove_graph_txn(&s.name, txn).map_err(|e| {
+                                minigu_catalog::txn::error::CatalogTxnError::External(Box::new(e))
+                            })?;
+                        }
+                    }
+                }
+                let memory_graph = MemoryGraph::new();
+                let target_graph = memory_graph.clone();
+                let container = GraphContainer::new(gt.clone(), GraphStorage::Memory(memory_graph));
+                schema
+                    .add_graph_txn(s.name.to_string(), Arc::new(container) as _, txn)
+                    .map_err(|e| {
+                        minigu_catalog::txn::error::CatalogTxnError::External(Box::new(e))
+                    })?;
+                Ok((Some(target_graph), id_map))
+            })
             .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
-        // Decide graph type: deep copy to ensure independence
-        let (gt, id_map) = match &s.graph_type {
-            BoundGraphType::Ref(named) => {
-                Self::deep_copy_graph_type(named.object().clone(), txn.as_ref())
-            }
-            BoundGraphType::Nested(_elems) => {
-                Ok((Arc::new(MemoryGraphTypeCatalog::new()), HashMap::new()))
-            }
-        }?;
-        // Handle kind
-        let exists = schema
-            .get_graph(&s.name, txn.as_ref())
-            .map_err(|e| ExecutionError::Custom(Box::new(e)))?
-            .is_some();
-        match s.kind {
-            CreateKind::Create => {
-                if exists {
-                    return Err(ExecutionError::Custom("graph already exists".into()));
-                }
-            }
-            CreateKind::CreateIfNotExists => {
-                if exists {
-                    return Ok(());
-                }
-            }
-            CreateKind::CreateOrReplace => {
-                if exists {
-                    schema
-                        .remove_graph_txn(&s.name, txn.as_ref())
-                        .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
-                }
-            }
+
+        if let (Some(target_graph), Some(src_named_graph)) = (
+            target_graph,
+            s.source.as_ref().map(|ng| ng.object().clone()),
+        ) {
+            self.copy_graph_data(src_named_graph, &target_graph, &id_map)?;
         }
-        let memory_graph = MemoryGraph::new();
-        let target_graph = memory_graph.clone();
-        let container = GraphContainer::new(gt.clone(), GraphStorage::Memory(memory_graph));
-        schema
-            .add_graph_txn(s.name.to_string(), Arc::new(container) as _, txn.as_ref())
-            .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
-        // If s.source is Some, copy data from the source graph.
-        if let Some(src_named_graph) = &s.source {
-            self.copy_graph_data(src_named_graph.object().clone(), &target_graph, &id_map)?;
-        }
-        txn.commit()
-            .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
-        self.session.clear_current_txn();
         Ok(())
     }
 
     fn exec_drop_graph(&mut self, s: &BoundDropGraphStatement) -> ExecutionResult<()> {
         let schema = self.current_schema()?;
-        let txn = self
-            .session
-            .get_or_begin_txn()
-            .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
-        let exists = schema
-            .get_graph(&s.name, txn.as_ref())
-            .map_err(|e| ExecutionError::Custom(Box::new(e)))?
-            .is_some();
-        if !exists {
-            if s.if_exists {
-                return Ok(());
-            }
-            return Err(ExecutionError::Custom("graph not found".into()));
-        }
-        schema
-            .remove_graph_txn(&s.name, txn.as_ref())
-            .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
-        txn.commit()
-            .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
-        self.session.clear_current_txn();
-        Ok(())
+        self.session
+            .with_statement_txn(|txn| {
+                let exists = schema
+                    .get_graph(&s.name, txn)
+                    .map_err(|e| {
+                        minigu_catalog::txn::error::CatalogTxnError::External(Box::new(e))
+                    })?
+                    .is_some();
+                if !exists {
+                    if s.if_exists {
+                        return Ok(());
+                    }
+                    return Err(minigu_catalog::txn::error::CatalogTxnError::IllegalState {
+                        reason: "graph not found".into(),
+                    });
+                }
+                schema.remove_graph_txn(&s.name, txn).map_err(|e| {
+                    minigu_catalog::txn::error::CatalogTxnError::External(Box::new(e))
+                })?;
+                Ok(())
+            })
+            .map_err(|e| ExecutionError::Custom(Box::new(e)))
     }
 
     fn deep_copy_graph_type(
@@ -305,187 +327,175 @@ impl CatalogDdlExec {
             .catalog()
             .get_root()
             .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
-        let mut current_dir = root
-            .as_directory()
-            .ok_or_else(|| ExecutionError::Custom("root is not a directory".into()))?
-            .clone();
-        let txn = self
-            .session
-            .get_or_begin_txn()
-            .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
-        for (i, seg) in s.schema_path.iter().enumerate() {
-            let is_last = i + 1 == s.schema_path.len();
-            if seg.as_str() == ".." {
-                if let Some(p) = current_dir.parent() {
-                    current_dir = p;
-                }
-                continue;
-            }
-            let existing = current_dir
-                .get_child(seg, txn.as_ref())
-                .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
-            match (existing, is_last) {
-                (Some(child), false) => {
-                    if let Some(dir) = child.into_directory() {
-                        current_dir = dir;
-                    } else {
-                        return Err(ExecutionError::Custom(
-                            format!("path segment '{}' is a schema", seg).into(),
-                        ));
+        self.session.with_statement_txn(|txn| {
+            let mut current_dir = root
+                .as_directory()
+                .ok_or_else(|| minigu_catalog::txn::error::CatalogTxnError::IllegalState { reason: "root is not a directory".into() })?
+                .clone();
+            for (i, seg) in s.schema_path.iter().enumerate() {
+                let is_last = i + 1 == s.schema_path.len();
+                if seg.as_str() == ".." {
+                    if let Some(p) = current_dir.parent() {
+                        current_dir = p;
                     }
+                    continue;
                 }
-                (Some(child), true) => {
-                    if child.is_schema() {
-                        if s.if_not_exists {
-                            return Ok(());
+                let existing = current_dir
+                    .get_child(seg, txn)
+                    .map_err(|e| minigu_catalog::txn::error::CatalogTxnError::External(Box::new(e)))?;
+                match (existing, is_last) {
+                    (Some(child), false) => {
+                        if let Some(dir) = child.into_directory() {
+                            current_dir = dir;
+                        } else {
+                            return Err(minigu_catalog::txn::error::CatalogTxnError::IllegalState { reason: format!("path segment '{}' is a schema", seg) });
                         }
-                        return Err(ExecutionError::Custom(
-                            format!("schema '{}' already exists", seg).into(),
-                        ));
-                    } else {
-                        return Err(ExecutionError::Custom(
-                            format!("name '{}' already used by a directory", seg).into(),
-                        ));
                     }
-                }
-                (None, false) => {
-                    let mem_dir = current_dir
-                        .as_any()
-                        .downcast_ref::<minigu_catalog::memory::directory::MemoryDirectoryCatalog>()
-                        .ok_or_else(|| ExecutionError::Custom("not a memory directory".into()))?;
-                    let new_dir = Arc::new(
-                        minigu_catalog::memory::directory::MemoryDirectoryCatalog::new(Some(
-                            Arc::downgrade(&current_dir),
-                        )),
-                    );
-                    mem_dir
-                        .add_child(
-                            seg.to_string(),
-                            minigu_catalog::provider::DirectoryOrSchema::Directory(
-                                new_dir.clone() as _
-                            ),
-                            txn.as_ref(),
-                        )
-                        .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
-                    current_dir = new_dir as _;
-                }
-                (None, true) => {
-                    let mem_dir = current_dir
-                        .as_any()
-                        .downcast_ref::<minigu_catalog::memory::directory::MemoryDirectoryCatalog>()
-                        .ok_or_else(|| ExecutionError::Custom("not a memory directory".into()))?;
-                    let new_schema =
-                        Arc::new(minigu_catalog::memory::schema::MemorySchemaCatalog::new(
+                    (Some(child), true) => {
+                        if child.is_schema() {
+                            if s.if_not_exists {
+                                return Ok(());
+                            }
+                            return Err(minigu_catalog::txn::error::CatalogTxnError::IllegalState { reason: format!("schema '{}' already exists", seg) });
+                        } else {
+                            return Err(minigu_catalog::txn::error::CatalogTxnError::IllegalState { reason: format!("name '{}' already used by a directory", seg) });
+                        }
+                    }
+                    (None, false) => {
+                        let mem_dir = current_dir
+                            .as_any()
+                            .downcast_ref::<minigu_catalog::memory::directory::MemoryDirectoryCatalog>()
+                            .ok_or_else(|| minigu_catalog::txn::error::CatalogTxnError::IllegalState { reason: "not a memory directory".into() })?;
+                        let new_dir = Arc::new(
+                            minigu_catalog::memory::directory::MemoryDirectoryCatalog::new(Some(
+                                Arc::downgrade(&current_dir),
+                            )),
+                        );
+                        mem_dir
+                            .add_child(
+                                seg.to_string(),
+                                minigu_catalog::provider::DirectoryOrSchema::Directory(
+                                    new_dir.clone() as _
+                                ),
+                                txn,
+                            )
+                            .map_err(|e| minigu_catalog::txn::error::CatalogTxnError::External(Box::new(e)))?;
+                        current_dir = new_dir as _;
+                    }
+                    (None, true) => {
+                        let mem_dir = current_dir
+                            .as_any()
+                            .downcast_ref::<minigu_catalog::memory::directory::MemoryDirectoryCatalog>()
+                            .ok_or_else(|| minigu_catalog::txn::error::CatalogTxnError::IllegalState { reason: "not a memory directory".into() })?;
+                        let new_schema = Arc::new(minigu_catalog::memory::schema::MemorySchemaCatalog::new(
                             Some(Arc::downgrade(&current_dir)),
                         ));
-                    mem_dir
-                        .add_child(
-                            seg.to_string(),
-                            minigu_catalog::provider::DirectoryOrSchema::Schema(new_schema as _),
-                            txn.as_ref(),
-                        )
-                        .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
+                        mem_dir
+                            .add_child(
+                                seg.to_string(),
+                                minigu_catalog::provider::DirectoryOrSchema::Schema(new_schema as _),
+                                txn,
+                            )
+                            .map_err(|e| minigu_catalog::txn::error::CatalogTxnError::External(Box::new(e)))?;
+                    }
                 }
             }
-        }
-        txn.commit()
-            .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
-        self.session.clear_current_txn();
-        Ok(())
+            Ok(())
+        }).map_err(|e| ExecutionError::Custom(Box::new(e)))
     }
 
     fn exec_drop_schema(&mut self, s: &BoundDropSchemaStatement) -> ExecutionResult<()> {
         use minigu_catalog::provider::DirectoryOrSchema;
+        if s.schema_path.is_empty() {
+            return Err(ExecutionError::Custom("empty schema path".into()));
+        }
         let root = self
             .session
             .database()
             .catalog()
             .get_root()
             .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
-        if s.schema_path.is_empty() {
-            return Err(ExecutionError::Custom("empty schema path".into()));
-        }
-
-        let txn = self
-            .session
-            .get_or_begin_txn()
-            .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
-
-        let mut current = root;
-        for seg in &s.schema_path[..s.schema_path.len() - 1] {
-            if seg.as_str() == ".." {
-                if let Some(p) = current.parent() {
-                    current = DirectoryOrSchema::Directory(p);
+        self.session
+            .with_statement_txn(|txn| {
+                let mut current = root;
+                for seg in &s.schema_path[..s.schema_path.len() - 1] {
+                    if seg.as_str() == ".." {
+                        if let Some(p) = current.parent() {
+                            current = DirectoryOrSchema::Directory(p);
+                        }
+                        continue;
+                    }
+                    let dir = current.as_directory().ok_or_else(|| {
+                        minigu_catalog::txn::error::CatalogTxnError::IllegalState {
+                            reason: "not a directory in path".into(),
+                        }
+                    })?;
+                    let child = dir.get_child(seg, txn).map_err(|e| {
+                        minigu_catalog::txn::error::CatalogTxnError::External(Box::new(e))
+                    })?;
+                    current = match child {
+                        Some(c) => c,
+                        None => {
+                            if s.if_exists {
+                                return Ok(());
+                            }
+                            return Err(
+                                minigu_catalog::txn::error::CatalogTxnError::IllegalState {
+                                    reason: format!("path segment '{}' not found", seg),
+                                },
+                            );
+                        }
+                    };
                 }
-                continue;
-            }
-            let dir = current
-                .as_directory()
-                .ok_or_else(|| ExecutionError::Custom("not a directory in path".into()))?;
-            let child = dir
-                .get_child(seg, txn.as_ref())
-                .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
-            current = match child {
-                Some(c) => c,
-                None => {
+                let last = s.schema_path.last().unwrap();
+                if last.as_str() == ".." {
+                    return Err(minigu_catalog::txn::error::CatalogTxnError::IllegalState {
+                        reason: "invalid path: ends with '..'".into(),
+                    });
+                }
+                let parent_dir = current.as_directory().ok_or_else(|| {
+                    minigu_catalog::txn::error::CatalogTxnError::IllegalState {
+                        reason: "parent is not a directory".into(),
+                    }
+                })?;
+                let child = parent_dir.get_child(last, txn).map_err(|e| {
+                    minigu_catalog::txn::error::CatalogTxnError::External(Box::new(e))
+                })?;
+                let Some(child) = child else {
                     if s.if_exists {
-                        txn.abort().ok();
                         return Ok(());
                     }
-                    txn.abort().ok();
-                    return Err(ExecutionError::Custom(
-                        format!("path segment '{}' not found", seg).into(),
-                    ));
+                    return Err(minigu_catalog::txn::error::CatalogTxnError::IllegalState {
+                        reason: format!("schema '{}' not found", last),
+                    });
+                };
+                let Some(schema) = child.as_schema() else {
+                    return Err(minigu_catalog::txn::error::CatalogTxnError::IllegalState {
+                        reason: format!("'{}' is not a schema", last),
+                    });
+                };
+                if !schema.graph_names(txn).is_empty()
+                    || !schema.graph_type_names(txn).is_empty()
+                    || !schema.procedure_names(txn).is_empty()
+                {
+                    return Err(minigu_catalog::txn::error::CatalogTxnError::IllegalState {
+                        reason: "schema is not empty".into(),
+                    });
                 }
-            };
-        }
-        let last = s.schema_path.last().unwrap();
-        if last.as_str() == ".." {
-            txn.abort().ok();
-            return Err(ExecutionError::Custom(
-                "invalid path: ends with '..'".into(),
-            ));
-        }
-        let parent_dir = current
-            .as_directory()
-            .ok_or_else(|| ExecutionError::Custom("parent is not a directory".into()))?;
-        let child = parent_dir
-            .get_child(last, txn.as_ref())
-            .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
-        let Some(child) = child else {
-            if s.if_exists {
-                txn.abort().ok();
-                return Ok(());
-            }
-            txn.abort().ok();
-            return Err(ExecutionError::Custom(
-                format!("schema '{}' not found", last).into(),
-            ));
-        };
-        let Some(schema) = child.as_schema() else {
-            txn.abort().ok();
-            return Err(ExecutionError::Custom(
-                format!("'{}' is not a schema", last).into(),
-            ));
-        };
-        if !schema.graph_names(txn.as_ref()).is_empty()
-            || !schema.graph_type_names(txn.as_ref()).is_empty()
-            || !schema.procedure_names(txn.as_ref()).is_empty()
-        {
-            txn.abort().ok();
-            return Err(ExecutionError::Custom("schema is not empty".into()));
-        }
-        let mem_dir = parent_dir
-            .as_any()
-            .downcast_ref::<minigu_catalog::memory::directory::MemoryDirectoryCatalog>()
-            .ok_or_else(|| ExecutionError::Custom("not a memory directory".into()))?;
-        mem_dir
-            .remove_child(last, txn.as_ref())
-            .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
-        txn.commit()
-            .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
-        self.session.clear_current_txn();
-        Ok(())
+                let mem_dir = parent_dir
+                    .as_any()
+                    .downcast_ref::<minigu_catalog::memory::directory::MemoryDirectoryCatalog>()
+                    .ok_or_else(
+                        || minigu_catalog::txn::error::CatalogTxnError::IllegalState {
+                            reason: "not a memory directory".into(),
+                        },
+                    )?;
+                mem_dir.remove_child(last, txn).map_err(|e| {
+                    minigu_catalog::txn::error::CatalogTxnError::External(Box::new(e))
+                })?;
+                Ok(())
+            })
+            .map_err(|e| ExecutionError::Custom(Box::new(e)))
     }
 
     fn copy_graph_data(

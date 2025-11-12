@@ -263,25 +263,26 @@ pub fn build_procedure() -> Procedure {
             .clone()
             .ok_or_else(|| anyhow::anyhow!("current schema not set"))?;
 
-        let created_here = context.current_txn.is_none();
-        let txn = context.get_or_begin_txn()?;
-        let graph_container = schema
-            .get_graph(&graph_name, txn.as_ref())?
-            .ok_or_else(|| anyhow::anyhow!("graph type named with {} not found", graph_name))?;
-        let graph_type = graph_container.graph_type();
-        let graph = get_graph_from_graph_container(graph_container)?;
-        let _ = txn.commit()?;
-        if created_here {
-            context.clear_current_txn();
-        }
+        let (graph, graph_type) = context.with_statement_txn_arc(|txn| {
+            let graph_container = schema
+                .get_graph(&graph_name, txn.as_ref())
+                .map_err(|e| minigu_catalog::txn::error::CatalogTxnError::External(Box::new(e)))?
+                .ok_or_else(
+                    || minigu_catalog::txn::error::CatalogTxnError::IllegalState {
+                        reason: format!("graph type named with {} not found", graph_name),
+                    },
+                )?;
+            let graph_type = graph_container.graph_type();
+            let graph = get_graph_from_graph_container(graph_container)
+                .map_err(minigu_catalog::txn::error::CatalogTxnError::External)?;
+            Ok((graph, graph_type))
+        })?;
 
-        let created_here = context.current_txn.is_none();
-        let txn = context.get_or_begin_txn()?;
-        export(graph, dir_path, manifest_rel_path, graph_type, txn.clone())?;
-        let _ = txn.commit()?;
-        if created_here {
-            context.clear_current_txn();
-        }
+        context.with_statement_txn_arc(|txn| {
+            export(graph, dir_path, manifest_rel_path, graph_type, txn.clone())
+                .map_err(minigu_catalog::txn::error::CatalogTxnError::External)?;
+            Ok(())
+        })?;
 
         Ok(vec![])
     })

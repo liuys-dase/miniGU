@@ -14,7 +14,6 @@ use minigu_planner::bound::{
     BoundCatalogModifyingStatement, BoundCreateGraphTypeStatement, BoundCreateSchemaStatement,
     BoundGraphType, CreateKind,
 };
-use minigu_transaction::Transaction;
 use rayon::ThreadPoolBuilder;
 use smol_str::SmolStr;
 
@@ -39,8 +38,9 @@ fn two_sessions_auto_commit_visibility() {
     let s1 = SessionContext::new(db.clone());
     let mut s2 = SessionContext::new(db.clone());
 
-    // s2 starts a txn before s1 creates schema
-    let t2_old = s2.get_or_begin_txn().unwrap();
+    // s2 starts an explicit txn before s1 creates schema
+    s2.begin_explicit_txn().unwrap();
+    let t2_old = s2.current_txn().unwrap();
 
     // s1: create schema `s` via DDL executor
     let stmt = BoundCatalogModifyingStatement::CreateSchema(BoundCreateSchemaStatement {
@@ -55,12 +55,12 @@ fn two_sessions_auto_commit_visibility() {
         let dir = root.as_directory().unwrap();
         assert!(dir.get_child("s", &t2_old).unwrap().is_none());
         // end old txn
-        t2_old.abort().ok();
-        s2.clear_current_txn();
+        s2.rollback_explicit_txn().ok();
     }
 
     // s2 new txn should see it
-    let t2_new = s2.get_or_begin_txn().unwrap();
+    s2.begin_explicit_txn().unwrap();
+    let t2_new = s2.current_txn().unwrap();
     {
         let root = db.catalog().get_root().unwrap();
         let dir = root.as_directory().unwrap();
@@ -79,8 +79,9 @@ fn two_sessions_graph_type_visibility_and_current_schema() {
     s1.current_schema = Some(schema.clone());
     s2.current_schema = Some(schema.clone());
 
-    // s2 begins a txn before s1 creates graph type
-    let t2_old = s2.get_or_begin_txn().unwrap();
+    // s2 begins an explicit txn before s1 creates graph type
+    s2.begin_explicit_txn().unwrap();
+    let t2_old = s2.current_txn().unwrap();
 
     // s1: create a graph type `gt` via DDL executor (Nested -> new empty graph type)
     let stmt = BoundCatalogModifyingStatement::CreateGraphType(BoundCreateGraphTypeStatement {
@@ -92,10 +93,10 @@ fn two_sessions_graph_type_visibility_and_current_schema() {
 
     // s2 old txn should not see it
     assert!(schema.get_graph_type("gt", &t2_old).unwrap().is_none());
-    t2_old.abort().ok();
-    s2.clear_current_txn();
+    s2.rollback_explicit_txn().ok();
 
     // s2 new txn should see it
-    let t2_new = s2.get_or_begin_txn().unwrap();
+    s2.begin_explicit_txn().unwrap();
+    let t2_new = s2.current_txn().unwrap();
     assert!(schema.get_graph_type("gt", &t2_new).unwrap().is_some());
 }

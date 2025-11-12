@@ -45,16 +45,12 @@ pub fn build_procedure() -> Procedure {
             graph_type.clone(),
             GraphStorage::Memory(graph.clone()),
         ));
-        let ct = context.get_or_begin_txn().unwrap();
-        if schema
-            .add_graph_txn(graph_name.clone(), container.clone(), ct.as_ref())
-            .is_err()
-        {
-            ct.abort().unwrap();
+        let add_res = context.with_statement_txn(|txn| {
+            schema.add_graph_txn(graph_name.clone(), container.clone(), txn)
+        });
+        if add_res.is_err() {
             return Err(anyhow::anyhow!("graph `{graph_name}` already exists").into());
         }
-        ct.commit().unwrap();
-        context.clear_current_txn();
 
         context.current_graph = Some(NamedGraphRef::new(graph_name.into(), container.clone()));
 

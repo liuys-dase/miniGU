@@ -9,7 +9,6 @@ use minigu_context::graph::GraphContainer;
 use minigu_context::session::SessionContext;
 use minigu_planner::bound::{BoundExpr, BoundExprKind};
 use minigu_planner::plan::{PlanData, PlanNode};
-use minigu_transaction::Transaction;
 
 use crate::evaluator::BoxedEvaluator;
 use crate::evaluator::column_ref::ColumnRef;
@@ -53,18 +52,28 @@ impl ExecutorBuilder {
             PlanNode::PhysicalNodeScan(_node_scan) => {
                 // NodeScan provide graph id and label, Handle in next pr.
                 assert_eq!(children.len(), 0);
-                let txn = self.session.get_or_begin_txn().unwrap();
+                // Resolve the graph within a statement-scoped txn (auto-commit when implicit)
                 let cur_schema = self
                     .session
                     .home_schema
                     .as_ref()
-                    .expect("there should be a home schema");
-                let cur_graph = cur_schema
-                    .get_graph("test".to_string().as_str(), txn.as_ref())
-                    .expect("there should be a test graph")
-                    .unwrap();
-                txn.commit().unwrap();
-                self.session.clear_current_txn();
+                    .expect("there should be a home schema")
+                    .clone();
+                let cur_graph = self
+                    .session
+                    .with_statement_txn(|txn| {
+                        cur_schema
+                            .get_graph("test".to_string().as_str(), txn)
+                            .map_err(|e| {
+                                minigu_catalog::txn::error::CatalogTxnError::External(Box::new(e))
+                            })?
+                            .ok_or_else(|| {
+                                minigu_catalog::txn::error::CatalogTxnError::IllegalState {
+                                    reason: "test graph not found".into(),
+                                }
+                            })
+                    })
+                    .expect("failed to resolve test graph");
                 let provider: &dyn GraphProvider = cur_graph.as_ref();
                 let container = provider
                     .as_any()
