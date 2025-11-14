@@ -16,7 +16,6 @@ use minigu_execution::builder::ExecutorBuilder;
 use minigu_execution::executor::Executor;
 use minigu_planner::Planner;
 use minigu_planner::plan::PlanData;
-use minigu_transaction::{GraphTxnManager, Transaction};
 
 use crate::error::{Error, Result};
 use crate::metrics::QueryMetrics;
@@ -112,36 +111,27 @@ impl Session {
         activity: &TransactionActivity,
     ) -> Result<QueryResult> {
         if activity.start.is_some() {
-            // Begin transaction: default using Snapshot isolation
-            use minigu_transaction::IsolationLevel;
-            let txn = self
-                .context
-                .catalog_txn_mgr
-                .begin_transaction(IsolationLevel::Snapshot)
-                .map_err(|e| {
-                    crate::error::Error::Catalog(minigu_catalog::error::CatalogError::External(
-                        Box::new(e),
-                    ))
-                })?;
-            self.context.current_txn = Some(txn);
+            self.context.begin_explicit_txn().map_err(|e| {
+                crate::error::Error::Catalog(minigu_catalog::error::CatalogError::External(
+                    Box::new(e),
+                ))
+            })?;
         }
         if let Some(end) = activity.end.as_ref() {
-            if let Some(txn) = self.context.current_txn.take() {
-                match end.value() {
-                    EndTransaction::Commit => {
-                        let _cts = txn.commit().map_err(|e| {
-                            crate::error::Error::Catalog(
-                                minigu_catalog::error::CatalogError::External(Box::new(e)),
-                            )
-                        })?;
-                    }
-                    EndTransaction::Rollback => {
-                        txn.abort().map_err(|e| {
-                            crate::error::Error::Catalog(
-                                minigu_catalog::error::CatalogError::External(Box::new(e)),
-                            )
-                        })?;
-                    }
+            match end.value() {
+                EndTransaction::Commit => {
+                    self.context.commit_explicit_txn().map_err(|e| {
+                        crate::error::Error::Catalog(minigu_catalog::error::CatalogError::External(
+                            Box::new(e),
+                        ))
+                    })?;
+                }
+                EndTransaction::Rollback => {
+                    self.context.rollback_explicit_txn().map_err(|e| {
+                        crate::error::Error::Catalog(minigu_catalog::error::CatalogError::External(
+                            Box::new(e),
+                        ))
+                    })?;
                 }
             }
         }
@@ -158,7 +148,7 @@ impl Session {
         let mut metrics = QueryMetrics::default();
 
         let start = Instant::now();
-        let planner = Planner::new(self.context.clone());
+        let mut planner = Planner::new(self.context.clone());
         let physical_plan = planner.plan_query(procedure)?;
         metrics.planning_time = start.elapsed();
 
