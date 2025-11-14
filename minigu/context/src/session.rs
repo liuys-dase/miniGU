@@ -21,7 +21,7 @@ pub struct SessionContext {
     // In the future, home_graph is a default graph named default.
     pub home_graph: Option<NamedGraphRef>,
     pub current_graph: Option<NamedGraphRef>,
-    pub current_txn: Option<Arc<CatalogTxn>>,
+    current_txn: Option<Arc<CatalogTxn>>,
     /// Explicit, session-scoped transaction started by user (`BEGIN`). When present,
     /// statement execution should reuse this and never auto-commit.
     explicit_txn: Option<Arc<CatalogTxn>>,
