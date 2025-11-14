@@ -193,7 +193,7 @@ pub(crate) fn export<P: AsRef<Path>>(
     dir: P,
     manifest_rel_path: P, // relative path
     graph_type: Arc<dyn GraphTypeProvider>,
-    catalog_txn: Arc<CatalogTxn>,
+    catalog_txn: &CatalogTxn,
 ) -> Result<()> {
     let txn = graph
         .txn_manager()
@@ -203,7 +203,7 @@ pub(crate) fn export<P: AsRef<Path>>(
     let dir = dir.as_ref();
     std::fs::create_dir_all(dir)?;
 
-    let metadata = SchemaMetadata::from_schema(Arc::clone(&graph_type), catalog_txn.clone())?;
+    let metadata = SchemaMetadata::from_schema(Arc::clone(&graph_type), catalog_txn)?;
 
     let mut vertice_builder = VerticesBuilder::new(dir, &metadata.label_map)?;
     let mut edges_builder = EdgesBuilder::new(dir, &metadata.label_map)?;
@@ -263,9 +263,9 @@ pub fn build_procedure() -> Procedure {
             .clone()
             .ok_or_else(|| anyhow::anyhow!("current schema not set"))?;
 
-        let (graph, graph_type) = context.with_statement_txn_arc(|txn| {
+        let (graph, graph_type) = context.with_statement_txn(|txn| {
             let graph_container = schema
-                .get_graph(&graph_name, txn.as_ref())
+                .get_graph(&graph_name, txn)
                 .map_err(|e| minigu_catalog::txn::error::CatalogTxnError::External(Box::new(e)))?
                 .ok_or_else(
                     || minigu_catalog::txn::error::CatalogTxnError::IllegalState {
@@ -278,8 +278,8 @@ pub fn build_procedure() -> Procedure {
             Ok((graph, graph_type))
         })?;
 
-        context.with_statement_txn_arc(|txn| {
-            export(graph, dir_path, manifest_rel_path, graph_type, txn.clone())
+        context.with_statement_txn(|txn| {
+            export(graph, dir_path, manifest_rel_path, graph_type, txn)
                 .map_err(minigu_catalog::txn::error::CatalogTxnError::External)?;
             Ok(())
         })?;

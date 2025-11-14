@@ -139,47 +139,8 @@ impl SessionContext {
             t
         };
 
+        // Execute the function within the transaction.
         let result = f(txn_arc.as_ref());
-        match result {
-            Ok(v) => {
-                if created_here {
-                    txn_arc.commit()?;
-                    self.clear_current_txn();
-                }
-                Ok(v)
-            }
-            Err(e) => {
-                if created_here {
-                    let _ = txn_arc.abort();
-                    self.clear_current_txn();
-                }
-                Err(e)
-            }
-        }
-    }
-
-    /// Execute within a statement-scoped transaction and pass an `Arc<CatalogTxn>`.
-    /// Mirrors `with_statement_txn` semantics but provides an `Arc` to interop with
-    /// APIs that require owned transactions.
-    pub fn with_statement_txn_arc<F, R>(&mut self, f: F) -> CatalogTxnResult<R>
-    where
-        F: FnOnce(&Arc<CatalogTxn>) -> CatalogTxnResult<R>,
-    {
-        if let Some(txn) = &self.explicit_txn {
-            return f(txn);
-        }
-        let created_here: bool;
-        let txn_arc = if let Some(t) = &self.current_txn {
-            created_here = false;
-            t.clone()
-        } else {
-            let t = self.begin_txn()?;
-            self.current_txn = Some(t.clone());
-            created_here = true;
-            t
-        };
-
-        let result = f(&txn_arc);
         match result {
             Ok(v) => {
                 if created_here {
