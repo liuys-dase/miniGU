@@ -9,6 +9,8 @@ use gql_parser::ast::{
 use gql_parser::parse_gql;
 use itertools::Itertools;
 use minigu_catalog::memory::schema::MemorySchemaCatalog;
+use minigu_common::data_chunk::DataChunk;
+use minigu_common::data_type::{DataField, DataSchema, LogicalType};
 use minigu_common::error::not_implemented;
 use minigu_context::database::DatabaseContext;
 use minigu_context::session::SessionContext;
@@ -156,19 +158,45 @@ impl Session {
 
                 let start = Instant::now();
                 let mut planner = Planner::new(session_snapshot.clone());
-                let physical_plan = planner.plan_query(txn, procedure).map_err(|e| {
+                let plan = planner.plan_query(txn, procedure).map_err(|e| {
                     minigu_catalog::txn::error::CatalogTxnError::External(Box::new(e))
                 })?;
+                if matches!(
+                    plan,
+                    minigu_planner::plan::PlanNode::LogicalMatch(_)
+                        | minigu_planner::plan::PlanNode::LogicalFilter(_)
+                        | minigu_planner::plan::PlanNode::LogicalProject(_)
+                        | minigu_planner::plan::PlanNode::LogicalSort(_)
+                        | minigu_planner::plan::PlanNode::LogicalLimit(_)
+                        | minigu_planner::plan::PlanNode::LogicalCall(_)
+                        | minigu_planner::plan::PlanNode::LogicalOneRow(_)
+                ) {
+                    let schema = Some(Arc::new(DataSchema::new(vec![DataField::new(
+                        "EXPLAIN".to_string(),
+                        LogicalType::String,
+                        false,
+                    )])));
+
+                    let chunks = vec![DataChunk::new(vec![Arc::new(
+                        arrow::array::StringArray::from(vec![plan.explain(0).unwrap_or_default()]),
+                    )])];
+
+                    return Ok(QueryResult {
+                        schema,
+                        metrics: QueryMetrics::default(),
+                        chunks,
+                    });
+                }
                 metrics.planning_time = start.elapsed();
 
-                let schema = physical_plan.schema().cloned();
+                let schema = plan.schema().cloned();
                 let start = Instant::now();
                 let chunks: Vec<_> = session_snapshot
                     .database()
                     .runtime()
                     .scope(|_| {
                         let mut executor =
-                            ExecutorBuilder::new(session_snapshot.clone()).build(&physical_plan);
+                            ExecutorBuilder::new(session_snapshot.clone()).build(&plan);
                         executor.into_iter().try_collect()
                     })
                     .map_err(|e| {

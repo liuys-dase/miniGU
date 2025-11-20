@@ -1,6 +1,5 @@
 use gql_parser::ast::Procedure;
 use minigu_catalog::txn::catalog_txn::CatalogTxn;
-use minigu_catalog::txn::error::CatalogTxnError;
 use minigu_context::session::SessionContext;
 
 use crate::binder::Binder;
@@ -39,15 +38,18 @@ impl Planner {
             home_graph,
             txn,
         );
-        let bound = binder
-            .bind(query)
-            .map_err(|e| CatalogTxnError::External(Box::new(e)))?;
-        let logical_plan = LogicalPlanner::new()
-            .create_logical_plan(bound)
-            .map_err(|e| CatalogTxnError::External(Box::new(e)))?;
-        let plan = Optimizer::new()
-            .create_physical_plan(&logical_plan)
-            .map_err(|e| CatalogTxnError::External(Box::new(e)))?;
-        Ok(plan)
+        let bound = binder.bind(query)?;
+        let logical_plan = LogicalPlanner::new().create_logical_plan(bound.clone())?;
+        match &bound.statement {
+            crate::bound::BoundStatement::Utility(utility)
+                if matches!(
+                    utility.as_ref(),
+                    crate::bound::BoundUtilityStatement::Explain(_)
+                ) =>
+            {
+                Ok(logical_plan)
+            }
+            _ => Optimizer::new().create_physical_plan(&logical_plan),
+        }
     }
 }
