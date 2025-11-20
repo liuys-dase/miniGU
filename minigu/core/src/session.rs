@@ -147,74 +147,54 @@ impl Session {
     }
 
     fn handle_procedure(&mut self, procedure: &Procedure) -> Result<QueryResult> {
-        // Process in a statement-scoped transaction to ensure snapshot consistency
-        // To avoid mutable borrow conflicts, clone the session snapshot upfront for readonly use
-        // inside the closure
         let session_snapshot = self.context.clone();
-        let result = self
-            .context
-            .with_statement_txn(|txn| {
-                let mut metrics = QueryMetrics::default();
+        self.context.with_statement_result(|txn| {
+            let mut metrics = QueryMetrics::default();
 
-                let start = Instant::now();
-                let mut planner = Planner::new(session_snapshot.clone());
-                let plan = planner.plan_query(txn, procedure).map_err(|e| {
-                    minigu_catalog::txn::error::CatalogTxnError::External(Box::new(e))
-                })?;
-                if matches!(
-                    plan,
-                    minigu_planner::plan::PlanNode::LogicalMatch(_)
-                        | minigu_planner::plan::PlanNode::LogicalFilter(_)
-                        | minigu_planner::plan::PlanNode::LogicalProject(_)
-                        | minigu_planner::plan::PlanNode::LogicalSort(_)
-                        | minigu_planner::plan::PlanNode::LogicalLimit(_)
-                        | minigu_planner::plan::PlanNode::LogicalCall(_)
-                        | minigu_planner::plan::PlanNode::LogicalOneRow(_)
-                ) {
-                    let schema = Some(Arc::new(DataSchema::new(vec![DataField::new(
-                        "EXPLAIN".to_string(),
-                        LogicalType::String,
-                        false,
-                    )])));
+            let start = Instant::now();
+            let mut planner = Planner::new(session_snapshot.clone());
+            let plan = planner.plan_query(txn, procedure)?;
+            if matches!(
+                plan,
+                minigu_planner::plan::PlanNode::LogicalMatch(_)
+                    | minigu_planner::plan::PlanNode::LogicalFilter(_)
+                    | minigu_planner::plan::PlanNode::LogicalProject(_)
+                    | minigu_planner::plan::PlanNode::LogicalSort(_)
+                    | minigu_planner::plan::PlanNode::LogicalLimit(_)
+                    | minigu_planner::plan::PlanNode::LogicalCall(_)
+                    | minigu_planner::plan::PlanNode::LogicalOneRow(_)
+            ) {
+                let schema = Some(Arc::new(DataSchema::new(vec![DataField::new(
+                    "EXPLAIN".to_string(),
+                    LogicalType::String,
+                    false,
+                )])));
 
-                    let chunks = vec![DataChunk::new(vec![Arc::new(
-                        arrow::array::StringArray::from(vec![plan.explain(0).unwrap_or_default()]),
-                    )])];
+                let chunks = vec![DataChunk::new(vec![Arc::new(
+                    arrow::array::StringArray::from(vec![plan.explain(0).unwrap_or_default()]),
+                )])];
 
-                    return Ok(QueryResult {
-                        schema,
-                        metrics: QueryMetrics::default(),
-                        chunks,
-                    });
-                }
-                metrics.planning_time = start.elapsed();
-
-                let schema = plan.schema().cloned();
-                let start = Instant::now();
-                let chunks: Vec<_> = session_snapshot
-                    .database()
-                    .runtime()
-                    .scope(|_| {
-                        let mut executor =
-                            ExecutorBuilder::new(session_snapshot.clone()).build(&plan);
-                        executor.into_iter().try_collect()
-                    })
-                    .map_err(|e| {
-                        minigu_catalog::txn::error::CatalogTxnError::External(Box::new(e))
-                    })?;
-                metrics.execution_time = start.elapsed();
-
-                Ok(QueryResult {
+                return Ok(QueryResult {
                     schema,
-                    metrics,
+                    metrics: QueryMetrics::default(),
                     chunks,
-                })
-            })
-            .map_err(|e| {
-                crate::error::Error::Catalog(minigu_catalog::error::CatalogError::External(
-                    Box::new(e),
-                ))
+                });
+            }
+            metrics.planning_time = start.elapsed();
+
+            let schema = plan.schema().cloned();
+            let start = Instant::now();
+            let chunks: Vec<_> = session_snapshot.database().runtime().scope(|_| {
+                let mut executor = ExecutorBuilder::new(session_snapshot.clone()).build(&plan);
+                executor.into_iter().try_collect()
             })?;
-        Ok(result)
+            metrics.execution_time = start.elapsed();
+
+            Ok(QueryResult {
+                schema,
+                metrics,
+                chunks,
+            })
+        })
     }
 }

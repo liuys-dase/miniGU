@@ -133,6 +133,7 @@ impl PlanData for PlanNode {
             PlanNode::LogicalSort(node) => node.explain(indent),
             PlanNode::LogicalLimit(node) => node.explain(indent),
             PlanNode::LogicalVectorIndexScan(node) => node.explain(indent),
+            PlanNode::LogicalCatalogDdl(node) => node.explain(indent),
 
             PlanNode::PhysicalFilter(node) => node.explain(indent),
             PlanNode::PhysicalProject(node) => node.explain(indent),
@@ -142,6 +143,7 @@ impl PlanData for PlanNode {
             PlanNode::PhysicalLimit(node) => node.explain(indent),
             PlanNode::PhysicalVectorIndexScan(node) => node.explain(indent),
             PlanNode::PhysicalNodeScan(node) => node.explain(indent),
+            PlanNode::PhysicalCatalogDdl(node) => node.explain(indent),
         }
     }
 }

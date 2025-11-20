@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use gql_parser::ast::{Ident, SchemaPathSegment, SchemaRef};
+use minigu_catalog::error::CatalogError;
 use minigu_catalog::memory::schema::MemorySchemaCatalog;
 use minigu_catalog::named_ref::NamedGraphRef;
 use minigu_catalog::provider::{CatalogProvider, SchemaProvider};
@@ -145,6 +146,54 @@ impl SessionContext {
             Ok(v) => {
                 if created_here {
                     txn_arc.commit()?;
+                    self.clear_current_txn();
+                }
+                Ok(v)
+            }
+            Err(e) => {
+                if created_here {
+                    let _ = txn_arc.abort();
+                    self.clear_current_txn();
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// Execute within a statement-scoped transaction, letting the caller control the error type.
+    /// - If an explicit txn exists, reuses it without committing.
+    /// - Otherwise, creates an implicit txn, commits on Ok, aborts on Err.
+    /// - Any transaction manager errors are converted into `CatalogError` and then into `E`.
+    pub fn with_statement_result<F, R, E>(&mut self, f: F) -> Result<R, E>
+    where
+        F: FnOnce(&CatalogTxn) -> Result<R, E>,
+        E: From<CatalogError>,
+    {
+        if let Some(txn) = &self.explicit_txn {
+            return f(txn.as_ref());
+        }
+        let created_here: bool;
+        let txn_arc = if let Some(t) = &self.current_txn {
+            created_here = false;
+            t.clone()
+        } else {
+            let t = self
+                .begin_txn()
+                .map_err(|e| CatalogError::External(Box::new(e)))
+                .map_err(E::from)?;
+            self.current_txn = Some(t.clone());
+            created_here = true;
+            t
+        };
+
+        let result = f(txn_arc.as_ref());
+        match result {
+            Ok(v) => {
+                if created_here {
+                    txn_arc
+                        .commit()
+                        .map_err(|e| CatalogError::External(Box::new(e)))
+                        .map_err(E::from)?;
                     self.clear_current_txn();
                 }
                 Ok(v)
