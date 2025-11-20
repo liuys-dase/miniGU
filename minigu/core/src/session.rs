@@ -144,26 +144,49 @@ impl Session {
         Ok(result)
     }
 
-    fn handle_procedure(&self, procedure: &Procedure) -> Result<QueryResult> {
-        let mut metrics = QueryMetrics::default();
+    fn handle_procedure(&mut self, procedure: &Procedure) -> Result<QueryResult> {
+        // Process in a statement-scoped transaction to ensure snapshot consistency
+        // To avoid mutable borrow conflicts, clone the session snapshot upfront for readonly use
+        // inside the closure
+        let session_snapshot = self.context.clone();
+        let result = self
+            .context
+            .with_statement_txn(|txn| {
+                let mut metrics = QueryMetrics::default();
 
-        let start = Instant::now();
-        let mut planner = Planner::new(self.context.clone());
-        let physical_plan = planner.plan_query(procedure)?;
-        metrics.planning_time = start.elapsed();
+                let start = Instant::now();
+                let mut planner = Planner::new(session_snapshot.clone());
+                let physical_plan = planner.plan_query(txn, procedure).map_err(|e| {
+                    minigu_catalog::txn::error::CatalogTxnError::External(Box::new(e))
+                })?;
+                metrics.planning_time = start.elapsed();
 
-        let schema = physical_plan.schema().cloned();
-        let start = Instant::now();
-        let chunks: Vec<_> = self.context.database().runtime().scope(|_| {
-            let mut executor = ExecutorBuilder::new(self.context.clone()).build(&physical_plan);
-            executor.into_iter().try_collect()
-        })?;
-        metrics.execution_time = start.elapsed();
+                let schema = physical_plan.schema().cloned();
+                let start = Instant::now();
+                let chunks: Vec<_> = session_snapshot
+                    .database()
+                    .runtime()
+                    .scope(|_| {
+                        let mut executor =
+                            ExecutorBuilder::new(session_snapshot.clone()).build(&physical_plan);
+                        executor.into_iter().try_collect()
+                    })
+                    .map_err(|e| {
+                        minigu_catalog::txn::error::CatalogTxnError::External(Box::new(e))
+                    })?;
+                metrics.execution_time = start.elapsed();
 
-        Ok(QueryResult {
-            schema,
-            metrics,
-            chunks,
-        })
+                Ok(QueryResult {
+                    schema,
+                    metrics,
+                    chunks,
+                })
+            })
+            .map_err(|e| {
+                crate::error::Error::Catalog(minigu_catalog::error::CatalogError::External(
+                    Box::new(e),
+                ))
+            })?;
+        Ok(result)
     }
 }
