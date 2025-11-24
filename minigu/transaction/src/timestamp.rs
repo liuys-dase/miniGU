@@ -1,6 +1,7 @@
 //! Timestamp / TxnId management for MVCC transactions
 //!
-//! 本模块将事务 ID 与提交时间戳拆分为独立类型，避免跨域比较和误用。
+//! This module separates transaction IDs and commit timestamps into distinct types to prevent
+//! cross-domain comparisons and incorrect usage.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -9,17 +10,17 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::TimestampError;
 
-/// 提交时间戳类型（最高位必须为 0）
+/// Commit timestamp type (highest bit must be 0).
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
 )]
 pub struct CommitTs(u64);
 
 impl CommitTs {
-    /// 最大可用提交时间戳，最高位 0。
+    /// Maximum commit timestamp allowed, with the highest bit cleared.
     pub const MAX: u64 = TxnId::START - 1;
 
-    /// 使用原始值构造提交时间戳，带域校验。
+    /// Creates a commit timestamp from a raw value with domain validation.
     pub fn try_from_raw(raw: u64) -> Result<Self, TimestampError> {
         if raw > Self::MAX {
             return Err(TimestampError::CommitTsOverflow(raw));
@@ -27,7 +28,7 @@ impl CommitTs {
         Ok(Self(raw))
     }
 
-    /// 直接返回内部值。
+    /// Returns the inner raw value.
     pub fn raw(&self) -> u64 {
         self.0
     }
@@ -47,17 +48,17 @@ impl TryFrom<u64> for CommitTs {
     }
 }
 
-/// 事务 ID 类型（最高位为 1）
+/// Transaction ID type (highest bit set to 1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct TxnId(u64);
 
 impl TxnId {
-    /// 事务 ID 最大值。
+    /// Maximum transaction ID value.
     pub const MAX: u64 = u64::MAX;
-    /// 事务 ID 起始位置（最高位为 1）
+    /// Starting value for transaction IDs (highest bit set).
     pub const START: u64 = 1 << 63;
 
-    /// 使用原始值构造事务 ID，带域校验。
+    /// Creates a transaction ID from a raw value with domain validation.
     pub fn try_from_raw(raw: u64) -> Result<Self, TimestampError> {
         if raw < Self::START {
             return Err(TimestampError::WrongDomainTxnId(raw));
@@ -65,7 +66,7 @@ impl TxnId {
         Ok(Self(raw))
     }
 
-    /// 直接返回内部值。
+    /// Returns the inner raw value.
     pub fn raw(&self) -> u64 {
         self.0
     }
@@ -85,27 +86,27 @@ impl TryFrom<u64> for TxnId {
     }
 }
 
-/// 提交时间戳生成器
+/// Commit timestamp generator.
 pub struct CommitTsGenerator {
     counter: AtomicU64,
 }
 
 impl CommitTsGenerator {
-    /// 默认从 1 开始递增（保留 0 作为初始占位）。
+    /// Defaults to counting from 1 (0 reserved as an initial placeholder).
     pub fn new() -> Self {
         Self {
             counter: AtomicU64::new(1),
         }
     }
 
-    /// 指定起始值初始化生成器。
+    /// Initializes the generator with a specific starting value.
     pub fn with_start(start: CommitTs) -> Self {
         Self {
             counter: AtomicU64::new(start.raw()),
         }
     }
 
-    /// 获取下一个提交时间戳。
+    /// Obtains the next commit timestamp.
     pub fn next(&self) -> Result<CommitTs, TimestampError> {
         let mut cur = self.counter.load(Ordering::SeqCst);
         loop {
@@ -124,13 +125,13 @@ impl CommitTsGenerator {
         }
     }
 
-    /// 获取当前计数（不自增）。
+    /// Returns the current counter value without incrementing.
     pub fn current(&self) -> CommitTs {
-        // 安全：内部只会写入有效提交时间戳（或溢出前的 MAX+1）
+        // Safety: only valid commit timestamps (or MAX+1 before overflow) are stored internally.
         CommitTs(self.counter.load(Ordering::SeqCst))
     }
 
-    /// 如果传入值更大则推进计数器。
+    /// Advances the counter if the provided timestamp is greater.
     pub fn update_if_greater(&self, ts: CommitTs) -> Result<(), TimestampError> {
         if ts.raw() > CommitTs::MAX {
             return Err(TimestampError::CommitTsOverflow(ts.raw()));
@@ -146,27 +147,27 @@ impl Default for CommitTsGenerator {
     }
 }
 
-/// 事务 ID 生成器
+/// Transaction ID generator.
 pub struct TxnIdGenerator {
     counter: AtomicU64,
 }
 
 impl TxnIdGenerator {
-    /// 默认从 `TxnId::START + 1` 开始（保留 START）。
+    /// Defaults to `TxnId::START + 1`, leaving the START value reserved.
     pub fn new() -> Self {
         Self {
             counter: AtomicU64::new(TxnId::START + 1),
         }
     }
 
-    /// 指定起始值初始化生成器。
+    /// Initializes the generator with a provided starting ID.
     pub fn with_start(start: TxnId) -> Self {
         Self {
             counter: AtomicU64::new(start.raw()),
         }
     }
 
-    /// 获取下一个事务 ID。
+    /// Returns the next transaction ID.
     pub fn next(&self) -> Result<TxnId, TimestampError> {
         let mut cur = self.counter.load(Ordering::SeqCst);
         loop {
@@ -185,7 +186,7 @@ impl TxnIdGenerator {
         }
     }
 
-    /// 如果传入值更大则推进计数器。
+    /// Advances the counter if the provided ID is greater.
     pub fn update_if_greater(&self, txn_id: TxnId) -> Result<(), TimestampError> {
         if txn_id.raw() == TxnId::MAX {
             return Err(TimestampError::TxnIdOverflow(txn_id.raw()));
@@ -201,33 +202,33 @@ impl Default for TxnIdGenerator {
     }
 }
 
-// --------- 全局单例 ---------
+// --------- Global singletons ---------
 
 static GLOBAL_COMMIT_TS_GENERATOR: OnceLock<Arc<CommitTsGenerator>> = OnceLock::new();
 static GLOBAL_TXN_ID_GENERATOR: OnceLock<Arc<TxnIdGenerator>> = OnceLock::new();
 
-/// 获取全局提交时间戳生成器。
+/// Returns the global commit timestamp generator.
 pub fn global_commit_ts_generator() -> Arc<CommitTsGenerator> {
     GLOBAL_COMMIT_TS_GENERATOR
         .get_or_init(|| Arc::new(CommitTsGenerator::new()))
         .clone()
 }
 
-/// 获取全局事务 ID 生成器。
+/// Returns the global transaction ID generator.
 pub fn global_txn_id_generator() -> Arc<TxnIdGenerator> {
     GLOBAL_TXN_ID_GENERATOR
         .get_or_init(|| Arc::new(TxnIdGenerator::new()))
         .clone()
 }
 
-/// 初始化全局提交时间戳生成器。
+/// Initializes the global commit timestamp generator.
 pub fn init_global_commit_ts_generator(start: CommitTs) -> Result<(), &'static str> {
     GLOBAL_COMMIT_TS_GENERATOR
         .set(Arc::new(CommitTsGenerator::with_start(start)))
         .map_err(|_| "Global commit-ts generator already initialized")
 }
 
-/// 初始化全局事务 ID 生成器。
+/// Initializes the global transaction ID generator.
 pub fn init_global_txn_id_generator(start: TxnId) -> Result<(), &'static str> {
     GLOBAL_TXN_ID_GENERATOR
         .set(Arc::new(TxnIdGenerator::with_start(start)))

@@ -1236,7 +1236,7 @@ impl MemoryGraph {
     }
 }
 
-/// 检查当前版本是否被其他事务占用，或已在当前事务开始后提交。
+/// Checks whether the current version is owned by another transaction or committed after the caller started.
 #[inline]
 fn check_write_conflict(
     owner: Option<&TxnId>,
