@@ -1,0 +1,63 @@
+---
+source: minigu-test/src/insta_test.rs
+assertion_line: 182
+---
+Statement OK. No results
+---
+Error: Execution(
+    Custom(
+        IllegalState {
+            reason: "graph already exists",
+        },
+    ),
+)
+---
+Error: Plan(
+    Bind(
+        GraphTypeNotFound(
+            "mygraphtype",
+        ),
+    ),
+)
+---
+Error: Plan(
+    Bind(
+        NotSchema(
+            "/",
+        ),
+    ),
+)
+---
+Error: Plan(
+    Bind(
+        GraphNotFound(
+            "mysrcgraph",
+        ),
+    ),
+)
+---
+Error: Plan(
+    Bind(
+        GraphNotFound(
+            "mysrcgraph",
+        ),
+    ),
+)
+---
+Error: Plan(
+    Bind(
+        GraphTypeNotFound(
+            "socialNetworkGraphType",
+        ),
+    ),
+)
+---
+Error: Plan(
+    Bind(
+        GraphTypeNotFound(
+            "socialNetworkGraphType",
+        ),
+    ),
+)
+---
+Statement OK. No results
