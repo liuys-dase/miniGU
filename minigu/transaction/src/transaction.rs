@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::timestamp::Timestamp;
+use crate::timestamp::{CommitTs, TxnId};
 
 /// Isolation level for transactions
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -24,19 +24,19 @@ pub trait Transaction: Send + Sync {
     type Error;
 
     /// Get the transaction ID
-    fn txn_id(&self) -> Timestamp;
+    fn txn_id(&self) -> TxnId;
 
     /// Get the start timestamp of the transaction
-    fn start_ts(&self) -> Timestamp;
+    fn start_ts(&self) -> CommitTs;
 
     /// Get the commit timestamp of the transaction
-    fn commit_ts(&self) -> Option<Timestamp>;
+    fn commit_ts(&self) -> Option<CommitTs>;
 
     /// Get the isolation level of the transaction
     fn isolation_level(&self) -> &IsolationLevel;
 
     /// Commit the transaction, returning the commit timestamp on success
-    fn commit(&self) -> Result<Timestamp, Self::Error>;
+    fn commit(&self) -> Result<CommitTs, Self::Error>;
 
     /// Abort the transaction and rollback all changes
     fn abort(&self) -> Result<(), Self::Error>;

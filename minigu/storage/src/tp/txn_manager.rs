@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex, Weak};
 use crossbeam_skiplist::SkipMap;
 use minigu_common::types::{EdgeId, VertexId};
 use minigu_transaction::{
-    GraphTxnManager, Timestamp, Transaction, global_timestamp_generator,
-    global_transaction_id_generator,
+    CommitTs, GraphTxnManager, Transaction, TxnId, global_commit_ts_generator,
+    global_txn_id_generator,
 };
 
 use super::memory_graph::MemoryGraph;
@@ -24,9 +24,9 @@ pub struct MemTxnManager {
     /// Weak reference to the graph to avoid circular references
     pub(super) graph: Weak<MemoryGraph>,
     /// Active transactions' txn.
-    pub(super) active_txns: SkipMap<Timestamp, Arc<MemTransaction>>,
+    pub(super) active_txns: SkipMap<TxnId, Arc<MemTransaction>>,
     /// All transactions, running or committed.
-    pub(super) committed_txns: SkipMap<Timestamp, Arc<MemTransaction>>,
+    pub(super) committed_txns: SkipMap<CommitTs, Arc<MemTransaction>>,
     /// Commit lock to enforce serial commit order
     pub(super) commit_lock: Mutex<()>,
     pub(super) latest_commit_ts: AtomicU64,
@@ -118,14 +118,14 @@ impl GraphTxnManager for MemTxnManager {
         }
 
         // Step 4: Update last GC timestamp
-        let current_ts = global_timestamp_generator().current();
+        let current_ts = global_commit_ts_generator().current();
         self.last_gc_ts.store(current_ts.raw(), Ordering::SeqCst);
 
         Ok(())
     }
 
-    fn low_watermark(&self) -> Timestamp {
-        Timestamp::with_ts(self.watermark.load(Ordering::Acquire))
+    fn low_watermark(&self) -> CommitTs {
+        CommitTs::try_from(self.watermark.load(Ordering::Acquire)).unwrap()
     }
 }
 
@@ -143,8 +143,8 @@ impl MemTxnManager {
     /// Begin a new transaction with specified parameters
     pub fn begin_transaction_at(
         &self,
-        txn_id: Option<Timestamp>,
-        start_ts: Option<Timestamp>,
+        txn_id: Option<TxnId>,
+        start_ts: Option<CommitTs>,
         isolation_level: IsolationLevel,
         skip_wal: bool,
     ) -> Result<Arc<MemTransaction>, StorageError> {
@@ -156,22 +156,22 @@ impl MemTxnManager {
 
         // Update the counters
         let txn_id = if let Some(txn_id) = txn_id {
-            global_transaction_id_generator()
+            global_txn_id_generator()
                 .update_if_greater(txn_id)
                 .map_err(TransactionError::Timestamp)?;
             txn_id
         } else {
-            global_transaction_id_generator()
+            global_txn_id_generator()
                 .next()
                 .map_err(TransactionError::Timestamp)?
         };
         let start_ts = if let Some(start_ts) = start_ts {
-            global_timestamp_generator()
+            global_commit_ts_generator()
                 .update_if_greater(start_ts)
                 .map_err(TransactionError::Timestamp)?;
             start_ts
         } else {
-            global_timestamp_generator()
+            global_commit_ts_generator()
                 .next()
                 .map_err(TransactionError::Timestamp)?
         };

@@ -3,11 +3,11 @@ use std::sync::{Arc, OnceLock, RwLock};
 
 use dashmap::DashSet;
 use minigu_common::types::{EdgeId, VertexId};
+pub use minigu_transaction::IsolationLevel;
 use minigu_transaction::{
-    GraphTxnManager, Transaction, UndoEntry as GenericUndoEntry, UndoPtr as GenericUndoPtr,
-    global_timestamp_generator,
+    CommitTs, GraphTxnManager, Transaction, TxnId, UndoEntry as GenericUndoEntry,
+    UndoPtr as GenericUndoPtr, global_commit_ts_generator,
 };
-pub use minigu_transaction::{IsolationLevel, Timestamp};
 
 use super::memory_graph::MemoryGraph;
 use crate::common::wal::StorageWal;
@@ -31,9 +31,9 @@ pub struct MemTransaction {
 
     // ---- Timestamp management ----
     /// Start timestamp assigned when the transaction begins
-    start_ts: Timestamp,
-    commit_ts: OnceLock<Timestamp>, // Commit timestamp assigned upon committing
-    txn_id: Timestamp,              // Unique transaction identifier
+    start_ts: CommitTs,
+    commit_ts: OnceLock<CommitTs>, // Commit timestamp assigned upon committing
+    txn_id: TxnId,                 // Unique transaction identifier
 
     // ---- Read sets ----
     pub(super) vertex_reads: DashSet<VertexId>, // Set of vertices read by this transaction
@@ -53,15 +53,15 @@ pub struct MemTransaction {
 impl Transaction for MemTransaction {
     type Error = StorageError;
 
-    fn txn_id(&self) -> Timestamp {
+    fn txn_id(&self) -> TxnId {
         self.txn_id
     }
 
-    fn start_ts(&self) -> Timestamp {
+    fn start_ts(&self) -> CommitTs {
         self.start_ts
     }
 
-    fn commit_ts(&self) -> Option<Timestamp> {
+    fn commit_ts(&self) -> Option<CommitTs> {
         self.commit_ts.get().copied()
     }
 
@@ -69,7 +69,7 @@ impl Transaction for MemTransaction {
         &self.isolation_level
     }
 
-    fn commit(&self) -> Result<Timestamp, Self::Error> {
+    fn commit(&self) -> Result<CommitTs, Self::Error> {
         self.commit_at(None, false)
     }
 
@@ -81,8 +81,8 @@ impl Transaction for MemTransaction {
 impl MemTransaction {
     pub(super) fn with_memgraph(
         graph: Arc<MemoryGraph>,
-        txn_id: Timestamp,
-        start_ts: Timestamp,
+        txn_id: TxnId,
+        start_ts: CommitTs,
         isolation_level: IsolationLevel,
     ) -> Self {
         Self {
@@ -115,11 +115,13 @@ impl MemTransaction {
 
             let current = entry.chain.current.read().unwrap();
             // Check if the vertex was modified after the transaction started.
-            if current.commit_ts != self.txn_id && current.commit_ts > self.start_ts {
+            if current.owner.is_some_and(|id| id != self.txn_id())
+                || (current.owner.is_none() && current.commit_ts > self.start_ts)
+            {
                 return Err(StorageError::Transaction(
                     TransactionError::ReadWriteConflict(format!(
                         "Vertex is being modified by transaction {:?}",
-                        current.commit_ts
+                        current.owner
                     )),
                 ));
             }
@@ -137,11 +139,13 @@ impl MemTransaction {
 
             let current = entry.chain.current.read().unwrap();
             // Check if the edge was modified after the transaction started.
-            if current.commit_ts != self.txn_id && current.commit_ts > self.start_ts {
+            if current.owner.is_some_and(|id| id != self.txn_id())
+                || (current.owner.is_none() && current.commit_ts > self.start_ts)
+            {
                 return Err(StorageError::Transaction(
                     TransactionError::ReadWriteConflict(format!(
                         "Edge is being modified by transaction {:?}",
-                        current.commit_ts
+                        current.owner
                     )),
                 ));
             }
@@ -175,7 +179,7 @@ impl MemTransaction {
     pub(super) fn apply_deltas_for_read<T: FnMut(&UndoEntry)>(
         undo_ptr: UndoPtr,
         mut callback: T,
-        txn_start_ts: Timestamp,
+        txn_start_ts: CommitTs,
     ) {
         let mut undo_ptr = undo_ptr;
 
@@ -203,16 +207,16 @@ impl MemTransaction {
     /// Commits the transaction at a specific commit timestamp.
     pub fn commit_at(
         &self,
-        commit_ts: Option<Timestamp>,
+        commit_ts: Option<CommitTs>,
         skip_wal: bool,
-    ) -> StorageResult<Timestamp> {
+    ) -> StorageResult<CommitTs> {
         let commit_ts = if let Some(commit_ts) = commit_ts {
-            global_timestamp_generator()
+            global_commit_ts_generator()
                 .update_if_greater(commit_ts)
                 .map_err(TransactionError::Timestamp)?;
             commit_ts
         } else {
-            global_timestamp_generator()
+            global_commit_ts_generator()
                 .next()
                 .map_err(TransactionError::Timestamp)?
         };
@@ -240,17 +244,12 @@ impl MemTransaction {
         {
             // Define a macro to simplify the update of the commit timestamp.
             macro_rules! update_commit_ts {
-                ($self:expr, $entity_type:ident, $id:expr) => {
-                    $self
-                        .graph()
-                        .$entity_type()
-                        .get($id)
-                        .unwrap()
-                        .current()
-                        .write()
-                        .unwrap()
-                        .commit_ts = commit_ts
-                };
+                ($self:expr, $entity_type:ident, $id:expr) => {{
+                    let entry = $self.graph().$entity_type().get($id).unwrap();
+                    let mut current = entry.current().write().unwrap();
+                    current.commit_ts = commit_ts;
+                    current.owner = None;
+                }};
             }
 
             let undo_entries = self.undo_buffer.read().unwrap().clone();
@@ -339,11 +338,12 @@ impl MemTransaction {
                     let vid = vertex.vid();
                     if let Some(entry) = self.graph.vertices.get(&vid) {
                         let mut current = entry.chain.current.write().unwrap();
-                        if current.commit_ts == self.txn_id() {
+                        if current.owner == Some(self.txn_id()) {
                             // If created by current transaction, restore original state
                             current.data = vertex.clone();
                             current.data.is_tombstone = false;
                             current.commit_ts = commit_ts;
+                            current.owner = None;
                             *entry.chain.undo_ptr.write().unwrap() = next;
                         }
                     }
@@ -353,11 +353,12 @@ impl MemTransaction {
                     let eid = edge.eid();
                     if let Some(entry) = self.graph.edges.get(&eid) {
                         let mut current = entry.chain.current.write().unwrap();
-                        if current.commit_ts == self.txn_id() {
+                        if current.owner == Some(self.txn_id()) {
                             // If created by current transaction, restore original state
                             current.data = edge.clone();
                             current.data.is_tombstone = false;
                             current.commit_ts = commit_ts;
+                            current.owner = None;
                             *entry.chain.undo_ptr.write().unwrap() = next;
                         }
                     }
@@ -367,10 +368,11 @@ impl MemTransaction {
                     // entity_id Restore vertex properties
                     if let Some(entry) = self.graph.vertices.get(vid) {
                         let mut current = entry.chain.current.write().unwrap();
-                        if current.commit_ts == self.txn_id() {
+                        if current.owner == Some(self.txn_id()) {
                             // Restore properties
                             current.data.set_props(indices, props.clone());
                             current.commit_ts = commit_ts;
+                            current.owner = None;
                             // Update undo pointer to previous version
                             *entry.chain.undo_ptr.write().unwrap() = next;
                         }
@@ -380,10 +382,11 @@ impl MemTransaction {
                     // Restore edge properties
                     if let Some(entry) = self.graph.edges.get(eid) {
                         let mut current = entry.chain.current.write().unwrap();
-                        if current.commit_ts == self.txn_id() {
+                        if current.owner == Some(self.txn_id()) {
                             // Restore properties
                             current.data.set_props(indices, props.clone());
                             current.commit_ts = commit_ts;
+                            current.owner = None;
                             // Update undo pointer to previous version
                             *entry.chain.undo_ptr.write().unwrap() = next;
                         }
@@ -393,10 +396,11 @@ impl MemTransaction {
                     // Restore vertex
                     if let Some(entry) = self.graph.vertices.get(vid) {
                         let mut current = entry.chain.current.write().unwrap();
-                        if current.commit_ts == self.txn_id() {
+                        if current.owner == Some(self.txn_id()) {
                             // Restore deletion flag
                             current.data.is_tombstone = true;
                             current.commit_ts = commit_ts;
+                            current.owner = None;
                             // Update undo pointer to previous version
                             *entry.chain.undo_ptr.write().unwrap() = next;
                         }
@@ -406,10 +410,11 @@ impl MemTransaction {
                     // Restore edge
                     if let Some(entry) = self.graph.edges.get(eid) {
                         let mut current = entry.chain.current.write().unwrap();
-                        if current.commit_ts == self.txn_id() {
+                        if current.owner == Some(self.txn_id()) {
                             // Restore deletion flag
                             current.data.is_tombstone = true;
                             current.commit_ts = commit_ts;
+                            current.owner = None;
                             // Update undo pointer to previous version
                             *entry.chain.undo_ptr.write().unwrap() = next;
                         }

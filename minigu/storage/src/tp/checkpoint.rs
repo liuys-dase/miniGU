@@ -15,7 +15,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crc32fast::Hasher;
 use minigu_common::types::{EdgeId, VertexId};
-use minigu_transaction::Timestamp;
+use minigu_transaction::{CommitTs, TxnId};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -78,7 +78,9 @@ pub struct SerializedVertex {
     pub data: Vertex,
 
     /// Commit timestamp of the vertex
-    pub commit_ts: Timestamp,
+    pub commit_ts: CommitTs,
+    /// In-flight owner txn (if any) when checkpointed
+    pub owner: Option<TxnId>,
 }
 
 /// Serialized representation of an edge
@@ -88,7 +90,9 @@ pub struct SerializedEdge {
     pub data: Edge,
 
     /// Commit timestamp of the edge
-    pub commit_ts: Timestamp,
+    pub commit_ts: CommitTs,
+    /// In-flight owner txn (if any) when checkpointed
+    pub owner: Option<TxnId>,
 }
 
 /// Serialized representation of adjacency information for a vertex
@@ -155,6 +159,7 @@ impl GraphCheckpoint {
             vertices.insert(*entry.key(), SerializedVertex {
                 data: current.data.clone(),
                 commit_ts: current.commit_ts,
+                owner: current.owner,
             });
         }
 
@@ -167,6 +172,7 @@ impl GraphCheckpoint {
             edges.insert(*entry.key(), SerializedEdge {
                 data: current.data.clone(),
                 commit_ts: current.commit_ts,
+                owner: current.owner,
             });
         }
 
@@ -317,6 +323,7 @@ impl GraphCheckpoint {
             // Set the commit timestamp
             let mut current = versioned_vertex.chain.current.write().unwrap();
             current.commit_ts = serialized_vertex.commit_ts;
+            current.owner = serialized_vertex.owner;
             drop(current);
 
             graph.vertices.insert(*vid, versioned_vertex);
@@ -328,6 +335,7 @@ impl GraphCheckpoint {
             // Set the commit timestamp
             let mut current = versioned_edge.chain.current.write().unwrap();
             current.commit_ts = serialized_edge.commit_ts;
+            current.owner = serialized_edge.owner;
             drop(current);
 
             graph.edges.insert(*eid, versioned_edge);

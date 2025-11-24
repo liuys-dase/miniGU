@@ -6,14 +6,14 @@
 use std::sync::Arc;
 
 use crate::transaction::Transaction;
-use crate::{IsolationLevel, Timestamp};
+use crate::{CommitTs, IsolationLevel};
 
 /// Trait for transaction managers supporting MVCC operations.
 /// This trait abstracts the core functionality needed for managing transactions
 /// across different storage implementations.
 ///
-/// Note: Timestamp and transaction ID generation is handled by global generators
-/// accessible via `global_timestamp_generator()` and `global_transaction_id_generator()`.
+/// Note: Commit timestamp and transaction ID generation is handled by global generators
+/// accessible via `global_commit_ts_generator()` and `global_txn_id_generator()`.
 pub trait GraphTxnManager {
     /// The transaction type that this manager handles
     type Transaction: Transaction + Send + Sync;
@@ -42,5 +42,5 @@ pub trait GraphTxnManager {
 
     /// Get the low watermark of the transaction manager.
     /// The low watermark is the minimum start timestamp of the active transactions.
-    fn low_watermark(&self) -> Timestamp;
+    fn low_watermark(&self) -> CommitTs;
 }

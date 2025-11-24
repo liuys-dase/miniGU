@@ -5,7 +5,7 @@ use crossbeam_skiplist::SkipSet;
 use dashmap::DashMap;
 use minigu_common::types::{EdgeId, VectorIndexKey, VertexId};
 use minigu_common::value::{ScalarValue, VectorValue};
-use minigu_transaction::{IsolationLevel, Timestamp, Transaction};
+use minigu_transaction::{CommitTs, IsolationLevel, Transaction, TxnId};
 
 use super::checkpoint::{CheckpointManager, CheckpointManagerConfig};
 use super::transaction::{MemTransaction, UndoEntry, UndoPtr};
@@ -28,7 +28,7 @@ macro_rules! update_properties {
     ($self:expr, $id:expr, $entry:expr, $txn:expr, $indices:expr, $props:expr, $op:ident) => {{
         // Acquire the lock to modify the properties of the vertex/edge
         let mut current = $entry.chain.current.write().unwrap();
-        check_write_conflict(current.commit_ts, $txn)?;
+        check_write_conflict(current.owner.as_ref(), current.commit_ts, $txn)?;
 
         let delta_props = $indices
             .iter()
@@ -45,8 +45,8 @@ macro_rules! update_properties {
         undo_buffer.push(undo_entry.clone());
         *$entry.chain.undo_ptr.write().unwrap() = Arc::downgrade(&undo_entry);
 
-        // Update the commit timestamp to the transaction ID.
-        current.commit_ts = $txn.txn_id();
+        // Mark in-flight owner to the current transaction.
+        current.owner = Some($txn.txn_id());
 
         // Create a new version with updated properties.
         current.data.set_props(&$indices, $props);
@@ -58,7 +58,8 @@ macro_rules! update_properties {
 /// Stores the current version of an entity, along with transaction metadata.
 pub(super) struct CurrentVersion<D> {
     pub(super) data: D,              // The actual data version
-    pub(super) commit_ts: Timestamp, // Commit timestamp indicating when it was committed
+    pub(super) commit_ts: CommitTs,  // Last committed timestamp
+    pub(super) owner: Option<TxnId>, // In-flight owner txn (if any)
 }
 
 // Version chain structure
@@ -86,7 +87,8 @@ impl VersionedVertex {
             chain: Arc::new(VersionChain {
                 current: RwLock::new(CurrentVersion {
                     data: initial,
-                    commit_ts: Timestamp::with_ts(0), // Initial commit timestamp set to 0
+                    commit_ts: CommitTs::default(), // Initial commit timestamp set to 0
+                    owner: None,
                 }),
                 undo_ptr: RwLock::new(Weak::new()),
             }),
@@ -97,14 +99,14 @@ impl VersionedVertex {
         &self.chain.current
     }
 
-    pub fn with_txn_id(initial: Vertex, txn_id: Timestamp) -> Self {
-        debug_assert!(txn_id.raw() > Timestamp::TXN_ID_START);
+    pub fn with_txn_id(initial: Vertex, txn_id: TxnId) -> Self {
+        debug_assert!(txn_id.raw() >= TxnId::START);
         Self {
             chain: Arc::new(VersionChain {
                 current: RwLock::new(CurrentVersion {
                     data: initial,
-                    commit_ts: txn_id, /* Initial commit timestamp set to txn_id for uncommitted
-                                        * changes */
+                    commit_ts: CommitTs::default(),
+                    owner: Some(txn_id), // Mark as uncommitted changes owned by txn
                 }),
                 undo_ptr: RwLock::new(Weak::new()),
             }),
@@ -118,14 +120,13 @@ impl VersionedVertex {
         // If the vertex is modified by the same transaction, or the transaction is before the
         // vertex was modified, return the vertex
         let commit_ts = current.commit_ts;
+        let owner_txn = current.owner;
         // If the commit timestamp of current is equal to the transaction id of txn, it means
         // the vertex is modified by the same transaction.
         // If the commit timestamp of current is less than the start timestamp of txn, it means
         // the vertex was modified before the transaction started, and the corresponding transaction
         // has been committed.
-        if (commit_ts.is_txn_id() && commit_ts == txn.txn_id())
-            || (commit_ts.is_commit_ts() && commit_ts <= txn.start_ts())
-        {
+        if owner_txn == Some(txn.txn_id()) || (owner_txn.is_none() && commit_ts <= txn.start_ts()) {
             // Check if the current vertex is tombstone
             if visible_vertex.is_tombstone() {
                 return Err(StorageError::Transaction(
@@ -139,6 +140,17 @@ impl VersionedVertex {
         } else {
             // Otherwise, apply the deltas to the vertex
             let undo_ptr = self.chain.undo_ptr.read().unwrap().clone();
+            if owner_txn.is_some()
+                && owner_txn != Some(txn.txn_id())
+                && undo_ptr.upgrade().is_none()
+            {
+                return Err(StorageError::Transaction(
+                    TransactionError::VersionNotVisible(format!(
+                        "Vertex has uncommitted changes by {:?}",
+                        owner_txn
+                    )),
+                ));
+            }
             // Closure to apply the deltas to the vertex
             let apply_deltas = |undo_entry: &UndoEntry| match undo_entry.delta() {
                 DeltaOp::CreateVertex(original) => visible_vertex = original.clone(),
@@ -168,12 +180,18 @@ impl VersionedVertex {
     pub(super) fn is_visible(&self, txn: &MemTransaction) -> bool {
         // Check if the vertex is visible based on the transaction's start timestamp
         let current = self.chain.current.read().unwrap();
-        if (current.commit_ts.is_txn_id() && current.commit_ts == txn.txn_id())
-            || (current.commit_ts.is_commit_ts() && current.commit_ts <= txn.start_ts())
+        if current.owner == Some(txn.txn_id())
+            || (current.owner.is_none() && current.commit_ts <= txn.start_ts())
         {
             !current.data.is_tombstone()
         } else {
             let undo_ptr = self.chain.undo_ptr.read().unwrap().clone();
+            if current.owner.is_some()
+                && current.owner != Some(txn.txn_id())
+                && undo_ptr.upgrade().is_none()
+            {
+                return false;
+            }
             let mut is_visible = !current.data.is_tombstone();
             let apply_deltas = |undo_entry: &UndoEntry| {
                 if let DeltaOp::DelVertex(_) = undo_entry.delta() {
@@ -203,7 +221,8 @@ impl VersionedEdge {
             chain: Arc::new(VersionChain {
                 current: RwLock::new(CurrentVersion {
                     data: initial,
-                    commit_ts: Timestamp::with_ts(0), // Initial commit timestamp set to 0
+                    commit_ts: CommitTs::default(), // Initial commit timestamp set to 0
+                    owner: None,
                 }),
                 undo_ptr: RwLock::new(Weak::new()),
             }),
@@ -214,13 +233,14 @@ impl VersionedEdge {
         &self.chain.current
     }
 
-    pub fn with_modified_ts(initial: Edge, txn_id: Timestamp) -> Self {
-        debug_assert!(txn_id.raw() > Timestamp::TXN_ID_START);
+    pub fn with_modified_ts(initial: Edge, txn_id: TxnId) -> Self {
+        debug_assert!(txn_id.raw() >= TxnId::START);
         Self {
             chain: Arc::new(VersionChain {
                 current: RwLock::new(CurrentVersion {
                     data: initial,
-                    commit_ts: txn_id,
+                    commit_ts: CommitTs::default(),
+                    owner: Some(txn_id),
                 }),
                 undo_ptr: RwLock::new(Weak::new()),
             }),
@@ -231,8 +251,8 @@ impl VersionedEdge {
     pub fn get_visible(&self, txn: &MemTransaction) -> StorageResult<Edge> {
         let current = self.chain.current.read().unwrap();
         let mut current_edge = current.data.clone();
-        if (current.commit_ts.is_txn_id() && current.commit_ts == txn.txn_id())
-            || (current.commit_ts.is_commit_ts() && current.commit_ts <= txn.start_ts())
+        if current.owner == Some(txn.txn_id())
+            || (current.owner.is_none() && current.commit_ts <= txn.start_ts())
         {
             // Check if the edge is tombstone
             if current_edge.is_tombstone() {
@@ -246,6 +266,17 @@ impl VersionedEdge {
             Ok(current_edge)
         } else {
             let undo_ptr = self.chain.undo_ptr.read().unwrap().clone();
+            if current.owner.is_some()
+                && current.owner != Some(txn.txn_id())
+                && undo_ptr.upgrade().is_none()
+            {
+                return Err(StorageError::Transaction(
+                    TransactionError::VersionNotVisible(format!(
+                        "Edge has uncommitted changes by {:?}",
+                        current.owner
+                    )),
+                ));
+            }
             let apply_deltas = |undo_entry: &UndoEntry| match undo_entry.delta() {
                 DeltaOp::CreateEdge(original) => current_edge = original.clone(),
                 DeltaOp::SetEdgeProps(_, SetPropsOp { indices, props }) => {
@@ -294,12 +325,18 @@ impl VersionedEdge {
         {
             // Check if the vertex is visible based on the transaction's start timestamp
             let current = self.chain.current.read().unwrap();
-            if (current.commit_ts.is_txn_id() && current.commit_ts == txn.txn_id())
-                || (current.commit_ts.is_commit_ts() && current.commit_ts <= txn.start_ts())
+            if current.owner == Some(txn.txn_id())
+                || (current.owner.is_none() && current.commit_ts <= txn.start_ts())
             {
                 !current.data.is_tombstone()
             } else {
                 let undo_ptr = self.chain.undo_ptr.read().unwrap().clone();
+                if current.owner.is_some()
+                    && current.owner != Some(txn.txn_id())
+                    && undo_ptr.upgrade().is_none()
+                {
+                    return false;
+                }
                 let mut is_visible = !current.data.is_tombstone();
                 let apply_deltas = |undo_entry: &UndoEntry| match undo_entry.delta() {
                     DeltaOp::CreateEdge(_) => {
@@ -525,6 +562,7 @@ impl MemoryGraph {
         // Step 2: Perform MVCC visibility check.
         let current_version = versioned_vertex.chain.current.read().unwrap();
         let commit_ts = current_version.commit_ts;
+        let owner_txn = current_version.owner;
         match txn.isolation_level() {
             IsolationLevel::Serializable => {
                 // Insert the vertex ID into the read set
@@ -537,8 +575,8 @@ impl MemoryGraph {
         let mut visible_vertex = current_version.data.clone();
         // Only when the vertex is modified by other transactions, or txn started before the vertex
         // was modified, we need to apply the deltas to the vertex
-        if (commit_ts.is_txn_id() && commit_ts != txn.txn_id())
-            || (commit_ts.is_commit_ts() && commit_ts > txn.start_ts())
+        if owner_txn.is_some_and(|id| id != txn.txn_id())
+            || (owner_txn.is_none() && commit_ts > txn.start_ts())
         {
             let undo_ptr = versioned_vertex.chain.undo_ptr.read().unwrap().clone();
             let apply_deltas = |undo_entry: &UndoEntry| match undo_entry.delta() {
@@ -574,6 +612,7 @@ impl MemoryGraph {
         // Step 2: Perform MVCC visibility check.
         let current_version = versioned_edge.chain.current.read().unwrap();
         let commit_ts = current_version.commit_ts;
+        let owner_txn = current_version.owner;
         match txn.isolation_level() {
             IsolationLevel::Serializable => {
                 // Insert the edge ID into the read set
@@ -586,8 +625,8 @@ impl MemoryGraph {
         let mut visible_edge = current_version.data.clone();
         // Only when the edge is modified by other transactions, or txn started before the edge was
         // modified, we need to apply the deltas to the edge
-        if (commit_ts.is_txn_id() && commit_ts != txn.txn_id())
-            || (commit_ts.is_commit_ts() && commit_ts > txn.start_ts())
+        if owner_txn.is_some_and(|id| id != txn.txn_id())
+            || (owner_txn.is_none() && commit_ts > txn.start_ts())
         {
             let undo_ptr = versioned_edge.chain.undo_ptr.read().unwrap().clone();
             let apply_deltas = |undo_entry: &UndoEntry| match undo_entry.delta() {
@@ -653,19 +692,21 @@ impl MemoryGraph {
 
         let current = entry.chain.current.read().unwrap();
         // Conflict detection: ensure the vertex is visible or not modified by other transactions
-        check_write_conflict(current.commit_ts, txn)?;
+        check_write_conflict(current.owner.as_ref(), current.commit_ts, txn)?;
 
         // Record the vertex creation in the transaction
         let delta = DeltaOp::DelVertex(vid);
         let next_ptr = entry.chain.undo_ptr.read().unwrap().clone();
         let mut undo_buffer = txn.undo_buffer.write().unwrap();
-        let undo_entry = if current.commit_ts == txn.txn_id() {
-            Arc::new(UndoEntry::new(delta, Timestamp::with_ts(0), next_ptr))
+        let undo_entry = if current.owner == Some(txn.txn_id()) {
+            Arc::new(UndoEntry::new(delta, CommitTs::default(), next_ptr))
         } else {
             Arc::new(UndoEntry::new(delta, current.commit_ts, next_ptr))
         };
         undo_buffer.push(undo_entry.clone());
         *entry.chain.undo_ptr.write().unwrap() = Arc::downgrade(&undo_entry);
+        drop(current);
+        entry.chain.current.write().unwrap().owner = Some(txn.txn_id());
 
         // Record redo entry
         let wal_entry = RedoEntry {
@@ -698,7 +739,7 @@ impl MemoryGraph {
 
         let current = entry.chain.current.read().unwrap();
         // Conflict detection: ensure the edge is visible or not modified by other transactions
-        check_write_conflict(current.commit_ts, txn)?;
+        check_write_conflict(current.owner.as_ref(), current.commit_ts, txn)?;
 
         // Record the edge creation in the transaction
         let delta_edge = DeltaOp::DelEdge(eid);
@@ -708,6 +749,8 @@ impl MemoryGraph {
         let undo_entry = Arc::new(UndoEntry::new(delta_edge, current.commit_ts, undo_ptr));
         undo_buffer.push(undo_entry.clone());
         *entry.chain.undo_ptr.write().unwrap() = Arc::downgrade(&undo_entry);
+        drop(current);
+        entry.chain.current.write().unwrap().owner = Some(txn.txn_id());
 
         // Record the adjacency list updates in the transaction
         self.adjacency_list
@@ -741,7 +784,7 @@ impl MemoryGraph {
         ))?;
 
         let mut current = entry.chain.current.write().unwrap();
-        check_write_conflict(current.commit_ts, txn)?;
+        check_write_conflict(current.owner.as_ref(), current.commit_ts, txn)?;
 
         // Delete all edges associated with the vertex
         if let Some(adjacency_container) = self.adjacency_list.get(&vid) {
@@ -768,7 +811,7 @@ impl MemoryGraph {
         // Mark the vertex as deleted
         let tombstone = Vertex::tombstone(current.data.clone());
         current.data = tombstone;
-        current.commit_ts = txn.txn_id();
+        current.owner = Some(txn.txn_id());
 
         // Write to WAL
         let wal_entry = RedoEntry {
@@ -790,7 +833,7 @@ impl MemoryGraph {
         ))?;
 
         let mut current = entry.chain.current.write().unwrap();
-        check_write_conflict(current.commit_ts, txn)?;
+        check_write_conflict(current.owner.as_ref(), current.commit_ts, txn)?;
 
         // Record the edge deletion in the transaction
         let delta = DeltaOp::CreateEdge(current.data.clone());
@@ -803,7 +846,7 @@ impl MemoryGraph {
         // Mark the edge as deleted
         let tombstone = Edge::tombstone(current.data.clone());
         current.data = tombstone;
-        current.commit_ts = txn.txn_id();
+        current.owner = Some(txn.txn_id());
 
         // Write to WAL
         let wal_entry = RedoEntry {
@@ -1193,29 +1236,32 @@ impl MemoryGraph {
     }
 }
 
-/// Checks if the vertex is modified by other transactions or has a greater commit timestamp than
-/// the current transaction.
-/// Current check applies to both Snapshot Isolation and Serializable isolation levels.
+/// 检查当前版本是否被其他事务占用，或已在当前事务开始后提交。
 #[inline]
-fn check_write_conflict(commit_ts: Timestamp, txn: &Arc<MemTransaction>) -> StorageResult<()> {
-    match commit_ts {
-        // If the vertex is modified by other transactions, return write-write conflict
-        ts if ts.is_txn_id() && ts != txn.txn_id() => Err(StorageError::Transaction(
-            TransactionError::WriteWriteConflict(format!(
-                "Data is being modified by transaction {:?}",
-                ts
-            )),
-        )),
-        // If the vertex is committed by other transactions and its commit timestamp is greater
-        // than the start timestamp of the current transaction, return version not visible
-        ts if ts.is_commit_ts() && ts > txn.start_ts() => Err(StorageError::Transaction(
+fn check_write_conflict(
+    owner: Option<&TxnId>,
+    commit_ts: CommitTs,
+    txn: &Arc<MemTransaction>,
+) -> StorageResult<()> {
+    if let Some(owner_txn) = owner {
+        if *owner_txn != txn.txn_id() {
+            return Err(StorageError::Transaction(
+                TransactionError::WriteWriteConflict(format!(
+                    "Data is being modified by transaction {:?}",
+                    owner_txn
+                )),
+            ));
+        }
+    } else if commit_ts > txn.start_ts() {
+        return Err(StorageError::Transaction(
             TransactionError::VersionNotVisible(format!(
                 "Data version not visible for {:?}",
                 txn.txn_id()
             )),
-        )),
-        _ => Ok(()),
+        ));
     }
+
+    Ok(())
 }
 
 #[cfg(test)]

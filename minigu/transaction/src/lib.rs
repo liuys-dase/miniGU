@@ -14,9 +14,8 @@ pub use error::TimestampError;
 // Re-export commonly used types
 pub use manager::GraphTxnManager;
 pub use timestamp::{
-    GlobalTimestampGenerator, Timestamp, TransactionIdGenerator, global_timestamp_generator,
-    global_transaction_id_generator, init_global_timestamp_generator,
-    init_global_transaction_id_generator,
+    CommitTs, CommitTsGenerator, TxnId, TxnIdGenerator, global_commit_ts_generator,
+    global_txn_id_generator, init_global_commit_ts_generator, init_global_txn_id_generator,
 };
 pub use transaction::{IsolationLevel, Transaction};
 
@@ -30,7 +29,7 @@ pub struct UndoEntry<T> {
     /// The delta operation of the undo entry
     delta: T,
     /// The timestamp when this version was created
-    timestamp: Timestamp,
+    timestamp: CommitTs,
     /// Pointer to the next undo entry in the undo buffer
     next: UndoPtr<T>,
 }
@@ -40,7 +39,7 @@ pub type UndoPtr<T> = Weak<UndoEntry<T>>;
 
 impl<T> UndoEntry<T> {
     /// Create a new UndoEntry
-    pub fn new(delta: T, timestamp: Timestamp, next: UndoPtr<T>) -> Self {
+    pub fn new(delta: T, timestamp: CommitTs, next: UndoPtr<T>) -> Self {
         Self {
             delta,
             timestamp,
@@ -54,7 +53,7 @@ impl<T> UndoEntry<T> {
     }
 
     /// Get the timestamp of the undo entry
-    pub fn timestamp(&self) -> Timestamp {
+    pub fn timestamp(&self) -> CommitTs {
         self.timestamp
     }
 
