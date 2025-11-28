@@ -37,6 +37,8 @@ pub struct MemTxnManager {
     last_gc_ts: AtomicU64,
     /// Default lock strategy for new transactions on this graph
     pub(super) default_lock_strategy: LockStrategy,
+    /// Default isolation level when callers want to rely on sensible defaults.
+    pub(super) default_isolation_level: IsolationLevel,
 }
 
 impl Default for MemTxnManager {
@@ -50,6 +52,7 @@ impl Default for MemTxnManager {
             watermark: AtomicU64::new(0),
             last_gc_ts: AtomicU64::new(0),
             default_lock_strategy: LockStrategy::Pessimistic,
+            default_isolation_level: IsolationLevel::Snapshot,
         }
     }
 }
@@ -223,6 +226,7 @@ impl MemTxnManager {
     }
 
     /// Begin a new transaction with an explicit lock strategy override.
+    #[cfg(test)]
     pub fn begin_transaction_with_lock(
         &self,
         isolation_level: IsolationLevel,

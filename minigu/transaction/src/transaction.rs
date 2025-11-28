@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::timestamp::Timestamp;
 
 /// Isolation level for transactions
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum IsolationLevel {
     /// Snapshot isolation - reads see a consistent snapshot
     Snapshot,
@@ -23,6 +23,24 @@ pub enum IsolationLevel {
 pub enum LockStrategy {
     Pessimistic,
     Optimistic,
+}
+
+/// Transaction behavior configuration that can be shared across storage implementations.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TxnOptions {
+    /// Default lock strategy used when callers do not override it.
+    pub default_lock: LockStrategy,
+    /// Default isolation level for new transactions when a caller wants sensible defaults.
+    pub default_isolation: IsolationLevel,
+}
+
+impl Default for TxnOptions {
+    fn default() -> Self {
+        Self {
+            default_lock: LockStrategy::Pessimistic,
+            default_isolation: IsolationLevel::Snapshot,
+        }
+    }
 }
 
 /// Trait defining the core operations that all transactions must support.

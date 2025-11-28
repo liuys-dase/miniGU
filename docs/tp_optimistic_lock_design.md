@@ -27,7 +27,7 @@
 ## 方案概览
 1) 新增锁策略配置
 - 定义 `LockStrategy` 枚举（`Pessimistic` | `Optimistic`）放置在公共 transaction crate 中供各层复用。
-- 在 `MemoryGraph` 构造参数中增加 TP 事务配置（示例：`TpTxnOptions { default_lock: LockStrategy, default_isolation: IsolationLevel }`），对现有 `with_config_*` 提供带默认值的构造，保持向后兼容。
+- 在 `MemoryGraph` 构造参数中增加 TP 事务配置（示例：`TxnOptions { default_lock: LockStrategy, default_isolation: IsolationLevel }`），对现有 `with_config_*` 提供带默认值的构造，保持向后兼容。
 - `MemTxnManager::begin_transaction` 接收可选覆盖参数（新方法 `begin_transaction_with_options`），将锁策略写入 `MemTransaction`。
 
 2) 事务上下文扩展

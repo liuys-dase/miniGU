@@ -5,7 +5,7 @@ use crossbeam_skiplist::SkipSet;
 use dashmap::DashMap;
 use minigu_common::types::{EdgeId, VectorIndexKey, VertexId};
 use minigu_common::value::{ScalarValue, VectorValue};
-use minigu_transaction::{IsolationLevel, LockStrategy, Timestamp, Transaction};
+use minigu_transaction::{IsolationLevel, LockStrategy, Timestamp, Transaction, TxnOptions};
 
 use super::checkpoint::{CheckpointManager, CheckpointManagerConfig};
 use super::transaction::{MemTransaction, UndoEntry, UndoPtr};
@@ -372,21 +372,6 @@ pub struct MemoryGraph {
     pub(super) vector_indices: DashMap<VectorIndexKey, Arc<RwLock<Box<dyn VectorIndex>>>>,
 }
 
-/// Transaction options for the TP (OLTP) engine.
-#[derive(Debug, Clone, Copy)]
-pub struct TpTxnOptions {
-    /// Default lock strategy used when callers do not override it.
-    pub default_lock: LockStrategy,
-}
-
-impl Default for TpTxnOptions {
-    fn default() -> Self {
-        Self {
-            default_lock: LockStrategy::Pessimistic,
-        }
-    }
-}
-
 impl MemoryGraph {
     // ===== Basic methods =====
     /// Creates a new [`MemoryGraph`] instance using default configurations,
@@ -421,7 +406,7 @@ impl MemoryGraph {
     pub fn with_config_recovered_with_options(
         checkpoint_config: CheckpointManagerConfig,
         wal_config: WalManagerConfig,
-        txn_options: TpTxnOptions,
+        txn_options: TxnOptions,
     ) -> Arc<Self> {
         // Recover from checkpoint and WAL
         Self::recover_from_checkpoint_and_wal_with_options(
@@ -453,7 +438,7 @@ impl MemoryGraph {
     pub fn with_config_fresh_with_options(
         checkpoint_config: CheckpointManagerConfig,
         wal_config: WalManagerConfig,
-        txn_options: TpTxnOptions,
+        txn_options: TxnOptions,
     ) -> Arc<Self> {
         let graph = Arc::new(Self {
             vertices: DashMap::new(),
@@ -462,6 +447,7 @@ impl MemoryGraph {
             txn_manager: {
                 let mut manager = MemTxnManager::new();
                 manager.default_lock_strategy = txn_options.default_lock;
+                manager.default_isolation_level = txn_options.default_isolation;
                 manager
             },
             wal_manager: WalManager::new(wal_config),
@@ -4039,8 +4025,9 @@ pub mod tests {
         let graph = MemoryGraph::with_config_fresh_with_options(
             checkpoint_config,
             wal_config,
-            TpTxnOptions {
+            TxnOptions {
                 default_lock: LockStrategy::Optimistic,
+                ..Default::default()
             },
         );
 
