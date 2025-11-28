@@ -16,6 +16,15 @@ pub enum IsolationLevel {
     Serializable,
 }
 
+/// Lock strategy for OLTP transactions.
+/// - `Pessimistic` performs eager conflict checks when applying writes.
+/// - `Optimistic` defers conflict detection to commit-time validation using write sets.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum LockStrategy {
+    Pessimistic,
+    Optimistic,
+}
+
 /// Trait defining the core operations that all transactions must support.
 /// This trait abstracts the fundamental transaction behavior across different
 /// storage implementations.

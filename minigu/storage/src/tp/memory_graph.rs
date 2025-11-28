@@ -5,7 +5,7 @@ use crossbeam_skiplist::SkipSet;
 use dashmap::DashMap;
 use minigu_common::types::{EdgeId, VectorIndexKey, VertexId};
 use minigu_common::value::{ScalarValue, VectorValue};
-use minigu_transaction::{IsolationLevel, Timestamp, Transaction};
+use minigu_transaction::{IsolationLevel, LockStrategy, Timestamp, Transaction};
 
 use super::checkpoint::{CheckpointManager, CheckpointManagerConfig};
 use super::transaction::{MemTransaction, UndoEntry, UndoPtr};
@@ -25,10 +25,19 @@ use crate::error::{
 
 // Perform the update properties operation
 macro_rules! update_properties {
-    ($self:expr, $id:expr, $entry:expr, $txn:expr, $indices:expr, $props:expr, $op:ident) => {{
+    (
+        $self:expr,
+        $id:expr,
+        $entry:expr,
+        $txn:expr,
+        $indices:expr,
+        $props:expr,
+        $op:ident,
+        $guard_fn:ident
+    ) => {{
         // Acquire the lock to modify the properties of the vertex/edge
         let mut current = $entry.chain.current.write().unwrap();
-        check_write_conflict(current.commit_ts, $txn)?;
+        $guard_fn(current.commit_ts, $txn, $id)?;
 
         let delta_props = $indices
             .iter()
@@ -363,6 +372,21 @@ pub struct MemoryGraph {
     pub(super) vector_indices: DashMap<VectorIndexKey, Arc<RwLock<Box<dyn VectorIndex>>>>,
 }
 
+/// Transaction options for the TP (OLTP) engine.
+#[derive(Debug, Clone, Copy)]
+pub struct TpTxnOptions {
+    /// Default lock strategy used when callers do not override it.
+    pub default_lock: LockStrategy,
+}
+
+impl Default for TpTxnOptions {
+    fn default() -> Self {
+        Self {
+            default_lock: LockStrategy::Pessimistic,
+        }
+    }
+}
+
 impl MemoryGraph {
     // ===== Basic methods =====
     /// Creates a new [`MemoryGraph`] instance using default configurations,
@@ -389,8 +413,23 @@ impl MemoryGraph {
         checkpoint_config: CheckpointManagerConfig,
         wal_config: WalManagerConfig,
     ) -> Arc<Self> {
+        Self::with_config_recovered_with_options(checkpoint_config, wal_config, Default::default())
+    }
+
+    /// Creates a new [`MemoryGraph`] with custom transaction options,
+    /// and recovers its state from persisted checkpoint and WAL.
+    pub fn with_config_recovered_with_options(
+        checkpoint_config: CheckpointManagerConfig,
+        wal_config: WalManagerConfig,
+        txn_options: TpTxnOptions,
+    ) -> Arc<Self> {
         // Recover from checkpoint and WAL
-        Self::recover_from_checkpoint_and_wal(checkpoint_config, wal_config).unwrap()
+        Self::recover_from_checkpoint_and_wal_with_options(
+            checkpoint_config,
+            wal_config,
+            txn_options,
+        )
+        .unwrap()
     }
 
     /// Creates a new [`MemoryGraph`] instance from scratch without performing recovery.
@@ -406,11 +445,25 @@ impl MemoryGraph {
         checkpoint_config: CheckpointManagerConfig,
         wal_config: WalManagerConfig,
     ) -> Arc<Self> {
+        Self::with_config_fresh_with_options(checkpoint_config, wal_config, Default::default())
+    }
+
+    /// Creates a new [`MemoryGraph`] instance from scratch without performing recovery,
+    /// using custom transaction options.
+    pub fn with_config_fresh_with_options(
+        checkpoint_config: CheckpointManagerConfig,
+        wal_config: WalManagerConfig,
+        txn_options: TpTxnOptions,
+    ) -> Arc<Self> {
         let graph = Arc::new(Self {
             vertices: DashMap::new(),
             edges: DashMap::new(),
             adjacency_list: DashMap::new(),
-            txn_manager: MemTxnManager::new(),
+            txn_manager: {
+                let mut manager = MemTxnManager::new();
+                manager.default_lock_strategy = txn_options.default_lock;
+                manager
+            },
             wal_manager: WalManager::new(wal_config),
             checkpoint_manager: None,
             vector_indices: DashMap::new(),
@@ -447,6 +500,7 @@ impl MemoryGraph {
                         Some(entry.txn_id),
                         Some(start_ts),
                         entry.iso_level,
+                        None,
                         true,
                     )?;
                     txn = Some(t);
@@ -653,7 +707,7 @@ impl MemoryGraph {
 
         let current = entry.chain.current.read().unwrap();
         // Conflict detection: ensure the vertex is visible or not modified by other transactions
-        check_write_conflict(current.commit_ts, txn)?;
+        prewrite_check_vertex(current.commit_ts, txn, vid)?;
 
         // Record the vertex creation in the transaction
         let delta = DeltaOp::DelVertex(vid);
@@ -698,7 +752,7 @@ impl MemoryGraph {
 
         let current = entry.chain.current.read().unwrap();
         // Conflict detection: ensure the edge is visible or not modified by other transactions
-        check_write_conflict(current.commit_ts, txn)?;
+        prewrite_check_edge(current.commit_ts, txn, eid)?;
 
         // Record the edge creation in the transaction
         let delta_edge = DeltaOp::DelEdge(eid);
@@ -741,7 +795,7 @@ impl MemoryGraph {
         ))?;
 
         let mut current = entry.chain.current.write().unwrap();
-        check_write_conflict(current.commit_ts, txn)?;
+        prewrite_check_vertex(current.commit_ts, txn, vid)?;
 
         // Delete all edges associated with the vertex
         if let Some(adjacency_container) = self.adjacency_list.get(&vid) {
@@ -790,7 +844,7 @@ impl MemoryGraph {
         ))?;
 
         let mut current = entry.chain.current.write().unwrap();
-        check_write_conflict(current.commit_ts, txn)?;
+        prewrite_check_edge(current.commit_ts, txn, eid)?;
 
         // Record the edge deletion in the transaction
         let delta = DeltaOp::CreateEdge(current.data.clone());
@@ -837,7 +891,8 @@ impl MemoryGraph {
             txn,
             indices.clone(),
             props.clone(),
-            SetVertexProps
+            SetVertexProps,
+            prewrite_check_vertex
         );
 
         // Write to WAL
@@ -872,7 +927,8 @@ impl MemoryGraph {
             txn,
             indices.clone(),
             props.clone(),
-            SetEdgeProps
+            SetEdgeProps,
+            prewrite_check_edge
         );
 
         // Write to WAL
@@ -1196,6 +1252,55 @@ impl MemoryGraph {
 /// Checks if the vertex is modified by other transactions or has a greater commit timestamp than
 /// the current transaction.
 /// Current check applies to both Snapshot Isolation and Serializable isolation levels.
+#[inline]
+fn optimistic_write_guard(
+    commit_ts: Timestamp,
+    txn: &Arc<MemTransaction>,
+    record_guard: impl FnOnce(Timestamp),
+) -> StorageResult<()> {
+    match commit_ts {
+        // Reject when another in-flight transaction already holds the write.
+        ts if ts.is_txn_id() && ts != txn.txn_id() => Err(StorageError::Transaction(
+            TransactionError::WriteWriteConflict(format!(
+                "Data is being modified by transaction {:?}",
+                ts
+            )),
+        )),
+        ts => {
+            record_guard(ts);
+            Ok(())
+        }
+    }
+}
+
+#[inline]
+fn prewrite_check_vertex(
+    commit_ts: Timestamp,
+    txn: &Arc<MemTransaction>,
+    vid: VertexId,
+) -> StorageResult<()> {
+    match txn.lock_strategy() {
+        LockStrategy::Pessimistic => check_write_conflict(commit_ts, txn),
+        LockStrategy::Optimistic => {
+            optimistic_write_guard(commit_ts, txn, |ts| txn.record_vertex_write_guard(vid, ts))
+        }
+    }
+}
+
+#[inline]
+fn prewrite_check_edge(
+    commit_ts: Timestamp,
+    txn: &Arc<MemTransaction>,
+    eid: EdgeId,
+) -> StorageResult<()> {
+    match txn.lock_strategy() {
+        LockStrategy::Pessimistic => check_write_conflict(commit_ts, txn),
+        LockStrategy::Optimistic => {
+            optimistic_write_guard(commit_ts, txn, |ts| txn.record_edge_write_guard(eid, ts))
+        }
+    }
+}
+
 #[inline]
 fn check_write_conflict(commit_ts: Timestamp, txn: &Arc<MemTransaction>) -> StorageResult<()> {
     match commit_ts {
@@ -3925,5 +4030,96 @@ pub mod tests {
 
         txn.commit()?;
         Ok(())
+    }
+
+    #[test]
+    fn optimistic_conflict_is_detected_at_commit() {
+        let checkpoint_config = mock_checkpoint_config();
+        let wal_config = mock_wal_config();
+        let graph = MemoryGraph::with_config_fresh_with_options(
+            checkpoint_config,
+            wal_config,
+            TpTxnOptions {
+                default_lock: LockStrategy::Optimistic,
+            },
+        );
+
+        // Bootstrap a single vertex
+        let bootstrap = graph
+            .txn_manager()
+            .begin_transaction_with_lock(IsolationLevel::Snapshot, LockStrategy::Optimistic)
+            .unwrap();
+        let vertex = create_vertex(1, PERSON, vec![ScalarValue::Int64(Some(0))]);
+        graph.create_vertex(&bootstrap, vertex).unwrap();
+        bootstrap.commit().unwrap();
+
+        // Two transactions start from the same snapshot.
+        let txn1 = graph
+            .txn_manager()
+            .begin_transaction_with_lock(IsolationLevel::Snapshot, LockStrategy::Optimistic)
+            .unwrap();
+        let txn2 = graph
+            .txn_manager()
+            .begin_transaction_with_lock(IsolationLevel::Snapshot, LockStrategy::Optimistic)
+            .unwrap();
+
+        // Txn1 updates and commits first.
+        graph
+            .set_vertex_property(&txn1, 1, vec![0], vec![ScalarValue::Int64(Some(1))])
+            .unwrap();
+        txn1.commit().unwrap();
+
+        // Txn2 wrote after txn1 committed; optimistic validation should abort it.
+        graph
+            .set_vertex_property(&txn2, 1, vec![0], vec![ScalarValue::Int64(Some(2))])
+            .unwrap();
+        let err = txn2.commit().unwrap_err();
+        match err {
+            StorageError::Transaction(TransactionError::WriteWriteConflict(msg)) => {
+                assert!(
+                    msg.contains("Vertex 1"),
+                    "unexpected conflict message: {msg}"
+                );
+            }
+            other => panic!("Expected write-write conflict, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn pessimistic_rejects_invisible_version_on_write() {
+        let checkpoint_config = mock_checkpoint_config();
+        let wal_config = mock_wal_config();
+        let graph = MemoryGraph::with_config_fresh(checkpoint_config, wal_config);
+
+        // Bootstrap a single vertex
+        let bootstrap = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Snapshot)
+            .unwrap();
+        let vertex = create_vertex(2, PERSON, vec![ScalarValue::Int64(Some(0))]);
+        graph.create_vertex(&bootstrap, vertex).unwrap();
+        bootstrap.commit().unwrap();
+
+        let txn1 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Snapshot)
+            .unwrap();
+        let txn2 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Snapshot)
+            .unwrap();
+
+        graph
+            .set_vertex_property(&txn1, 2, vec![0], vec![ScalarValue::Int64(Some(1))])
+            .unwrap();
+        txn1.commit().unwrap();
+
+        let err = graph
+            .set_vertex_property(&txn2, 2, vec![0], vec![ScalarValue::Int64(Some(2))])
+            .unwrap_err();
+        match err {
+            StorageError::Transaction(TransactionError::VersionNotVisible(_)) => {}
+            other => panic!("Expected VersionNotVisible, got {:?}", other),
+        }
     }
 }

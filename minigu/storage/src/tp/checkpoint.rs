@@ -19,7 +19,9 @@ use minigu_transaction::Timestamp;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::memory_graph::{AdjacencyContainer, MemoryGraph, VersionedEdge, VersionedVertex};
+use super::memory_graph::{
+    AdjacencyContainer, MemoryGraph, TpTxnOptions, VersionedEdge, VersionedVertex,
+};
 use crate::common::model::edge::{Edge, Neighbor};
 use crate::common::model::vertex::Vertex;
 use crate::common::wal::StorageWal;
@@ -714,6 +716,19 @@ impl MemoryGraph {
         checkpoint_config: CheckpointManagerConfig,
         wal_config: WalManagerConfig,
     ) -> StorageResult<Arc<Self>> {
+        Self::recover_from_checkpoint_and_wal_with_options(
+            checkpoint_config,
+            wal_config,
+            Default::default(),
+        )
+    }
+
+    /// Recovers a [`MemoryGraph`] with explicit TP transaction options (e.g., lock strategy).
+    pub fn recover_from_checkpoint_and_wal_with_options(
+        checkpoint_config: CheckpointManagerConfig,
+        wal_config: WalManagerConfig,
+        txn_options: TpTxnOptions,
+    ) -> StorageResult<Arc<Self>> {
         // Create checkpoint directory if it doesn't exist
         fs::create_dir_all(&checkpoint_config.checkpoint_dir)
             .map_err(|e| StorageError::Checkpoint(CheckpointError::Io(e)))?;
@@ -723,7 +738,11 @@ impl MemoryGraph {
 
         // If no checkpoint found, create a new empty graph
         if checkpoint_path.is_none() {
-            let graph = Self::with_config_fresh(checkpoint_config.clone(), wal_config.clone());
+            let graph = Self::with_config_fresh_with_options(
+                checkpoint_config.clone(),
+                wal_config.clone(),
+                txn_options,
+            );
             graph.recover_from_wal()?;
             return Ok(graph);
         }
@@ -732,6 +751,11 @@ impl MemoryGraph {
         let checkpoint = GraphCheckpoint::load_from_file(checkpoint_path.unwrap())?;
         let checkpoint_lsn = checkpoint.metadata.lsn;
         let graph = checkpoint.restore(checkpoint_config, wal_config)?;
+        // Propagate transaction options to the recovered graph.
+        unsafe {
+            let graph_ptr = Arc::as_ptr(&graph) as *mut MemoryGraph;
+            (*graph_ptr).txn_manager.default_lock_strategy = txn_options.default_lock;
+        }
 
         // Read WAL entries with LSN >= checkpoint_lsn
         let all_entries = graph.wal_manager.wal().read().unwrap().read_all()?;

@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex, Weak};
 use crossbeam_skiplist::SkipMap;
 use minigu_common::types::{EdgeId, VertexId};
 use minigu_transaction::{
-    GraphTxnManager, Timestamp, Transaction, global_timestamp_generator,
+    GraphTxnManager, LockStrategy, Timestamp, Transaction, global_timestamp_generator,
     global_transaction_id_generator,
 };
 
@@ -35,6 +35,8 @@ pub struct MemTxnManager {
     watermark: AtomicU64,
     /// Last garbage collection timestamp
     last_gc_ts: AtomicU64,
+    /// Default lock strategy for new transactions on this graph
+    pub(super) default_lock_strategy: LockStrategy,
 }
 
 impl Default for MemTxnManager {
@@ -47,6 +49,7 @@ impl Default for MemTxnManager {
             latest_commit_ts: AtomicU64::new(0),
             watermark: AtomicU64::new(0),
             last_gc_ts: AtomicU64::new(0),
+            default_lock_strategy: LockStrategy::Pessimistic,
         }
     }
 }
@@ -60,7 +63,7 @@ impl GraphTxnManager for MemTxnManager {
         &self,
         isolation_level: IsolationLevel,
     ) -> Result<Arc<Self::Transaction>, Self::Error> {
-        self.begin_transaction_at(None, None, isolation_level, false)
+        self.begin_transaction_at(None, None, isolation_level, None, false)
     }
 
     fn finish_transaction(&self, txn: &Self::Transaction) -> Result<(), Self::Error> {
@@ -146,6 +149,7 @@ impl MemTxnManager {
         txn_id: Option<Timestamp>,
         start_ts: Option<Timestamp>,
         isolation_level: IsolationLevel,
+        lock_strategy: Option<LockStrategy>,
         skip_wal: bool,
     ) -> Result<Arc<MemTransaction>, StorageError> {
         let graph = self.graph.upgrade().ok_or_else(|| {
@@ -192,6 +196,7 @@ impl MemTxnManager {
             txn_id,
             start_ts,
             isolation_level,
+            lock_strategy.unwrap_or(self.default_lock_strategy),
         ));
         self.active_txns.insert(txn.txn_id(), txn.clone());
         self.update_watermark();
@@ -215,6 +220,15 @@ impl MemTxnManager {
         }
 
         Ok(txn)
+    }
+
+    /// Begin a new transaction with an explicit lock strategy override.
+    pub fn begin_transaction_with_lock(
+        &self,
+        isolation_level: IsolationLevel,
+        lock_strategy: LockStrategy,
+    ) -> Result<Arc<MemTransaction>, StorageError> {
+        self.begin_transaction_at(None, None, isolation_level, Some(lock_strategy), false)
     }
 
     /// Update the watermark based on currently active transactions.
