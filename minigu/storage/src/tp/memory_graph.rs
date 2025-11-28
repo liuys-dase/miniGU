@@ -4073,6 +4073,203 @@ pub mod tests {
     }
 
     #[test]
+    fn optimistic_edge_property_conflict_is_detected() {
+        let checkpoint_config = mock_checkpoint_config();
+        let wal_config = mock_wal_config();
+        let graph = MemoryGraph::with_config_fresh_with_options(
+            checkpoint_config,
+            wal_config,
+            TxnOptions {
+                default_lock: LockStrategy::Optimistic,
+                ..Default::default()
+            },
+        );
+
+        // Bootstrap vertices and an edge.
+        let bootstrap = graph
+            .txn_manager()
+            .begin_transaction_with_lock(IsolationLevel::Snapshot, LockStrategy::Optimistic)
+            .unwrap();
+        graph
+            .create_vertex(
+                &bootstrap,
+                create_vertex(1, PERSON, vec![ScalarValue::Int64(Some(0))]),
+            )
+            .unwrap();
+        graph
+            .create_vertex(
+                &bootstrap,
+                create_vertex(2, PERSON, vec![ScalarValue::Int64(Some(0))]),
+            )
+            .unwrap();
+        let edge = create_edge(1, 1, 2, FRIEND, vec![ScalarValue::String(Some(
+            "2020-01-01".to_string(),
+        ))]);
+        graph.create_edge(&bootstrap, edge).unwrap();
+        bootstrap.commit().unwrap();
+
+        // Two optimistic transactions on the same snapshot.
+        let txn1 = graph
+            .txn_manager()
+            .begin_transaction_with_lock(IsolationLevel::Snapshot, LockStrategy::Optimistic)
+            .unwrap();
+        let txn2 = graph
+            .txn_manager()
+            .begin_transaction_with_lock(IsolationLevel::Snapshot, LockStrategy::Optimistic)
+            .unwrap();
+
+        // Txn1 updates and commits first.
+        graph
+            .set_edge_property(&txn1, 1, vec![0], vec![ScalarValue::String(Some(
+                "updated_by_txn1".to_string(),
+            ))])
+            .unwrap();
+        txn1.commit().unwrap();
+
+        // Txn2 updates same edge; commit should detect conflict.
+        graph
+            .set_edge_property(&txn2, 1, vec![0], vec![ScalarValue::String(Some(
+                "updated_by_txn2".to_string(),
+            ))])
+            .unwrap();
+        let err = txn2.commit().unwrap_err();
+        match err {
+            StorageError::Transaction(TransactionError::WriteWriteConflict(msg)) => {
+                assert!(msg.contains("Edge 1"), "unexpected conflict message: {msg}");
+            }
+            other => panic!("Expected write-write conflict, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn optimistic_edge_creation_conflict_from_stale_snapshot() {
+        let checkpoint_config = mock_checkpoint_config();
+        let wal_config = mock_wal_config();
+        let graph = MemoryGraph::with_config_fresh_with_options(
+            checkpoint_config,
+            wal_config,
+            TxnOptions {
+                default_lock: LockStrategy::Optimistic,
+                ..Default::default()
+            },
+        );
+
+        // Bootstrap vertices; no edges yet.
+        let bootstrap = graph
+            .txn_manager()
+            .begin_transaction_with_lock(IsolationLevel::Snapshot, LockStrategy::Optimistic)
+            .unwrap();
+        graph
+            .create_vertex(
+                &bootstrap,
+                create_vertex(10, PERSON, vec![ScalarValue::Int64(Some(0))]),
+            )
+            .unwrap();
+        graph
+            .create_vertex(
+                &bootstrap,
+                create_vertex(11, PERSON, vec![ScalarValue::Int64(Some(0))]),
+            )
+            .unwrap();
+        bootstrap.commit().unwrap();
+
+        let txn1 = graph
+            .txn_manager()
+            .begin_transaction_with_lock(IsolationLevel::Snapshot, LockStrategy::Optimistic)
+            .unwrap();
+        let txn2 = graph
+            .txn_manager()
+            .begin_transaction_with_lock(IsolationLevel::Snapshot, LockStrategy::Optimistic)
+            .unwrap();
+
+        // Txn1 creates the edge and commits.
+        let e = create_edge(10, 10, 11, FRIEND, vec![ScalarValue::String(Some(
+            "created_by_txn1".to_string(),
+        ))]);
+        graph.create_edge(&txn1, e).unwrap();
+        txn1.commit().unwrap();
+
+        // Txn2 tries to create the same edge from a stale snapshot; commit should conflict.
+        let e_again = create_edge(10, 10, 11, FRIEND, vec![ScalarValue::String(Some(
+            "created_by_txn2".to_string(),
+        ))]);
+        graph.create_edge(&txn2, e_again).unwrap();
+        let err = txn2.commit().unwrap_err();
+        match err {
+            StorageError::Transaction(TransactionError::WriteWriteConflict(msg)) => {
+                assert!(
+                    msg.contains("Edge 10"),
+                    "unexpected conflict message: {msg}"
+                );
+            }
+            other => panic!("Expected write-write conflict, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn optimistic_edge_delete_conflict_is_detected() {
+        let checkpoint_config = mock_checkpoint_config();
+        let wal_config = mock_wal_config();
+        let graph = MemoryGraph::with_config_fresh_with_options(
+            checkpoint_config,
+            wal_config,
+            TxnOptions {
+                default_lock: LockStrategy::Optimistic,
+                ..Default::default()
+            },
+        );
+
+        // Bootstrap vertices and an edge.
+        let bootstrap = graph
+            .txn_manager()
+            .begin_transaction_with_lock(IsolationLevel::Snapshot, LockStrategy::Optimistic)
+            .unwrap();
+        graph
+            .create_vertex(
+                &bootstrap,
+                create_vertex(20, PERSON, vec![ScalarValue::Int64(Some(0))]),
+            )
+            .unwrap();
+        graph
+            .create_vertex(
+                &bootstrap,
+                create_vertex(21, PERSON, vec![ScalarValue::Int64(Some(0))]),
+            )
+            .unwrap();
+        let edge = create_edge(20, 20, 21, FRIEND, vec![ScalarValue::String(Some(
+            "keep_me".to_string(),
+        ))]);
+        graph.create_edge(&bootstrap, edge).unwrap();
+        bootstrap.commit().unwrap();
+
+        let txn1 = graph
+            .txn_manager()
+            .begin_transaction_with_lock(IsolationLevel::Snapshot, LockStrategy::Optimistic)
+            .unwrap();
+        let txn2 = graph
+            .txn_manager()
+            .begin_transaction_with_lock(IsolationLevel::Snapshot, LockStrategy::Optimistic)
+            .unwrap();
+
+        // Txn1 deletes the edge and commits.
+        graph.delete_edge(&txn1, 20).unwrap();
+        txn1.commit().unwrap();
+
+        // Txn2 tries to delete the same edge from its stale view; commit should conflict.
+        graph.delete_edge(&txn2, 20).unwrap();
+        let err = txn2.commit().unwrap_err();
+        match err {
+            StorageError::Transaction(TransactionError::WriteWriteConflict(msg)) => {
+                assert!(
+                    msg.contains("Edge 20"),
+                    "unexpected conflict message: {msg}"
+                );
+            }
+            other => panic!("Expected write-write conflict, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn pessimistic_rejects_invisible_version_on_write() {
         let checkpoint_config = mock_checkpoint_config();
         let wal_config = mock_wal_config();

@@ -215,14 +215,6 @@ impl MemTransaction {
                 )));
             }
 
-            // Prevent committing over tombstone content.
-            if current.data.is_tombstone() {
-                return Err(build_conflict_err(format!(
-                    "Vertex {} became tombstone",
-                    vid
-                )));
-            }
-
             // If the base version was committed after this txn started, treat it as a conflict.
             if expected.is_commit_ts() && expected > self.start_ts {
                 return Err(build_conflict_err(format!(
@@ -247,10 +239,6 @@ impl MemTransaction {
                     "Edge {} was modified by {:?}",
                     eid, current.commit_ts
                 )));
-            }
-
-            if current.data.is_tombstone() {
-                return Err(build_conflict_err(format!("Edge {} became tombstone", eid)));
             }
 
             if expected.is_commit_ts() && expected > self.start_ts {
