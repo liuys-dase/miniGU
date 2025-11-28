@@ -300,7 +300,19 @@ impl GraphCheckpoint {
         checkpoint_config: CheckpointManagerConfig,
         wal_config: WalManagerConfig,
     ) -> StorageResult<Arc<MemoryGraph>> {
-        let graph = MemoryGraph::with_config_fresh(checkpoint_config, wal_config);
+        self.restore_with_options(checkpoint_config, wal_config, Default::default())
+    }
+
+    /// Restores a new [`MemoryGraph`] instance from this checkpoint snapshot using custom
+    /// transaction options.
+    pub fn restore_with_options(
+        &self,
+        checkpoint_config: CheckpointManagerConfig,
+        wal_config: WalManagerConfig,
+        txn_options: TxnOptions,
+    ) -> StorageResult<Arc<MemoryGraph>> {
+        let graph =
+            MemoryGraph::with_config_fresh_with_options(checkpoint_config, wal_config, txn_options);
 
         // Set the LSN to the checkpoint's LSN
         graph.wal_manager.set_next_lsn(self.metadata.lsn);
@@ -748,13 +760,7 @@ impl MemoryGraph {
         // Restore from checkpoint
         let checkpoint = GraphCheckpoint::load_from_file(checkpoint_path.unwrap())?;
         let checkpoint_lsn = checkpoint.metadata.lsn;
-        let graph = checkpoint.restore(checkpoint_config, wal_config)?;
-        // Propagate transaction options to the recovered graph.
-        unsafe {
-            let graph_ptr = Arc::as_ptr(&graph) as *mut MemoryGraph;
-            (*graph_ptr).txn_manager.default_lock_strategy = txn_options.default_lock;
-            (*graph_ptr).txn_manager.default_isolation_level = txn_options.default_isolation;
-        }
+        let graph = checkpoint.restore_with_options(checkpoint_config, wal_config, txn_options)?;
 
         // Read WAL entries with LSN >= checkpoint_lsn
         let all_entries = graph.wal_manager.wal().read().unwrap().read_all()?;
