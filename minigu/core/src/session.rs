@@ -154,6 +154,7 @@ impl Session {
             let start = Instant::now();
             let mut planner = Planner::new(session_snapshot.clone());
             let plan = planner.plan_query(txn, procedure)?;
+
             if matches!(
                 plan,
                 minigu_planner::plan::PlanNode::LogicalMatch(_)
@@ -161,6 +162,7 @@ impl Session {
                     | minigu_planner::plan::PlanNode::LogicalProject(_)
                     | minigu_planner::plan::PlanNode::LogicalSort(_)
                     | minigu_planner::plan::PlanNode::LogicalLimit(_)
+                    | minigu_planner::plan::PlanNode::LogicalOffset(_)
                     | minigu_planner::plan::PlanNode::LogicalCall(_)
                     | minigu_planner::plan::PlanNode::LogicalOneRow(_)
             ) {
