@@ -373,6 +373,128 @@ pub struct MemoryGraph {
 }
 
 impl MemoryGraph {
+    /// Reads the snapshot-visible vertex and returns it together with the guard timestamp (the
+    /// commit timestamp of that visible version).
+    fn snapshot_vertex_with_guard(
+        entry: &VersionedVertex,
+        txn: &Arc<MemTransaction>,
+        vid: VertexId,
+    ) -> StorageResult<(Vertex, Timestamp)> {
+        let current = entry.chain.current.read().unwrap();
+        let mut visible = current.data.clone();
+        let mut guard_ts = current.commit_ts;
+        prewrite_check_vertex(guard_ts, txn, vid)?;
+
+        let mut undo_ptr = entry.chain.undo_ptr.read().unwrap().clone();
+
+        if (guard_ts.is_txn_id() && guard_ts == txn.txn_id())
+            || (guard_ts.is_commit_ts() && guard_ts <= txn.start_ts())
+        {
+            if visible.is_tombstone() {
+                return Err(StorageError::Transaction(
+                    TransactionError::VersionNotVisible(format!(
+                        "Vertex is tombstone for {:?}",
+                        txn.txn_id()
+                    )),
+                ));
+            }
+            return Ok((visible, guard_ts));
+        }
+
+        drop(current);
+
+        while let Some(undo_entry) = undo_ptr.upgrade() {
+            match undo_entry.delta() {
+                DeltaOp::CreateVertex(original) => visible = original.clone(),
+                DeltaOp::SetVertexProps(_, SetPropsOp { indices, props }) => {
+                    visible.set_props(indices, props.clone());
+                }
+                DeltaOp::DelVertex(_) => {
+                    visible.is_tombstone = true;
+                }
+                _ => unreachable!("Unreachable delta op for a vertex"),
+            }
+
+            guard_ts = undo_entry.timestamp();
+            if guard_ts <= txn.start_ts() {
+                break;
+            }
+            undo_ptr = undo_entry.next();
+        }
+
+        if guard_ts > txn.start_ts() || visible.is_tombstone() {
+            return Err(StorageError::Transaction(
+                TransactionError::VersionNotVisible(format!(
+                    "Vertex version not visible for {:?}",
+                    txn.txn_id()
+                )),
+            ));
+        }
+
+        Ok((visible, guard_ts))
+    }
+
+    /// Reads the snapshot-visible edge and returns it together with the guard timestamp (the commit
+    /// timestamp of that visible version).
+    fn snapshot_edge_with_guard(
+        entry: &VersionedEdge,
+        txn: &Arc<MemTransaction>,
+        eid: EdgeId,
+    ) -> StorageResult<(Edge, Timestamp)> {
+        let current = entry.chain.current.read().unwrap();
+        let mut visible = current.data.clone();
+        let mut guard_ts = current.commit_ts;
+        prewrite_check_edge(guard_ts, txn, eid)?;
+
+        let mut undo_ptr = entry.chain.undo_ptr.read().unwrap().clone();
+
+        if (guard_ts.is_txn_id() && guard_ts == txn.txn_id())
+            || (guard_ts.is_commit_ts() && guard_ts <= txn.start_ts())
+        {
+            if visible.is_tombstone() {
+                return Err(StorageError::Transaction(
+                    TransactionError::VersionNotVisible(format!(
+                        "Edge is tombstone for {:?}",
+                        txn.txn_id()
+                    )),
+                ));
+            }
+            return Ok((visible, guard_ts));
+        }
+
+        drop(current);
+
+        while let Some(undo_entry) = undo_ptr.upgrade() {
+            match undo_entry.delta() {
+                DeltaOp::CreateEdge(original) => visible = original.clone(),
+                DeltaOp::SetEdgeProps(_, SetPropsOp { indices, props }) => {
+                    visible.set_props(indices, props.clone());
+                }
+                DeltaOp::DelEdge(_) => {
+                    visible.is_tombstone = true;
+                }
+                _ => unreachable!("Unreachable delta op for an edge"),
+            }
+
+            guard_ts = undo_entry.timestamp();
+            if guard_ts <= txn.start_ts() {
+                break;
+            }
+            undo_ptr = undo_entry.next();
+        }
+
+        if guard_ts > txn.start_ts() || visible.is_tombstone() {
+            return Err(StorageError::Transaction(
+                TransactionError::VersionNotVisible(format!(
+                    "Edge version not visible for {:?}",
+                    txn.txn_id()
+                )),
+            ));
+        }
+
+        Ok((visible, guard_ts))
+    }
+
     // ===== Basic methods =====
     /// Creates a new [`MemoryGraph`] instance using default configurations,
     /// and recovers its state from the latest checkpoint and WAL.
@@ -1027,11 +1149,7 @@ impl MemoryGraph {
                         EdgeNotFoundError::EdgeNotFound(eid.to_string()),
                     ))?;
 
-                    let current = entry.chain.current.read().unwrap();
-                    prewrite_check_edge(current.commit_ts, txn, eid)?;
-                    let guard_ts = current.commit_ts;
-                    let before = current.data.clone();
-                    drop(current);
+                    let (before, guard_ts) = Self::snapshot_edge_with_guard(&entry, txn, eid)?;
                     txn.record_edge_delete(eid, guard_ts, before);
                 }
 
@@ -1064,11 +1182,7 @@ impl MemoryGraph {
             let entry = self.edges.get(&eid).ok_or(StorageError::EdgeNotFound(
                 EdgeNotFoundError::EdgeNotFound(eid.to_string()),
             ))?;
-            let current = entry.chain.current.read().unwrap();
-            prewrite_check_edge(current.commit_ts, txn, eid)?;
-            let guard_ts = current.commit_ts;
-            let before = current.data.clone();
-            drop(current);
+            let (before, guard_ts) = Self::snapshot_edge_with_guard(&entry, txn, eid)?;
             txn.record_edge_delete(eid, guard_ts, before);
         }
 
@@ -1187,15 +1301,9 @@ impl MemoryGraph {
                 }
 
                 let entry = entry_res?;
-                let current = entry.chain.current.read().unwrap();
-                let commit_ts = current.commit_ts;
-                prewrite_check_vertex(commit_ts, txn, vid)?;
-
-                let guard_ts = commit_ts;
-                let before = current.data.clone();
+                let (before, guard_ts) = Self::snapshot_vertex_with_guard(&entry, txn, vid)?;
                 let mut after = before.clone();
                 after.set_props(&indices, props.clone());
-                drop(current);
 
                 txn.record_vertex_update(vid, guard_ts, before.clone(), after.clone());
 
@@ -1314,15 +1422,9 @@ impl MemoryGraph {
                 }
 
                 let entry = entry_res?;
-                let current = entry.chain.current.read().unwrap();
-                let commit_ts = current.commit_ts;
-                prewrite_check_edge(commit_ts, txn, eid)?;
-
-                let guard_ts = commit_ts;
-                let before = current.data.clone();
+                let (before, guard_ts) = Self::snapshot_edge_with_guard(&entry, txn, eid)?;
                 let mut after = before.clone();
                 after.set_props(&indices, props.clone());
-                drop(current);
 
                 txn.record_edge_update(eid, guard_ts, before.clone(), after.clone());
 
