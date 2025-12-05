@@ -8,7 +8,7 @@ use minigu_common::value::{ScalarValue, VectorValue};
 use minigu_transaction::{IsolationLevel, LockStrategy, Timestamp, Transaction, TxnOptions};
 
 use super::checkpoint::{CheckpointManager, CheckpointManagerConfig};
-use super::transaction::{MemTransaction, UndoEntry, UndoPtr};
+use super::transaction::{MemTransaction, UndoEntry, UndoPtr, WriteKind};
 use super::txn_manager::MemTxnManager;
 use super::vector_index::filter::create_filter_mask;
 use super::vector_index::in_mem_diskann::create_vector_index_config;
@@ -22,8 +22,8 @@ use crate::error::{
     EdgeNotFoundError, StorageError, StorageResult, TransactionError, VectorIndexError,
     VertexNotFoundError,
 };
+use crate::tp::transaction::WriteIntent;
 
-// Perform the update properties operation
 macro_rules! update_properties {
     (
         $self:expr,
@@ -557,6 +557,28 @@ impl MemoryGraph {
     // ===== Read-only graph methods =====
     /// Retrieves a vertex by its ID within the context of a transaction.
     pub fn get_vertex(&self, txn: &Arc<MemTransaction>, vid: VertexId) -> StorageResult<Vertex> {
+        if txn.lock_strategy() == LockStrategy::Optimistic {
+            if let Some(intent) = txn.lookup_vertex_write(vid) {
+                match intent.kind {
+                    WriteKind::InsertVertex(ref v)
+                    | WriteKind::UpdateVertex { after: ref v, .. } => {
+                        if v.is_tombstone() {
+                            return Err(StorageError::VertexNotFound(
+                                VertexNotFoundError::VertexTombstone(vid.to_string()),
+                            ));
+                        }
+                        return Ok(v.clone());
+                    }
+                    WriteKind::DeleteVertex { .. } => {
+                        return Err(StorageError::VertexNotFound(
+                            VertexNotFoundError::VertexTombstone(vid.to_string()),
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         // Step 1: Atomically retrieve the versioned vertex (check existence).
         let versioned_vertex = self.vertices.get(&vid).ok_or(StorageError::VertexNotFound(
             VertexNotFoundError::VertexNotFound(vid.to_string()),
@@ -606,6 +628,27 @@ impl MemoryGraph {
 
     /// Retrieves an edge by its ID within the context of a transaction.
     pub fn get_edge(&self, txn: &Arc<MemTransaction>, eid: EdgeId) -> StorageResult<Edge> {
+        if txn.lock_strategy() == LockStrategy::Optimistic {
+            if let Some(intent) = txn.lookup_edge_write(eid) {
+                match intent.kind {
+                    WriteKind::InsertEdge(ref e) | WriteKind::UpdateEdge { after: ref e, .. } => {
+                        if e.is_tombstone() {
+                            return Err(StorageError::EdgeNotFound(
+                                EdgeNotFoundError::EdgeTombstone(eid.to_string()),
+                            ));
+                        }
+                        return Ok(e.clone());
+                    }
+                    WriteKind::DeleteEdge { .. } => {
+                        return Err(StorageError::EdgeNotFound(
+                            EdgeNotFoundError::EdgeTombstone(eid.to_string()),
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         // Step 1: Atomically retrieve the versioned edge (check existence).
         let versioned_edge = self.edges.get(&eid).ok_or(StorageError::EdgeNotFound(
             EdgeNotFoundError::EdgeNotFound(eid.to_string()),
@@ -686,35 +729,72 @@ impl MemoryGraph {
         vertex: Vertex,
     ) -> StorageResult<VertexId> {
         let vid = vertex.vid();
-        let entry = self
-            .vertices
-            .entry(vid)
-            .or_insert_with(|| VersionedVertex::with_txn_id(vertex.clone(), txn.txn_id()));
+        match txn.lock_strategy() {
+            LockStrategy::Pessimistic => {
+                let entry = self
+                    .vertices
+                    .entry(vid)
+                    .or_insert_with(|| VersionedVertex::with_txn_id(vertex.clone(), txn.txn_id()));
 
-        let current = entry.chain.current.read().unwrap();
-        // Conflict detection: ensure the vertex is visible or not modified by other transactions
-        prewrite_check_vertex(current.commit_ts, txn, vid)?;
+                let current = entry.chain.current.read().unwrap();
+                prewrite_check_vertex(current.commit_ts, txn, vid)?;
 
-        // Record the vertex creation in the transaction
-        let delta = DeltaOp::DelVertex(vid);
-        let next_ptr = entry.chain.undo_ptr.read().unwrap().clone();
-        let mut undo_buffer = txn.undo_buffer.write().unwrap();
-        let undo_entry = if current.commit_ts == txn.txn_id() {
-            Arc::new(UndoEntry::new(delta, Timestamp::with_ts(0), next_ptr))
-        } else {
-            Arc::new(UndoEntry::new(delta, current.commit_ts, next_ptr))
-        };
-        undo_buffer.push(undo_entry.clone());
-        *entry.chain.undo_ptr.write().unwrap() = Arc::downgrade(&undo_entry);
+                let delta = DeltaOp::DelVertex(vid);
+                let next_ptr = entry.chain.undo_ptr.read().unwrap().clone();
+                let mut undo_buffer = txn.undo_buffer.write().unwrap();
+                let undo_entry = if current.commit_ts == txn.txn_id() {
+                    Arc::new(UndoEntry::new(delta, Timestamp::with_ts(0), next_ptr))
+                } else {
+                    Arc::new(UndoEntry::new(delta, current.commit_ts, next_ptr))
+                };
+                undo_buffer.push(undo_entry.clone());
+                *entry.chain.undo_ptr.write().unwrap() = Arc::downgrade(&undo_entry);
 
-        // Record redo entry
-        let wal_entry = RedoEntry {
-            lsn: 0, // Temporary set to 0, will be updated when commit
-            txn_id: txn.txn_id(),
-            iso_level: *txn.isolation_level(),
-            op: Operation::Delta(DeltaOp::CreateVertex(vertex)),
-        };
-        txn.redo_buffer.write().unwrap().push(wal_entry);
+                let wal_entry = RedoEntry {
+                    lsn: 0, // Temporary set to 0, will be updated when commit
+                    txn_id: txn.txn_id(),
+                    iso_level: *txn.isolation_level(),
+                    op: Operation::Delta(DeltaOp::CreateVertex(vertex)),
+                };
+                txn.redo_buffer.write().unwrap().push(wal_entry);
+            }
+            LockStrategy::Optimistic => {
+                if let Some(versioned) = self.vertices.get(&vid) {
+                    if versioned.get_visible(txn).is_ok() {
+                        return Err(StorageError::Transaction(
+                            TransactionError::WriteWriteConflict(format!(
+                                "Vertex {} already exists for {:?}",
+                                vid,
+                                txn.txn_id()
+                            )),
+                        ));
+                    }
+                }
+                // Record the write intent in the transaction's write set
+                {
+                    let mut ws = txn.vertex_writes.write().unwrap();
+                    ws.entry(vid)
+                        .and_modify(|intent| {
+                            intent.kind = WriteKind::InsertVertex(vertex.clone());
+                            if intent.guard_ts.raw() == 0 {
+                                intent.guard_ts = Timestamp::with_ts(0);
+                            }
+                        })
+                        .or_insert(WriteIntent {
+                            guard_ts: Timestamp::with_ts(0),
+                            kind: WriteKind::InsertVertex(vertex.clone()),
+                        });
+                }
+
+                let wal_entry = RedoEntry {
+                    lsn: 0,
+                    txn_id: txn.txn_id(),
+                    iso_level: *txn.isolation_level(),
+                    op: Operation::Delta(DeltaOp::CreateVertex(vertex)),
+                };
+                txn.redo_buffer.write().unwrap().push(wal_entry);
+            }
+        }
 
         Ok(vid)
     }
@@ -726,128 +806,274 @@ impl MemoryGraph {
         let dst_id = edge.dst_id();
         let label_id = edge.label_id();
 
-        // Check if source and destination vertices exist.
-        self.get_vertex(txn, edge.src_id())?;
+        match txn.lock_strategy() {
+            LockStrategy::Pessimistic => {
+                self.get_vertex(txn, edge.src_id())?;
+                self.get_vertex(txn, edge.dst_id())?;
 
-        self.get_vertex(txn, edge.dst_id())?;
+                let entry = self
+                    .edges
+                    .entry(eid)
+                    .or_insert_with(|| VersionedEdge::with_modified_ts(edge.clone(), txn.txn_id()));
 
-        let entry = self
-            .edges
-            .entry(eid)
-            .or_insert_with(|| VersionedEdge::with_modified_ts(edge.clone(), txn.txn_id()));
+                let current = entry.chain.current.read().unwrap();
+                prewrite_check_edge(current.commit_ts, txn, eid)?;
 
-        let current = entry.chain.current.read().unwrap();
-        // Conflict detection: ensure the edge is visible or not modified by other transactions
-        prewrite_check_edge(current.commit_ts, txn, eid)?;
+                let delta_edge = DeltaOp::DelEdge(eid);
+                let undo_ptr = entry.chain.undo_ptr.read().unwrap().clone();
+                let mut undo_buffer = txn.undo_buffer.write().unwrap();
+                let undo_entry = Arc::new(UndoEntry::new(delta_edge, current.commit_ts, undo_ptr));
+                undo_buffer.push(undo_entry.clone());
+                *entry.chain.undo_ptr.write().unwrap() = Arc::downgrade(&undo_entry);
 
-        // Record the edge creation in the transaction
-        let delta_edge = DeltaOp::DelEdge(eid);
-        let undo_ptr = entry.chain.undo_ptr.read().unwrap().clone();
-        // Update the undo_entry logical pointer
-        let mut undo_buffer = txn.undo_buffer.write().unwrap();
-        let undo_entry = Arc::new(UndoEntry::new(delta_edge, current.commit_ts, undo_ptr));
-        undo_buffer.push(undo_entry.clone());
-        *entry.chain.undo_ptr.write().unwrap() = Arc::downgrade(&undo_entry);
+                self.adjacency_list
+                    .entry(src_id)
+                    .or_insert_with(AdjacencyContainer::new)
+                    .outgoing()
+                    .insert(Neighbor::new(label_id, dst_id, eid));
+                self.adjacency_list
+                    .entry(dst_id)
+                    .or_insert_with(AdjacencyContainer::new)
+                    .incoming()
+                    .insert(Neighbor::new(label_id, src_id, eid));
 
-        // Record the adjacency list updates in the transaction
-        self.adjacency_list
-            .entry(src_id)
-            .or_insert_with(AdjacencyContainer::new)
-            .outgoing()
-            .insert(Neighbor::new(label_id, dst_id, eid));
-        self.adjacency_list
-            .entry(dst_id)
-            .or_insert_with(AdjacencyContainer::new)
-            .incoming()
-            .insert(Neighbor::new(label_id, src_id, eid));
+                let wal_entry = RedoEntry {
+                    lsn: 0, // Temporary set to 0, will be updated when commit
+                    txn_id: txn.txn_id(),
+                    iso_level: *txn.isolation_level(),
+                    op: Operation::Delta(DeltaOp::CreateEdge(edge)),
+                };
+                txn.redo_buffer.write().unwrap().push(wal_entry);
+            }
+            LockStrategy::Optimistic => {
+                self.get_vertex(txn, edge.src_id())?;
+                self.get_vertex(txn, edge.dst_id())?;
 
-        // Write to WAL
-        let wal_entry = RedoEntry {
-            lsn: 0, // Temporary set to 0, will be updated when commit
-            txn_id: txn.txn_id(),
-            iso_level: *txn.isolation_level(),
-            op: Operation::Delta(DeltaOp::CreateEdge(edge)),
-        };
-        txn.redo_buffer.write().unwrap().push(wal_entry);
+                if let Some(versioned) = self.edges.get(&eid) {
+                    if versioned.get_visible(txn).is_ok() {
+                        return Err(StorageError::Transaction(
+                            TransactionError::WriteWriteConflict(format!(
+                                "Edge {} already exists for {:?}",
+                                eid,
+                                txn.txn_id()
+                            )),
+                        ));
+                    }
+                }
+                // Record the write intent in the transaction's write set
+                {
+                    let mut ws = txn.edge_writes.write().unwrap();
+                    ws.entry(eid)
+                        .and_modify(|intent| {
+                            intent.kind = WriteKind::InsertEdge(edge.clone());
+                            if intent.guard_ts.raw() == 0 {
+                                intent.guard_ts = Timestamp::with_ts(0);
+                            }
+                        })
+                        .or_insert(WriteIntent {
+                            guard_ts: Timestamp::with_ts(0),
+                            kind: WriteKind::InsertEdge(edge.clone()),
+                        });
+                }
+
+                let wal_entry = RedoEntry {
+                    lsn: 0,
+                    txn_id: txn.txn_id(),
+                    iso_level: *txn.isolation_level(),
+                    op: Operation::Delta(DeltaOp::CreateEdge(edge)),
+                };
+                txn.redo_buffer.write().unwrap().push(wal_entry);
+            }
+        }
 
         Ok(eid)
     }
 
     /// Deletes a vertex from the graph within a transaction.
     pub fn delete_vertex(&self, txn: &Arc<MemTransaction>, vid: VertexId) -> StorageResult<()> {
-        // Atomically retrieve the versioned vertex (check existence).
-        let entry = self.vertices.get(&vid).ok_or(StorageError::VertexNotFound(
-            VertexNotFoundError::VertexNotFound(vid.to_string()),
-        ))?;
+        match txn.lock_strategy() {
+            LockStrategy::Pessimistic => {
+                let entry = self.vertices.get(&vid).ok_or(StorageError::VertexNotFound(
+                    VertexNotFoundError::VertexNotFound(vid.to_string()),
+                ))?;
 
-        let mut current = entry.chain.current.write().unwrap();
-        prewrite_check_vertex(current.commit_ts, txn, vid)?;
+                let mut current = entry.chain.current.write().unwrap();
+                prewrite_check_vertex(current.commit_ts, txn, vid)?;
 
-        // Delete all edges associated with the vertex
-        if let Some(adjacency_container) = self.adjacency_list.get(&vid) {
-            for adj in adjacency_container.incoming().iter() {
-                if self.edges.get(&adj.value().eid()).is_some() {
-                    self.delete_edge(txn, adj.value().eid())?;
+                if let Some(adjacency_container) = self.adjacency_list.get(&vid) {
+                    for adj in adjacency_container.incoming().iter() {
+                        if self.edges.get(&adj.value().eid()).is_some() {
+                            self.delete_edge(txn, adj.value().eid())?;
+                        }
+                    }
+                    for adj in adjacency_container.outgoing().iter() {
+                        if self.edges.get(&adj.value().eid()).is_some() {
+                            self.delete_edge(txn, adj.value().eid())?;
+                        }
+                    }
                 }
+
+                let delta = DeltaOp::CreateVertex(current.data.clone());
+                let undo_ptr = entry.chain.undo_ptr.read().unwrap().clone();
+                let mut undo_buffer = txn.undo_buffer.write().unwrap();
+                let undo_entry = Arc::new(UndoEntry::new(delta, current.commit_ts, undo_ptr));
+                undo_buffer.push(undo_entry.clone());
+                *entry.chain.undo_ptr.write().unwrap() = Arc::downgrade(&undo_entry);
+
+                let tombstone = Vertex::tombstone(current.data.clone());
+                current.data = tombstone;
+                current.commit_ts = txn.txn_id();
+
+                let wal_entry = RedoEntry {
+                    lsn: 0, // Temporary set to 0, will be updated when commit
+                    txn_id: txn.txn_id(),
+                    iso_level: *txn.isolation_level(),
+                    op: Operation::Delta(DeltaOp::DelVertex(vid)),
+                };
+                txn.redo_buffer.write().unwrap().push(wal_entry);
             }
-            for adj in adjacency_container.outgoing().iter() {
-                if self.edges.get(&adj.value().eid()).is_some() {
-                    self.delete_edge(txn, adj.value().eid())?;
+            LockStrategy::Optimistic => {
+                if let Some(adjacency_container) = self.adjacency_list.get(&vid) {
+                    for adj in adjacency_container.incoming().iter() {
+                        self.record_occ_edge_delete(txn, adj.value().eid())?;
+                    }
+                    for adj in adjacency_container.outgoing().iter() {
+                        self.record_occ_edge_delete(txn, adj.value().eid())?;
+                    }
                 }
+
+                if let Some(intent) = txn.lookup_vertex_write(vid) {
+                    match intent.kind {
+                        // Record the vertex delete based on the write intent
+                        WriteKind::InsertVertex(ref before) => {
+                            txn.record_vertex_delete(vid, Timestamp::with_ts(0), before.clone());
+                        }
+                        // Record the vertex delete based on the write intent
+                        WriteKind::UpdateVertex { before, .. } => {
+                            txn.record_vertex_delete(vid, intent.guard_ts, before);
+                        }
+                        WriteKind::DeleteVertex { .. } => {}
+                        _ => {}
+                    }
+                } else {
+                    let entry = self.vertices.get(&vid).ok_or(StorageError::VertexNotFound(
+                        VertexNotFoundError::VertexNotFound(vid.to_string()),
+                    ))?;
+                    let current = entry.chain.current.read().unwrap();
+                    prewrite_check_vertex(current.commit_ts, txn, vid)?;
+                    let guard_ts = current.commit_ts;
+                    let before = current.data.clone();
+                    drop(current);
+                    txn.record_vertex_delete(vid, guard_ts, before);
+                }
+
+                let wal_entry = RedoEntry {
+                    lsn: 0,
+                    txn_id: txn.txn_id(),
+                    iso_level: *txn.isolation_level(),
+                    op: Operation::Delta(DeltaOp::DelVertex(vid)),
+                };
+                txn.redo_buffer.write().unwrap().push(wal_entry);
             }
         }
-
-        // Record the vertex deletion in the transaction
-        let delta = DeltaOp::CreateVertex(current.data.clone());
-        let undo_ptr = entry.chain.undo_ptr.read().unwrap().clone();
-        let mut undo_buffer = txn.undo_buffer.write().unwrap();
-        let undo_entry = Arc::new(UndoEntry::new(delta, current.commit_ts, undo_ptr));
-        undo_buffer.push(undo_entry.clone());
-        *entry.chain.undo_ptr.write().unwrap() = Arc::downgrade(&undo_entry);
-
-        // Mark the vertex as deleted
-        let tombstone = Vertex::tombstone(current.data.clone());
-        current.data = tombstone;
-        current.commit_ts = txn.txn_id();
-
-        // Write to WAL
-        let wal_entry = RedoEntry {
-            lsn: 0, // Temporary set to 0, will be updated when commit
-            txn_id: txn.txn_id(),
-            iso_level: *txn.isolation_level(),
-            op: Operation::Delta(DeltaOp::DelVertex(vid)),
-        };
-        txn.redo_buffer.write().unwrap().push(wal_entry);
 
         Ok(())
     }
 
     /// Deletes an edge from the graph within a transaction.
     pub fn delete_edge(&self, txn: &Arc<MemTransaction>, eid: EdgeId) -> StorageResult<()> {
-        // Atomically retrieve the versioned edge (check existence).
-        let entry = self.edges.get(&eid).ok_or(StorageError::EdgeNotFound(
-            EdgeNotFoundError::EdgeNotFound(eid.to_string()),
-        ))?;
+        match txn.lock_strategy() {
+            LockStrategy::Pessimistic => {
+                let entry = self.edges.get(&eid).ok_or(StorageError::EdgeNotFound(
+                    EdgeNotFoundError::EdgeNotFound(eid.to_string()),
+                ))?;
 
-        let mut current = entry.chain.current.write().unwrap();
-        prewrite_check_edge(current.commit_ts, txn, eid)?;
+                let mut current = entry.chain.current.write().unwrap();
+                prewrite_check_edge(current.commit_ts, txn, eid)?;
 
-        // Record the edge deletion in the transaction
-        let delta = DeltaOp::CreateEdge(current.data.clone());
-        let undo_ptr = entry.chain.undo_ptr.read().unwrap().clone();
-        let mut undo_buffer = txn.undo_buffer.write().unwrap();
-        let undo_entry = Arc::new(UndoEntry::new(delta, current.commit_ts, undo_ptr));
-        undo_buffer.push(undo_entry.clone());
-        *entry.chain.undo_ptr.write().unwrap() = Arc::downgrade(&undo_entry);
+                let delta = DeltaOp::CreateEdge(current.data.clone());
+                let undo_ptr = entry.chain.undo_ptr.read().unwrap().clone();
+                let mut undo_buffer = txn.undo_buffer.write().unwrap();
+                let undo_entry = Arc::new(UndoEntry::new(delta, current.commit_ts, undo_ptr));
+                undo_buffer.push(undo_entry.clone());
+                *entry.chain.undo_ptr.write().unwrap() = Arc::downgrade(&undo_entry);
 
-        // Mark the edge as deleted
-        let tombstone = Edge::tombstone(current.data.clone());
-        current.data = tombstone;
-        current.commit_ts = txn.txn_id();
+                let tombstone = Edge::tombstone(current.data.clone());
+                current.data = tombstone;
+                current.commit_ts = txn.txn_id();
 
-        // Write to WAL
+                let wal_entry = RedoEntry {
+                    lsn: 0, // Temporary set to 0, will be updated when commit
+                    txn_id: txn.txn_id(),
+                    iso_level: *txn.isolation_level(),
+                    op: Operation::Delta(DeltaOp::DelEdge(eid)),
+                };
+                txn.redo_buffer.write().unwrap().push(wal_entry);
+            }
+            LockStrategy::Optimistic => {
+                if let Some(intent) = txn.lookup_edge_write(eid) {
+                    match intent.kind {
+                        WriteKind::InsertEdge(ref before) => {
+                            txn.record_edge_delete(eid, Timestamp::with_ts(0), before.clone());
+                        }
+                        WriteKind::UpdateEdge { before, .. } => {
+                            txn.record_edge_delete(eid, intent.guard_ts, before);
+                        }
+                        WriteKind::DeleteEdge { .. } => {}
+                        _ => {}
+                    }
+                } else {
+                    let entry = self.edges.get(&eid).ok_or(StorageError::EdgeNotFound(
+                        EdgeNotFoundError::EdgeNotFound(eid.to_string()),
+                    ))?;
+
+                    let current = entry.chain.current.read().unwrap();
+                    prewrite_check_edge(current.commit_ts, txn, eid)?;
+                    let guard_ts = current.commit_ts;
+                    let before = current.data.clone();
+                    drop(current);
+                    txn.record_edge_delete(eid, guard_ts, before);
+                }
+
+                let wal_entry = RedoEntry {
+                    lsn: 0,
+                    txn_id: txn.txn_id(),
+                    iso_level: *txn.isolation_level(),
+                    op: Operation::Delta(DeltaOp::DelEdge(eid)),
+                };
+                txn.redo_buffer.write().unwrap().push(wal_entry);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn record_occ_edge_delete(&self, txn: &Arc<MemTransaction>, eid: EdgeId) -> StorageResult<()> {
+        if let Some(intent) = txn.lookup_edge_write(eid) {
+            match intent.kind {
+                WriteKind::InsertEdge(ref before) => {
+                    txn.record_edge_delete(eid, Timestamp::with_ts(0), before.clone());
+                }
+                WriteKind::UpdateEdge { before, .. } => {
+                    txn.record_edge_delete(eid, intent.guard_ts, before);
+                }
+                WriteKind::DeleteEdge { .. } => {}
+                _ => {}
+            }
+        } else {
+            let entry = self.edges.get(&eid).ok_or(StorageError::EdgeNotFound(
+                EdgeNotFoundError::EdgeNotFound(eid.to_string()),
+            ))?;
+            let current = entry.chain.current.read().unwrap();
+            prewrite_check_edge(current.commit_ts, txn, eid)?;
+            let guard_ts = current.commit_ts;
+            let before = current.data.clone();
+            drop(current);
+            txn.record_edge_delete(eid, guard_ts, before);
+        }
+
         let wal_entry = RedoEntry {
-            lsn: 0, // Temporary set to 0, will be updated when commit
+            lsn: 0,
             txn_id: txn.txn_id(),
             iso_level: *txn.isolation_level(),
             op: Operation::Delta(DeltaOp::DelEdge(eid)),
@@ -865,30 +1091,127 @@ impl MemoryGraph {
         indices: Vec<usize>,
         props: Vec<ScalarValue>,
     ) -> StorageResult<()> {
-        // Atomically retrieve the versioned vertex (check existence).
-        let entry = self.vertices.get(&vid).ok_or(StorageError::VertexNotFound(
-            VertexNotFoundError::VertexNotFound(vid.to_string()),
-        ))?;
+        match txn.lock_strategy() {
+            LockStrategy::Pessimistic => {
+                let entry = self.vertices.get(&vid).ok_or(StorageError::VertexNotFound(
+                    VertexNotFoundError::VertexNotFound(vid.to_string()),
+                ))?;
 
-        update_properties!(
-            self,
-            vid,
-            entry,
-            txn,
-            indices.clone(),
-            props.clone(),
-            SetVertexProps,
-            prewrite_check_vertex
-        );
+                update_properties!(
+                    self,
+                    vid,
+                    entry,
+                    txn,
+                    indices.clone(),
+                    props.clone(),
+                    SetVertexProps,
+                    prewrite_check_vertex
+                );
 
-        // Write to WAL
-        let wal_entry = RedoEntry {
-            lsn: 0, // Temporary set to 0, will be updated when commit
-            txn_id: txn.txn_id(),
-            iso_level: *txn.isolation_level(),
-            op: Operation::Delta(DeltaOp::SetVertexProps(vid, SetPropsOp { indices, props })),
-        };
-        txn.redo_buffer.write().unwrap().push(wal_entry);
+                let wal_entry = RedoEntry {
+                    lsn: 0, // Temporary set to 0, will be updated when commit
+                    txn_id: txn.txn_id(),
+                    iso_level: *txn.isolation_level(),
+                    op: Operation::Delta(DeltaOp::SetVertexProps(vid, SetPropsOp {
+                        indices,
+                        props,
+                    })),
+                };
+                txn.redo_buffer.write().unwrap().push(wal_entry);
+            }
+            LockStrategy::Optimistic => {
+                let entry_res = self.vertices.get(&vid).ok_or(StorageError::VertexNotFound(
+                    VertexNotFoundError::VertexNotFound(vid.to_string()),
+                ));
+                if let Some(intent) = txn.lookup_vertex_write(vid) {
+                    match intent.kind {
+                        WriteKind::InsertVertex(ref existing) => {
+                            let mut after = existing.clone();
+                            after.set_props(&indices, props.clone());
+                            {
+                                let mut ws = txn.vertex_writes.write().unwrap();
+                                ws.entry(vid)
+                                    .and_modify(|intent| {
+                                        intent.kind = WriteKind::InsertVertex(after.clone());
+                                        if intent.guard_ts.raw() == 0 {
+                                            intent.guard_ts = Timestamp::with_ts(0);
+                                        }
+                                    })
+                                    .or_insert(WriteIntent {
+                                        guard_ts: Timestamp::with_ts(0),
+                                        kind: WriteKind::InsertVertex(after.clone()),
+                                    });
+                            }
+
+                            let delta = DeltaOp::SetVertexProps(vid, SetPropsOp {
+                                indices: indices.clone(),
+                                props: props.clone(),
+                            });
+                            let wal_entry = RedoEntry {
+                                lsn: 0,
+                                txn_id: txn.txn_id(),
+                                iso_level: *txn.isolation_level(),
+                                op: Operation::Delta(delta),
+                            };
+                            txn.redo_buffer.write().unwrap().push(wal_entry);
+                            return Ok(());
+                        }
+                        WriteKind::UpdateVertex { before, after } => {
+                            let mut updated = after.clone();
+                            updated.set_props(&indices, props.clone());
+                            txn.record_vertex_update(vid, intent.guard_ts, before, updated.clone());
+
+                            let delta = DeltaOp::SetVertexProps(vid, SetPropsOp {
+                                indices: indices.clone(),
+                                props: props.clone(),
+                            });
+                            let wal_entry = RedoEntry {
+                                lsn: 0,
+                                txn_id: txn.txn_id(),
+                                iso_level: *txn.isolation_level(),
+                                op: Operation::Delta(delta),
+                            };
+                            txn.redo_buffer.write().unwrap().push(wal_entry);
+                            return Ok(());
+                        }
+                        WriteKind::DeleteVertex { .. } => {
+                            return Err(StorageError::Transaction(
+                                TransactionError::WriteWriteConflict(format!(
+                                    "Vertex {} scheduled for deletion",
+                                    vid
+                                )),
+                            ));
+                        }
+                        _ => {}
+                    }
+                }
+
+                let entry = entry_res?;
+                let current = entry.chain.current.read().unwrap();
+                let commit_ts = current.commit_ts;
+                prewrite_check_vertex(commit_ts, txn, vid)?;
+
+                let guard_ts = commit_ts;
+                let before = current.data.clone();
+                let mut after = before.clone();
+                after.set_props(&indices, props.clone());
+                drop(current);
+
+                txn.record_vertex_update(vid, guard_ts, before.clone(), after.clone());
+
+                let delta = DeltaOp::SetVertexProps(vid, SetPropsOp {
+                    indices: indices.clone(),
+                    props: props.clone(),
+                });
+                let wal_entry = RedoEntry {
+                    lsn: 0,
+                    txn_id: txn.txn_id(),
+                    iso_level: *txn.isolation_level(),
+                    op: Operation::Delta(delta),
+                };
+                txn.redo_buffer.write().unwrap().push(wal_entry);
+            }
+        }
 
         Ok(())
     }
@@ -901,30 +1224,121 @@ impl MemoryGraph {
         indices: Vec<usize>,
         props: Vec<ScalarValue>,
     ) -> StorageResult<()> {
-        // Atomically retrieve the versioned edge (check existence).
-        let entry = self.edges.get(&eid).ok_or(StorageError::EdgeNotFound(
-            EdgeNotFoundError::EdgeNotFound(eid.to_string()),
-        ))?;
+        match txn.lock_strategy() {
+            LockStrategy::Pessimistic => {
+                let entry = self.edges.get(&eid).ok_or(StorageError::EdgeNotFound(
+                    EdgeNotFoundError::EdgeNotFound(eid.to_string()),
+                ))?;
 
-        update_properties!(
-            self,
-            eid,
-            entry,
-            txn,
-            indices.clone(),
-            props.clone(),
-            SetEdgeProps,
-            prewrite_check_edge
-        );
+                update_properties!(
+                    self,
+                    eid,
+                    entry,
+                    txn,
+                    indices.clone(),
+                    props.clone(),
+                    SetEdgeProps,
+                    prewrite_check_edge
+                );
 
-        // Write to WAL
-        let wal_entry = RedoEntry {
-            lsn: 0, // Temporary set to 0, will be updated when commit
-            txn_id: txn.txn_id(),
-            iso_level: *txn.isolation_level(),
-            op: Operation::Delta(DeltaOp::SetEdgeProps(eid, SetPropsOp { indices, props })),
-        };
-        txn.redo_buffer.write().unwrap().push(wal_entry);
+                let wal_entry = RedoEntry {
+                    lsn: 0, // Temporary set to 0, will be updated when commit
+                    txn_id: txn.txn_id(),
+                    iso_level: *txn.isolation_level(),
+                    op: Operation::Delta(DeltaOp::SetEdgeProps(eid, SetPropsOp { indices, props })),
+                };
+                txn.redo_buffer.write().unwrap().push(wal_entry);
+            }
+            LockStrategy::Optimistic => {
+                let entry_res = self.edges.get(&eid).ok_or(StorageError::EdgeNotFound(
+                    EdgeNotFoundError::EdgeNotFound(eid.to_string()),
+                ));
+                if let Some(intent) = txn.lookup_edge_write(eid) {
+                    match intent.kind {
+                        WriteKind::InsertEdge(ref existing)
+                        | WriteKind::UpdateEdge {
+                            after: ref existing,
+                            ..
+                        } => {
+                            let mut after = existing.clone();
+                            after.set_props(&indices, props.clone());
+                            match intent.kind {
+                                WriteKind::InsertEdge(_) => {
+                                    let mut ws = txn.edge_writes.write().unwrap();
+                                    ws.entry(eid)
+                                        .and_modify(|intent| {
+                                            intent.kind = WriteKind::InsertEdge(after.clone());
+                                            if intent.guard_ts.raw() == 0 {
+                                                intent.guard_ts = Timestamp::with_ts(0);
+                                            }
+                                        })
+                                        .or_insert(WriteIntent {
+                                            guard_ts: Timestamp::with_ts(0),
+                                            kind: WriteKind::InsertEdge(after.clone()),
+                                        });
+                                }
+                                WriteKind::UpdateEdge { before, .. } => {
+                                    txn.record_edge_update(
+                                        eid,
+                                        intent.guard_ts,
+                                        before,
+                                        after.clone(),
+                                    );
+                                }
+                                _ => {}
+                            }
+
+                            let delta = DeltaOp::SetEdgeProps(eid, SetPropsOp {
+                                indices: indices.clone(),
+                                props: props.clone(),
+                            });
+                            let wal_entry = RedoEntry {
+                                lsn: 0,
+                                txn_id: txn.txn_id(),
+                                iso_level: *txn.isolation_level(),
+                                op: Operation::Delta(delta),
+                            };
+                            txn.redo_buffer.write().unwrap().push(wal_entry);
+                            return Ok(());
+                        }
+                        WriteKind::DeleteEdge { .. } => {
+                            return Err(StorageError::Transaction(
+                                TransactionError::WriteWriteConflict(format!(
+                                    "Edge {} scheduled for deletion",
+                                    eid
+                                )),
+                            ));
+                        }
+                        _ => {}
+                    }
+                }
+
+                let entry = entry_res?;
+                let current = entry.chain.current.read().unwrap();
+                let commit_ts = current.commit_ts;
+                prewrite_check_edge(commit_ts, txn, eid)?;
+
+                let guard_ts = commit_ts;
+                let before = current.data.clone();
+                let mut after = before.clone();
+                after.set_props(&indices, props.clone());
+                drop(current);
+
+                txn.record_edge_update(eid, guard_ts, before.clone(), after.clone());
+
+                let delta = DeltaOp::SetEdgeProps(eid, SetPropsOp {
+                    indices: indices.clone(),
+                    props: props.clone(),
+                });
+                let wal_entry = RedoEntry {
+                    lsn: 0,
+                    txn_id: txn.txn_id(),
+                    iso_level: *txn.isolation_level(),
+                    op: Operation::Delta(delta),
+                };
+                txn.redo_buffer.write().unwrap().push(wal_entry);
+            }
+        }
 
         Ok(())
     }
@@ -1239,11 +1653,7 @@ impl MemoryGraph {
 /// the current transaction.
 /// Current check applies to both Snapshot Isolation and Serializable isolation levels.
 #[inline]
-fn optimistic_write_guard(
-    commit_ts: Timestamp,
-    txn: &Arc<MemTransaction>,
-    record_guard: impl FnOnce(Timestamp),
-) -> StorageResult<()> {
+fn optimistic_write_guard(commit_ts: Timestamp, txn: &Arc<MemTransaction>) -> StorageResult<()> {
     match commit_ts {
         // Reject when another in-flight transaction already holds the write.
         ts if ts.is_txn_id() && ts != txn.txn_id() => Err(StorageError::Transaction(
@@ -1252,10 +1662,7 @@ fn optimistic_write_guard(
                 ts
             )),
         )),
-        ts => {
-            record_guard(ts);
-            Ok(())
-        }
+        _ => Ok(()),
     }
 }
 
@@ -1263,13 +1670,11 @@ fn optimistic_write_guard(
 fn prewrite_check_vertex(
     commit_ts: Timestamp,
     txn: &Arc<MemTransaction>,
-    vid: VertexId,
+    _vid: VertexId,
 ) -> StorageResult<()> {
     match txn.lock_strategy() {
         LockStrategy::Pessimistic => check_write_conflict(commit_ts, txn),
-        LockStrategy::Optimistic => {
-            optimistic_write_guard(commit_ts, txn, |ts| txn.record_vertex_write_guard(vid, ts))
-        }
+        LockStrategy::Optimistic => optimistic_write_guard(commit_ts, txn),
     }
 }
 
@@ -1277,13 +1682,11 @@ fn prewrite_check_vertex(
 fn prewrite_check_edge(
     commit_ts: Timestamp,
     txn: &Arc<MemTransaction>,
-    eid: EdgeId,
+    _eid: EdgeId,
 ) -> StorageResult<()> {
     match txn.lock_strategy() {
         LockStrategy::Pessimistic => check_write_conflict(commit_ts, txn),
-        LockStrategy::Optimistic => {
-            optimistic_write_guard(commit_ts, txn, |ts| txn.record_edge_write_guard(eid, ts))
-        }
+        LockStrategy::Optimistic => optimistic_write_guard(commit_ts, txn),
     }
 }
 
