@@ -1,0 +1,7 @@
+---
+source: minigu-test/src/insta_test.rs
+---
+Explain:
+  Limit: 10
+    Project: n
+      LogicalMatch
