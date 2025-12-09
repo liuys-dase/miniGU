@@ -1,8 +1,8 @@
 //! AST definitions for *GQL-program*.
 
 use super::{EndTransaction, Procedure, SessionReset, SessionSet, StartTransaction};
-use crate::macros::base;
 use crate::imports::Box;
+use crate::macros::base;
 use crate::span::{OptSpanned, VecSpanned};
 
 #[apply(base)]

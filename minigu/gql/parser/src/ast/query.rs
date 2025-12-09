@@ -2,8 +2,8 @@ use super::{
     CallProcedureStatement, Expr, GraphExpr, GraphPatternBindingTable, Ident, NonNegativeInteger,
     Procedure, SetQuantifier,
 };
-use crate::macros::base;
 use crate::imports::Box;
+use crate::macros::base;
 use crate::span::{BoxSpanned, OptSpanned, Spanned, VecSpanned};
 
 #[apply(base)]
