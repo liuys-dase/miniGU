@@ -29,7 +29,7 @@ pub fn gql_program(input: &mut TokenStream) -> ModalResult<Spanned<Program>> {
 pub fn program_activity(input: &mut TokenStream) -> ModalResult<Spanned<ProgramActivity>> {
     dispatch! {peek(any);
         TokenKind::Session => session_activity.map_inner(ProgramActivity::Session),
-        _ => transaction_activity.map_inner(ProgramActivity::Transaction),
+        _ => transaction_activity.map_inner(|t| ProgramActivity::Transaction(Box::new(t))),
     }
     .parse_next(input)
 }

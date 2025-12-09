@@ -112,7 +112,7 @@ pub struct SetOp {
 
 #[apply(base)]
 pub enum MatchStatement {
-    Simple(Spanned<GraphPatternBindingTable>),
+    Simple(Box<Spanned<GraphPatternBindingTable>>),
     Optional(VecSpanned<MatchStatement>),
 }
 

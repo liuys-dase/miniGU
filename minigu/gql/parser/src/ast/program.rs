@@ -13,7 +13,7 @@ pub struct Program {
 #[apply(base)]
 pub enum ProgramActivity {
     Session(SessionActivity),
-    Transaction(TransactionActivity),
+    Transaction(Box<TransactionActivity>),
 }
 
 #[apply(base)]
