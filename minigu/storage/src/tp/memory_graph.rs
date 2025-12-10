@@ -43,10 +43,13 @@ macro_rules! update_properties {
             .iter()
             .map(|i| current.data.properties.get(*i).unwrap().clone())
             .collect();
-        let delta = DeltaOp::$op($id, SetPropsOp {
-            indices: $indices,
-            props: delta_props,
-        });
+        let delta = DeltaOp::$op(
+            $id,
+            SetPropsOp {
+                indices: $indices,
+                props: delta_props,
+            },
+        );
 
         let undo_ptr = $entry.chain.undo_ptr.read().unwrap().clone();
         let mut undo_buffer = $txn.undo_buffer.write().unwrap();
@@ -1204,10 +1207,10 @@ impl MemoryGraph {
                     lsn: 0, // Temporary set to 0, will be updated when commit
                     txn_id: txn.txn_id(),
                     iso_level: *txn.isolation_level(),
-                    op: Operation::Delta(DeltaOp::SetVertexProps(vid, SetPropsOp {
-                        indices,
-                        props,
-                    })),
+                    op: Operation::Delta(DeltaOp::SetVertexProps(
+                        vid,
+                        SetPropsOp { indices, props },
+                    )),
                 };
                 txn.redo_buffer.write().unwrap().push(wal_entry);
             }
@@ -1235,10 +1238,13 @@ impl MemoryGraph {
                                     });
                             }
 
-                            let delta = DeltaOp::SetVertexProps(vid, SetPropsOp {
-                                indices: indices.clone(),
-                                props: props.clone(),
-                            });
+                            let delta = DeltaOp::SetVertexProps(
+                                vid,
+                                SetPropsOp {
+                                    indices: indices.clone(),
+                                    props: props.clone(),
+                                },
+                            );
                             let wal_entry = RedoEntry {
                                 lsn: 0,
                                 txn_id: txn.txn_id(),
@@ -1253,10 +1259,13 @@ impl MemoryGraph {
                             updated.set_props(&indices, props.clone());
                             txn.record_vertex_update(vid, intent.guard_ts, before, updated.clone());
 
-                            let delta = DeltaOp::SetVertexProps(vid, SetPropsOp {
-                                indices: indices.clone(),
-                                props: props.clone(),
-                            });
+                            let delta = DeltaOp::SetVertexProps(
+                                vid,
+                                SetPropsOp {
+                                    indices: indices.clone(),
+                                    props: props.clone(),
+                                },
+                            );
                             let wal_entry = RedoEntry {
                                 lsn: 0,
                                 txn_id: txn.txn_id(),
@@ -1285,10 +1294,13 @@ impl MemoryGraph {
 
                 txn.record_vertex_update(vid, guard_ts, before.clone(), after.clone());
 
-                let delta = DeltaOp::SetVertexProps(vid, SetPropsOp {
-                    indices: indices.clone(),
-                    props: props.clone(),
-                });
+                let delta = DeltaOp::SetVertexProps(
+                    vid,
+                    SetPropsOp {
+                        indices: indices.clone(),
+                        props: props.clone(),
+                    },
+                );
                 let wal_entry = RedoEntry {
                     lsn: 0,
                     txn_id: txn.txn_id(),
@@ -1374,10 +1386,13 @@ impl MemoryGraph {
                                 _ => {}
                             }
 
-                            let delta = DeltaOp::SetEdgeProps(eid, SetPropsOp {
-                                indices: indices.clone(),
-                                props: props.clone(),
-                            });
+                            let delta = DeltaOp::SetEdgeProps(
+                                eid,
+                                SetPropsOp {
+                                    indices: indices.clone(),
+                                    props: props.clone(),
+                                },
+                            );
                             let wal_entry = RedoEntry {
                                 lsn: 0,
                                 txn_id: txn.txn_id(),
@@ -1406,10 +1421,13 @@ impl MemoryGraph {
 
                 txn.record_edge_update(eid, guard_ts, before.clone(), after.clone());
 
-                let delta = DeltaOp::SetEdgeProps(eid, SetPropsOp {
-                    indices: indices.clone(),
-                    props: props.clone(),
-                });
+                let delta = DeltaOp::SetEdgeProps(
+                    eid,
+                    SetPropsOp {
+                        indices: indices.clone(),
+                        props: props.clone(),
+                    },
+                );
                 let wal_entry = RedoEntry {
                     lsn: 0,
                     txn_id: txn.txn_id(),
@@ -1436,23 +1454,23 @@ impl MemoryGraph {
             return None;
         }
 
-        if let Ok(property_idx) = usize::try_from(index_key.property_id) {
-            if let Some(property_value) = vertex.properties().get(property_idx) {
-                match property_value {
-                    ScalarValue::Vector {
-                        value: Some(vector_value),
-                        ..
-                    } => {
-                        return Some(vector_value.clone());
-                    }
-                    ScalarValue::Vector { value: None, .. } => {
-                        // Skip null vector values
-                        return None;
-                    }
-                    _ => {
-                        // Property exists but is not a vector - skip
-                        return None;
-                    }
+        if let Ok(property_idx) = usize::try_from(index_key.property_id)
+            && let Some(property_value) = vertex.properties().get(property_idx)
+        {
+            match property_value {
+                ScalarValue::Vector {
+                    value: Some(vector_value),
+                    ..
+                } => {
+                    return Some(vector_value.clone());
+                }
+                ScalarValue::Vector { value: None, .. } => {
+                    // Skip null vector values
+                    return None;
+                }
+                _ => {
+                    // Property exists but is not a vector - skip
+                    return None;
                 }
             }
         }
@@ -1470,10 +1488,10 @@ impl MemoryGraph {
 
         for &node_id in node_ids {
             // Try to get vertex, skip if not found
-            if let Ok(vertex) = self.get_vertex(txn, node_id) {
-                if let Some(vector_value) = Self::extract_vector_from_vertex(&vertex, index_key) {
-                    vectors.push((node_id, vector_value));
-                }
+            if let Ok(vertex) = self.get_vertex(txn, node_id)
+                && let Some(vector_value) = Self::extract_vector_from_vertex(&vertex, index_key)
+            {
+                vectors.push((node_id, vector_value));
             }
             // Note: We silently skip nodes that don't exist or don't have the required vector
             // property This allows bulk operations to be more forgiving
@@ -1909,25 +1927,41 @@ pub mod tests {
             .begin_transaction(IsolationLevel::Serializable)
             .unwrap();
 
-        let alice = create_vertex(1, PERSON, vec![
-            ScalarValue::String(Some("Alice".to_string())),
-            ScalarValue::Int32(Some(25)),
-        ]);
+        let alice = create_vertex(
+            1,
+            PERSON,
+            vec![
+                ScalarValue::String(Some("Alice".to_string())),
+                ScalarValue::Int32(Some(25)),
+            ],
+        );
 
-        let bob = create_vertex(2, PERSON, vec![
-            ScalarValue::String(Some("Bob".to_string())),
-            ScalarValue::Int32(Some(28)),
-        ]);
+        let bob = create_vertex(
+            2,
+            PERSON,
+            vec![
+                ScalarValue::String(Some("Bob".to_string())),
+                ScalarValue::Int32(Some(28)),
+            ],
+        );
 
-        let carol = create_vertex(3, PERSON, vec![
-            ScalarValue::String(Some("Carol".to_string())),
-            ScalarValue::Int32(Some(24)),
-        ]);
+        let carol = create_vertex(
+            3,
+            PERSON,
+            vec![
+                ScalarValue::String(Some("Carol".to_string())),
+                ScalarValue::Int32(Some(24)),
+            ],
+        );
 
-        let david = create_vertex(4, PERSON, vec![
-            ScalarValue::String(Some("David".to_string())),
-            ScalarValue::Int32(Some(27)),
-        ]);
+        let david = create_vertex(
+            4,
+            PERSON,
+            vec![
+                ScalarValue::String(Some("David".to_string())),
+                ScalarValue::Int32(Some(27)),
+            ],
+        );
 
         // Add vertices to the graph
         graph.create_vertex(&txn, alice).unwrap();
@@ -1936,22 +1970,38 @@ pub mod tests {
         graph.create_vertex(&txn, david).unwrap();
 
         // Create friend edges
-        let friend1 = create_edge(1, 1, 2, FRIEND, vec![ScalarValue::String(Some(
-            "2020-01-01".to_string(),
-        ))]);
+        let friend1 = create_edge(
+            1,
+            1,
+            2,
+            FRIEND,
+            vec![ScalarValue::String(Some("2020-01-01".to_string()))],
+        );
 
-        let friend2 = create_edge(2, 2, 3, FRIEND, vec![ScalarValue::String(Some(
-            "2021-03-15".to_string(),
-        ))]);
+        let friend2 = create_edge(
+            2,
+            2,
+            3,
+            FRIEND,
+            vec![ScalarValue::String(Some("2021-03-15".to_string()))],
+        );
 
         // Create follow edges
-        let follow1 = create_edge(3, 1, 3, FOLLOW, vec![ScalarValue::String(Some(
-            "2022-06-01".to_string(),
-        ))]);
+        let follow1 = create_edge(
+            3,
+            1,
+            3,
+            FOLLOW,
+            vec![ScalarValue::String(Some("2022-06-01".to_string()))],
+        );
 
-        let follow2 = create_edge(4, 4, 1, FOLLOW, vec![ScalarValue::String(Some(
-            "2022-07-15".to_string(),
-        ))]);
+        let follow2 = create_edge(
+            4,
+            4,
+            1,
+            FOLLOW,
+            vec![ScalarValue::String(Some("2022-07-15".to_string()))],
+        );
 
         // Add edges to the graph
         graph.create_edge(&txn, friend1).unwrap();
@@ -1964,23 +2014,35 @@ pub mod tests {
     }
 
     fn create_vertex_eve() -> Vertex {
-        create_vertex(5, PERSON, vec![
-            ScalarValue::String(Some("Eve".to_string())),
-            ScalarValue::Int32(Some(24)),
-        ])
+        create_vertex(
+            5,
+            PERSON,
+            vec![
+                ScalarValue::String(Some("Eve".to_string())),
+                ScalarValue::Int32(Some(24)),
+            ],
+        )
     }
 
     fn create_vertex_frank() -> Vertex {
-        create_vertex(6, PERSON, vec![
-            ScalarValue::String(Some("Frank".to_string())),
-            ScalarValue::Int32(Some(25)),
-        ])
+        create_vertex(
+            6,
+            PERSON,
+            vec![
+                ScalarValue::String(Some("Frank".to_string())),
+                ScalarValue::Int32(Some(25)),
+            ],
+        )
     }
 
     fn create_edge_alice_to_eve() -> Edge {
-        create_edge(5, 1, 5, FRIEND, vec![ScalarValue::String(Some(
-            "2025-03-31".to_string(),
-        ))])
+        create_edge(
+            5,
+            1,
+            5,
+            FRIEND,
+            vec![ScalarValue::String(Some("2025-03-31".to_string()))],
+        )
     }
 
     /// Creates a test vertex with vector embedding
@@ -3708,9 +3770,10 @@ pub mod tests {
         )?);
 
         // Delete the vector
-        graph.delete_from_vector_index(VectorIndexKey::new(PERSON, EMBEDDING_PROPERTY_ID), &[
-            *target_id,
-        ])?;
+        graph.delete_from_vector_index(
+            VectorIndexKey::new(PERSON, EMBEDDING_PROPERTY_ID),
+            &[*target_id],
+        )?;
 
         // Verify index size decreased (soft delete should reduce active count)
         let new_size = graph
@@ -4028,9 +4091,10 @@ pub mod tests {
         assert!(search_results.iter().any(|(id, _)| *id == *new_id));
 
         // 3. Delete the inserted vector
-        graph.delete_from_vector_index(VectorIndexKey::new(PERSON, EMBEDDING_PROPERTY_ID), &[
-            *new_id,
-        ])?;
+        graph.delete_from_vector_index(
+            VectorIndexKey::new(PERSON, EMBEDDING_PROPERTY_ID),
+            &[*new_id],
+        )?;
 
         // 4. Search again - should not find deleted vector
         assert!(verify_vector_not_in_search_results(
@@ -4585,9 +4649,13 @@ pub mod tests {
                 create_vertex(2, PERSON, vec![ScalarValue::Int64(Some(0))]),
             )
             .unwrap();
-        let edge = create_edge(1, 1, 2, FRIEND, vec![ScalarValue::String(Some(
-            "2020-01-01".to_string(),
-        ))]);
+        let edge = create_edge(
+            1,
+            1,
+            2,
+            FRIEND,
+            vec![ScalarValue::String(Some("2020-01-01".to_string()))],
+        );
         graph.create_edge(&bootstrap, edge).unwrap();
         bootstrap.commit().unwrap();
 
@@ -4603,17 +4671,23 @@ pub mod tests {
 
         // Txn1 updates and commits first.
         graph
-            .set_edge_property(&txn1, 1, vec![0], vec![ScalarValue::String(Some(
-                "updated_by_txn1".to_string(),
-            ))])
+            .set_edge_property(
+                &txn1,
+                1,
+                vec![0],
+                vec![ScalarValue::String(Some("updated_by_txn1".to_string()))],
+            )
             .unwrap();
         txn1.commit().unwrap();
 
         // Txn2 updates same edge; commit should detect conflict.
         graph
-            .set_edge_property(&txn2, 1, vec![0], vec![ScalarValue::String(Some(
-                "updated_by_txn2".to_string(),
-            ))])
+            .set_edge_property(
+                &txn2,
+                1,
+                vec![0],
+                vec![ScalarValue::String(Some("updated_by_txn2".to_string()))],
+            )
             .unwrap();
         let err = txn2.commit().unwrap_err();
         match err {
@@ -4666,16 +4740,24 @@ pub mod tests {
             .unwrap();
 
         // Txn1 creates the edge and commits.
-        let e = create_edge(10, 10, 11, FRIEND, vec![ScalarValue::String(Some(
-            "created_by_txn1".to_string(),
-        ))]);
+        let e = create_edge(
+            10,
+            10,
+            11,
+            FRIEND,
+            vec![ScalarValue::String(Some("created_by_txn1".to_string()))],
+        );
         graph.create_edge(&txn1, e).unwrap();
         txn1.commit().unwrap();
 
         // Txn2 tries to create the same edge from a stale snapshot; commit should conflict.
-        let e_again = create_edge(10, 10, 11, FRIEND, vec![ScalarValue::String(Some(
-            "created_by_txn2".to_string(),
-        ))]);
+        let e_again = create_edge(
+            10,
+            10,
+            11,
+            FRIEND,
+            vec![ScalarValue::String(Some("created_by_txn2".to_string()))],
+        );
         graph.create_edge(&txn2, e_again).unwrap();
         let err = txn2.commit().unwrap_err();
         match err {
@@ -4719,9 +4801,13 @@ pub mod tests {
                 create_vertex(21, PERSON, vec![ScalarValue::Int64(Some(0))]),
             )
             .unwrap();
-        let edge = create_edge(20, 20, 21, FRIEND, vec![ScalarValue::String(Some(
-            "keep_me".to_string(),
-        ))]);
+        let edge = create_edge(
+            20,
+            20,
+            21,
+            FRIEND,
+            vec![ScalarValue::String(Some("keep_me".to_string()))],
+        );
         graph.create_edge(&bootstrap, edge).unwrap();
         bootstrap.commit().unwrap();
 

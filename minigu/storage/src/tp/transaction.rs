@@ -253,10 +253,13 @@ impl MemTransaction {
             }
             intent.kind = WriteKind::DeleteVertex { before };
         } else {
-            ws.insert(vid, WriteIntent {
-                guard_ts,
-                kind: WriteKind::DeleteVertex { before },
-            });
+            ws.insert(
+                vid,
+                WriteIntent {
+                    guard_ts,
+                    kind: WriteKind::DeleteVertex { before },
+                },
+            );
         }
     }
 
@@ -306,10 +309,13 @@ impl MemTransaction {
             }
             intent.kind = WriteKind::DeleteEdge { before };
         } else {
-            ws.insert(eid, WriteIntent {
-                guard_ts,
-                kind: WriteKind::DeleteEdge { before },
-            });
+            ws.insert(
+                eid,
+                WriteIntent {
+                    guard_ts,
+                    kind: WriteKind::DeleteEdge { before },
+                },
+            );
         }
     }
 
@@ -367,11 +373,12 @@ impl MemTransaction {
 
         let _guard = self.graph.txn_manager.commit_lock.lock().unwrap();
 
-        if let IsolationLevel::Serializable = self.isolation_level {
-            if let Err(e) = self.validate_read_sets() {
-                self.abort()?;
-                return Err(e);
-            }
+        // Step 1: Validate serializability if isolution level is Serializable.
+        if let IsolationLevel::Serializable = self.isolation_level
+            && let Err(e) = self.validate_read_sets()
+        {
+            self.abort()?;
+            return Err(e);
         }
 
         let result = match self.lock_strategy {
