@@ -8,7 +8,6 @@ version.workspace = true
 [dependencies]
 arrow = { workspace = true }
 auto_impl = { workspace = true }
-downcast-rs = { workspace = true }
 itertools = { workspace = true }
 miette = { workspace = true }
 minigu-catalog = { workspace = true }
