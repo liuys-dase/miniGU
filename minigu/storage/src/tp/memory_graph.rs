@@ -682,25 +682,24 @@ impl MemoryGraph {
     // ===== Read-only graph methods =====
     /// Retrieves a vertex by its ID within the context of a transaction.
     pub fn get_vertex(&self, txn: &Arc<MemTransaction>, vid: VertexId) -> StorageResult<Vertex> {
-        if txn.lock_strategy() == LockStrategy::Optimistic {
-            if let Some(intent) = txn.lookup_vertex_write(vid) {
-                match intent.kind {
-                    WriteKind::InsertVertex(ref v)
-                    | WriteKind::UpdateVertex { after: ref v, .. } => {
-                        if v.is_tombstone() {
-                            return Err(StorageError::VertexNotFound(
-                                VertexNotFoundError::VertexTombstone(vid.to_string()),
-                            ));
-                        }
-                        return Ok(v.clone());
-                    }
-                    WriteKind::DeleteVertex { .. } => {
+        if txn.lock_strategy() == LockStrategy::Optimistic
+            && let Some(intent) = txn.lookup_vertex_write(vid)
+        {
+            match intent.kind {
+                WriteKind::InsertVertex(ref v) | WriteKind::UpdateVertex { after: ref v, .. } => {
+                    if v.is_tombstone() {
                         return Err(StorageError::VertexNotFound(
                             VertexNotFoundError::VertexTombstone(vid.to_string()),
                         ));
                     }
-                    _ => {}
+                    return Ok(v.clone());
                 }
+                WriteKind::DeleteVertex { .. } => {
+                    return Err(StorageError::VertexNotFound(
+                        VertexNotFoundError::VertexTombstone(vid.to_string()),
+                    ));
+                }
+                _ => {}
             }
         }
 
@@ -753,24 +752,24 @@ impl MemoryGraph {
 
     /// Retrieves an edge by its ID within the context of a transaction.
     pub fn get_edge(&self, txn: &Arc<MemTransaction>, eid: EdgeId) -> StorageResult<Edge> {
-        if txn.lock_strategy() == LockStrategy::Optimistic {
-            if let Some(intent) = txn.lookup_edge_write(eid) {
-                match intent.kind {
-                    WriteKind::InsertEdge(ref e) | WriteKind::UpdateEdge { after: ref e, .. } => {
-                        if e.is_tombstone() {
-                            return Err(StorageError::EdgeNotFound(
-                                EdgeNotFoundError::EdgeTombstone(eid.to_string()),
-                            ));
-                        }
-                        return Ok(e.clone());
-                    }
-                    WriteKind::DeleteEdge { .. } => {
+        if txn.lock_strategy() == LockStrategy::Optimistic
+            && let Some(intent) = txn.lookup_edge_write(eid)
+        {
+            match intent.kind {
+                WriteKind::InsertEdge(ref e) | WriteKind::UpdateEdge { after: ref e, .. } => {
+                    if e.is_tombstone() {
                         return Err(StorageError::EdgeNotFound(
                             EdgeNotFoundError::EdgeTombstone(eid.to_string()),
                         ));
                     }
-                    _ => {}
+                    return Ok(e.clone());
                 }
+                WriteKind::DeleteEdge { .. } => {
+                    return Err(StorageError::EdgeNotFound(
+                        EdgeNotFoundError::EdgeTombstone(eid.to_string()),
+                    ));
+                }
+                _ => {}
             }
         }
 
