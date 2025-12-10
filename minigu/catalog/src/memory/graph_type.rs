@@ -367,17 +367,15 @@ impl TxnHook for GraphTypeIntegrityHook {
                     if let Some(node) =
                         self.edge_type_map
                             .get_node_visible(&k, txn.start_ts(), txn.txn_id())
+                        && let Some(edge) = node.value()
                     {
-                        if let Some(edge) = node.value() {
-                            let edge = edge.as_ref();
-                            if edge.src().label_set() == *vertex_label_set
-                                || edge.dst().label_set() == *vertex_label_set
-                            {
-                                return Err(CatalogTxnError::ReferentialIntegrity {
-                                    reason: "vertex type is still referenced by edge types"
-                                        .to_string(),
-                                });
-                            }
+                        let edge = edge.as_ref();
+                        if edge.src().label_set() == *vertex_label_set
+                            || edge.dst().label_set() == *vertex_label_set
+                        {
+                            return Err(CatalogTxnError::ReferentialIntegrity {
+                                reason: "vertex type is still referenced by edge types".to_string(),
+                            });
                         }
                     }
                 }

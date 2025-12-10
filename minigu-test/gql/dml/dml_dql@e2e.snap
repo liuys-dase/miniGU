@@ -107,13 +107,13 @@ INSERT (n)-[r:Rel{timestamp:0,deleted:0,rel_scene:'0',rel_type:'table2table',gen
 ---
 Error: Plan(
     Bind(
-        Unexpected,
+        CurrentGraphNotSpecified,
     ),
 )
 ---
 Error: Plan(
     Bind(
-        Unexpected,
+        CurrentGraphNotSpecified,
     ),
 )
 ---
@@ -862,7 +862,7 @@ Error: Parser(
 ---
 Error: Plan(
     Bind(
-        Unexpected,
+        CurrentGraphNotSpecified,
     ),
 )
 ---
@@ -894,13 +894,13 @@ Error: Parser(
 ---
 Error: Plan(
     Bind(
-        Unexpected,
+        CurrentGraphNotSpecified,
     ),
 )
 ---
 Error: Plan(
     Bind(
-        Unexpected,
+        CurrentGraphNotSpecified,
     ),
 )
 ---
@@ -919,79 +919,79 @@ Error: Parser(
 ---
 Error: Plan(
     Bind(
-        Unexpected,
+        CurrentGraphNotSpecified,
     ),
 )
 ---
 Error: Plan(
     Bind(
-        Unexpected,
+        CurrentGraphNotSpecified,
     ),
 )
 ---
 Error: Plan(
     Bind(
-        Unexpected,
+        CurrentGraphNotSpecified,
     ),
 )
 ---
 Error: Plan(
     Bind(
-        Unexpected,
+        CurrentGraphNotSpecified,
     ),
 )
 ---
 Error: Plan(
     Bind(
-        Unexpected,
+        CurrentGraphNotSpecified,
     ),
 )
 ---
 Error: Plan(
     Bind(
-        Unexpected,
+        CurrentGraphNotSpecified,
     ),
 )
 ---
 Error: Plan(
     Bind(
-        Unexpected,
+        CurrentGraphNotSpecified,
     ),
 )
 ---
 Error: Plan(
     Bind(
-        Unexpected,
+        CurrentGraphNotSpecified,
     ),
 )
 ---
 Error: Plan(
     Bind(
-        Unexpected,
+        CurrentGraphNotSpecified,
     ),
 )
 ---
 Error: Plan(
     Bind(
-        Unexpected,
+        CurrentGraphNotSpecified,
     ),
 )
 ---
 Error: Plan(
     Bind(
-        Unexpected,
+        CurrentGraphNotSpecified,
     ),
 )
 ---
 Error: Plan(
     Bind(
-        Unexpected,
+        CurrentGraphNotSpecified,
     ),
 )
 ---
 Error: Plan(
     Bind(
-        Unexpected,
+        CurrentGraphNotSpecified,
     ),
 )
 ---
@@ -1023,19 +1023,19 @@ Error: Parser(
 ---
 Error: Plan(
     Bind(
-        Unexpected,
+        CurrentGraphNotSpecified,
     ),
 )
 ---
 Error: Plan(
     Bind(
-        Unexpected,
+        CurrentGraphNotSpecified,
     ),
 )
 ---
 Error: Plan(
     Bind(
-        Unexpected,
+        CurrentGraphNotSpecified,
     ),
 )
 ---
@@ -1054,7 +1054,7 @@ Error: Parser(
 ---
 Error: Plan(
     Bind(
-        Unexpected,
+        CurrentGraphNotSpecified,
     ),
 )
 ---
@@ -1073,7 +1073,7 @@ Error: Parser(
 ---
 Error: Plan(
     Bind(
-        Unexpected,
+        CurrentGraphNotSpecified,
     ),
 )
 ---
@@ -1118,7 +1118,7 @@ Error: Parser(
 ---
 Error: Plan(
     Bind(
-        Unexpected,
+        CurrentGraphNotSpecified,
     ),
 )
 ---
@@ -1137,25 +1137,25 @@ Error: Parser(
 ---
 Error: Plan(
     Bind(
-        Unexpected,
+        CurrentGraphNotSpecified,
     ),
 )
 ---
 Error: Plan(
     Bind(
-        Unexpected,
+        CurrentGraphNotSpecified,
     ),
 )
 ---
 Error: Plan(
     Bind(
-        Unexpected,
+        CurrentGraphNotSpecified,
     ),
 )
 ---
 Error: Plan(
     Bind(
-        Unexpected,
+        CurrentGraphNotSpecified,
     ),
 )
 ---

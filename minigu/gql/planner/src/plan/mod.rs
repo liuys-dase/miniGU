@@ -1,5 +1,7 @@
 pub mod call;
 pub mod ddl;
+pub mod expand;
+pub mod explain;
 pub mod filter;
 pub mod limit;
 pub mod logical_match;
@@ -17,13 +19,15 @@ use serde::Serialize;
 
 use crate::plan::call::Call;
 use crate::plan::ddl::CatalogDdl;
+use crate::plan::expand::Expand;
+use crate::plan::explain::Explain;
 use crate::plan::filter::Filter;
 use crate::plan::limit::Limit;
 use crate::plan::logical_match::LogicalMatch;
 use crate::plan::offset::Offset;
 use crate::plan::one_row::OneRow;
 use crate::plan::project::Project;
-use crate::plan::scan::PhysicalNodeScan;
+use crate::plan::scan::NodeIdScan;
 use crate::plan::sort::Sort;
 use crate::plan::vector_index_scan::VectorIndexScan;
 
@@ -83,6 +87,7 @@ pub enum PlanNode {
     LogicalCatalogDdl(Arc<CatalogDdl>),
     LogicalOffset(Arc<Offset>),
     LogicalVectorIndexScan(Arc<VectorIndexScan>),
+    LogicalExplain(Arc<Explain>),
 
     PhysicalFilter(Arc<Filter>),
     PhysicalProject(Arc<Project>),
@@ -98,8 +103,10 @@ pub enum PlanNode {
     //  During subsequent matching and computation, these ids are lazily expanded
     //  into complete attribute representations (ArrayRefs) only when required,
     //  to improve performance and reduce unnecessary data loading.
-    PhysicalNodeScan(Arc<PhysicalNodeScan>),
+    PhysicalNodeScan(Arc<NodeIdScan>),
     // PhysicalCatalogModify(Arc<PhysicalCatalogModify>)
+    PhysicalExpand(Arc<Expand>),
+    PhysicalExplain(Arc<Explain>),
 }
 
 impl PlanData for PlanNode {
@@ -113,6 +120,7 @@ impl PlanData for PlanNode {
             PlanNode::LogicalSort(node) => node.base(),
             PlanNode::LogicalLimit(node) => node.base(),
             PlanNode::LogicalCatalogDdl(node) => node.base(),
+            PlanNode::LogicalExplain(node) => node.base(),
             PlanNode::LogicalOffset(node) => node.base(),
 
             PlanNode::PhysicalFilter(node) => node.base(),
@@ -126,6 +134,8 @@ impl PlanData for PlanNode {
             PlanNode::PhysicalNodeScan(node) => node.base(),
             PlanNode::LogicalVectorIndexScan(node) => node.base(),
             PlanNode::PhysicalVectorIndexScan(node) => node.base(),
+            PlanNode::PhysicalExpand(node) => node.base(),
+            PlanNode::PhysicalExplain(node) => node.base(),
         }
     }
 
@@ -141,6 +151,7 @@ impl PlanData for PlanNode {
             PlanNode::LogicalOffset(node) => node.explain(indent),
             PlanNode::LogicalVectorIndexScan(node) => node.explain(indent),
             PlanNode::LogicalCatalogDdl(node) => node.explain(indent),
+            PlanNode::LogicalExplain(node) => node.explain(indent),
 
             PlanNode::PhysicalFilter(node) => node.explain(indent),
             PlanNode::PhysicalProject(node) => node.explain(indent),
@@ -152,6 +163,8 @@ impl PlanData for PlanNode {
             PlanNode::PhysicalVectorIndexScan(node) => node.explain(indent),
             PlanNode::PhysicalNodeScan(node) => node.explain(indent),
             PlanNode::PhysicalCatalogDdl(node) => node.explain(indent),
+            PlanNode::PhysicalExpand(node) => node.explain(indent),
+            PlanNode::PhysicalExplain(node) => node.explain(indent),
         }
     }
 }

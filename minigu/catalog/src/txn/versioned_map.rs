@@ -116,14 +116,13 @@ where
                 reason: "map rwlock poisoned".into(),
             })?;
 
-        if let Some(chain) = guard.get(key) {
-            if let Some(head) = chain.head() {
-                if let Some(commit_ts) = head.commit_ts() {
-                    if commit_ts > start_ts && head.creator_txn() != txn_id {
-                        return Ok(true);
-                    }
-                }
-            }
+        if let Some(chain) = guard.get(key)
+            && let Some(head) = chain.head()
+            && let Some(commit_ts) = head.commit_ts()
+            && commit_ts > start_ts
+            && head.creator_txn() != txn_id
+        {
+            return Ok(true);
         }
         Ok(false)
     }

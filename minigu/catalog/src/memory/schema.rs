@@ -347,7 +347,7 @@ mod tests {
             .unwrap();
         let gref = schema.get_graph("G1", &t2).unwrap().expect("graph exists");
         let d = gref
-            .as_any()
+            .as_ref()
             .downcast_ref::<DummyMemGraph>()
             .expect("dummy mem graph");
         let mem = d.mem.clone();

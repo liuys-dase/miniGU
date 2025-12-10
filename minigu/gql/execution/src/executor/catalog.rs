@@ -510,7 +510,7 @@ impl CatalogDdlExec {
         use minigu_transaction::IsolationLevel;
 
         let src_container = src_graph
-            .as_any()
+            .as_ref()
             .downcast_ref::<GraphContainer>()
             .ok_or_else(|| {
                 ExecutionError::Custom("source is not a memory graph container".into())
