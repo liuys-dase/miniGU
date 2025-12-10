@@ -3,6 +3,7 @@ use std::sync::Arc;
 use arrow::array::{AsArray, Int32Array};
 use minigu_catalog::label_set::LabelSet;
 use minigu_catalog::provider::GraphTypeProvider;
+use minigu_catalog::txn::catalog_txn::CatalogTxn;
 use minigu_common::data_chunk::DataChunk;
 use minigu_common::data_type::{DataField, DataSchema, LogicalType};
 use minigu_common::types::VertexIdArray;
@@ -34,18 +35,18 @@ impl ExecutorBuilder {
         Self { session }
     }
 
-    pub fn build(mut self, plan: &PlanNode) -> BoxedExecutor {
-        self.build_executor(plan)
+    pub fn build(mut self, plan: &PlanNode, txn: &CatalogTxn) -> BoxedExecutor {
+        self.build_executor(plan, txn)
     }
 
-    fn build_executor(&mut self, physical_plan: &PlanNode) -> BoxedExecutor {
+    fn build_executor(&mut self, physical_plan: &PlanNode, txn: &CatalogTxn) -> BoxedExecutor {
         let children = physical_plan.children();
         match physical_plan {
             PlanNode::PhysicalFilter(filter) => {
                 assert_eq!(children.len(), 1);
                 let schema = children[0].schema().expect("child should have a schema");
                 let predicate = self.build_evaluator(&filter.predicate, schema);
-                Box::new(self.build_executor(&children[0]).filter(move |c| {
+                Box::new(self.build_executor(&children[0], txn).filter(move |c| {
                     predicate
                         .evaluate(c)
                         .map(|a| a.into_array().as_boolean().clone())
@@ -73,7 +74,7 @@ impl ExecutorBuilder {
             }
             PlanNode::PhysicalExpand(expand) => {
                 assert_eq!(children.len(), 1);
-                let child = self.build_executor(&children[0]);
+                let child = self.build_executor(&children[0], txn);
                 let container: Arc<GraphContainer> = self
                     .session
                     .current_graph
@@ -105,7 +106,7 @@ impl ExecutorBuilder {
             PlanNode::PhysicalProject(project) => {
                 assert_eq!(children.len(), 1);
                 let child_schema = children[0].schema().expect("child should have a schema");
-                let mut child_executor = self.build_executor(&children[0]);
+                let mut child_executor = self.build_executor(&children[0], txn);
                 let output_schema = physical_plan.schema().expect("there should be a schema");
 
                 let mut updated_schema = child_schema.clone();
@@ -141,16 +142,12 @@ impl ExecutorBuilder {
                             let property_list = if let Some(label_specs) =
                                 output_schema.get_var_label(var_name.as_str())
                             {
-                                let txn = self
-                                    .session
-                                    .current_txn()
-                                    .expect("catalog transaction should be set for execution");
                                 let graph_type = container.graph_type();
                                 let mut property_ids = Vec::new();
                                 if let Some(first_label_set) = label_specs.first()
                                     && let Ok(Some(vertex_type)) = graph_type.get_vertex_type(
                                         &LabelSet::from_iter(first_label_set.clone()),
-                                        txn.as_ref(),
+                                        txn,
                                     )
                                 {
                                     for property in vertex_type.properties().iter() {
@@ -226,13 +223,13 @@ impl ExecutorBuilder {
                     })
                     .collect();
                 Box::new(
-                    self.build_executor(&children[0])
+                    self.build_executor(&children[0], txn)
                         .sort(specs, DEFAULT_CHUNK_SIZE),
                 )
             }
             PlanNode::PhysicalLimit(limit) => {
                 assert_eq!(children.len(), 1);
-                Box::new(self.build_executor(&children[0]).limit(limit.limit))
+                Box::new(self.build_executor(&children[0], txn).limit(limit.limit))
             }
             PlanNode::PhysicalCatalogDdl(ddl) => {
                 assert!(children.is_empty());
@@ -243,7 +240,7 @@ impl ExecutorBuilder {
             }
             PlanNode::PhysicalOffset(offset) => {
                 assert_eq!(children.len(), 1);
-                Box::new(self.build_executor(&children[0]).offset(offset.offset))
+                Box::new(self.build_executor(&children[0], txn).offset(offset.offset))
             }
             PlanNode::PhysicalVectorIndexScan(vector_scan) => {
                 assert!(children.is_empty());

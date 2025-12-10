@@ -160,7 +160,7 @@ impl Session {
             let schema = plan.schema().cloned();
             let start = Instant::now();
             let chunks: Vec<_> = session_snapshot.database().runtime().scope(|_| {
-                let mut executor = ExecutorBuilder::new(session_snapshot.clone()).build(&plan);
+                let mut executor = ExecutorBuilder::new(session_snapshot.clone()).build(&plan, txn);
                 executor.into_iter().try_collect()
             })?;
             metrics.execution_time = start.elapsed();
