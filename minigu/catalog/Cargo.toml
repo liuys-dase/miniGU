@@ -6,7 +6,7 @@ repository.workspace = true
 version.workspace = true
 
 [dependencies]
-downcast-rs = "1"
+downcast-rs = { workspace = true }
 minigu-common = { workspace = true }
 minigu-transaction = { workspace = true }
 serde = { workspace = true }
