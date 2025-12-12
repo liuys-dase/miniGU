@@ -133,15 +133,17 @@ pub fn import<P: AsRef<Path>>(
 
     let schema = context
         .current_schema
-        .ok_or_else(|| anyhow::anyhow!("current schema not set"))?;
-    let (graph, graph_type) = import_internal(manifest_path, &context.catalog_txn_mgr)?;
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("current schema not set"))?
+        .clone();
+    let (graph, graph_type) = import_internal(manifest_path, context.catalog_txn_mgr())?;
     let container = GraphContainer::new(
         Arc::clone(&graph_type),
         GraphStorage::Memory(Arc::clone(&graph)),
     );
 
     let txn = context
-        .catalog_txn_mgr
+        .catalog_txn_mgr()
         .begin_transaction(IsolationLevel::Snapshot)?;
     let exists = schema.get_graph(&graph_name, txn.as_ref())?.is_some();
     if exists {

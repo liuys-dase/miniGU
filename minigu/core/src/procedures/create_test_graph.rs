@@ -4,7 +4,6 @@ use arrow::array::{ArrayRef, StringArray};
 use itertools::Itertools;
 use minigu_catalog::memory::graph_type::MemoryGraphTypeCatalog;
 use minigu_catalog::provider::SchemaProvider;
-use minigu_catalog::txn::manager::CatalogTxnManager;
 use minigu_common::data_chunk;
 use minigu_common::data_chunk::DataChunk;
 use minigu_common::data_type::{DataField, DataSchema, LogicalType};
@@ -24,13 +23,15 @@ pub fn build_procedure() -> Procedure {
             .ok_or_else(|| anyhow::anyhow!("graph name cannot be null"))?;
         let schema = context
             .current_schema
-            .ok_or_else(|| anyhow::anyhow!("current schema not set"))?;
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("current schema not set"))?
+            .clone();
         let graph = MemoryGraph::new();
         let graph_type = MemoryGraphTypeCatalog::new();
         let container = GraphContainer::new(Arc::new(graph_type), GraphStorage::Memory(graph));
         // Record the graph in a explicit transaction in the current schema
         let txn = context
-            .catalog_txn_mgr
+            .catalog_txn_mgr()
             .begin_transaction(IsolationLevel::Snapshot)?;
         // Existence check
         let exists = schema.get_graph(graph_name, txn.as_ref())?.is_some();

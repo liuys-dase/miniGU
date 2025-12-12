@@ -8,10 +8,13 @@ use minigu_catalog::provider::{CatalogProvider, SchemaProvider};
 use minigu_catalog::txn::catalog_txn::CatalogTxn;
 use minigu_catalog::txn::error::CatalogTxnResult;
 use minigu_catalog::txn::manager::CatalogTxnManager;
-use minigu_transaction::{GraphTxnManager, IsolationLevel, Transaction};
+use minigu_transaction::IsolationLevel;
 
 use crate::database::DatabaseContext;
 use crate::error::{Error, SessionResult};
+
+mod txn_state;
+use txn_state::SessionTxnState;
 
 #[derive(Clone, Debug)]
 pub struct SessionContext {
@@ -22,12 +25,8 @@ pub struct SessionContext {
     // In the future, home_graph is a default graph named default.
     pub home_graph: Option<NamedGraphRef>,
     pub current_graph: Option<NamedGraphRef>,
-    current_txn: Option<Arc<CatalogTxn>>,
-    /// Explicit, session-scoped transaction started by user (`BEGIN`). When present,
-    /// statement execution should reuse this and never auto-commit.
-    explicit_txn: Option<Arc<CatalogTxn>>,
-    pub catalog_txn_mgr: CatalogTxnManager,
-    isolation_level: Option<IsolationLevel>,
+    // Transaction state for this session.
+    txn_state: SessionTxnState,
 }
 
 impl SessionContext {
@@ -38,10 +37,7 @@ impl SessionContext {
             current_schema: None,
             home_graph: None,
             current_graph: None,
-            current_txn: None,
-            explicit_txn: None,
-            catalog_txn_mgr: CatalogTxnManager::new(),
-            isolation_level: None,
+            txn_state: SessionTxnState::new(),
         }
     }
 
@@ -49,74 +45,34 @@ impl SessionContext {
         &self.database
     }
 
+    pub fn catalog_txn_mgr(&self) -> &CatalogTxnManager {
+        &self.txn_state.catalog_txn_mgr
+    }
+
     /// Set default isolation level for implicitly created transactions.
     #[inline]
     pub fn set_default_isolation(&mut self, iso: IsolationLevel) {
-        self.isolation_level = Some(iso);
-    }
-
-    /// Begin a new transaction using the default isolation level.
-    fn begin_txn(&self) -> CatalogTxnResult<Arc<CatalogTxn>> {
-        if let Some(iso) = self.isolation_level {
-            let txn_arc = self.catalog_txn_mgr.begin_transaction(iso)?;
-            return Ok(txn_arc);
-        }
-        let txn_arc = self
-            .catalog_txn_mgr
-            .begin_transaction(IsolationLevel::Serializable)?;
-        Ok(txn_arc)
-    }
-
-    /// Clear the current transaction reference (without committing or rolling back).
-    /// This is used in auto-commit mode, where the transaction is committed successfully,
-    /// and the `current_txn` is removed to avoid mistakenly reusing the committed transaction.
-    /// Note: This method only clears the session-level reference, does not affect the lifecycle of
-    /// the transaction itself.
-    #[inline]
-    pub fn clear_current_txn(&mut self) {
-        self.current_txn = None;
+        self.txn_state.set_default_isolation(iso);
     }
 
     /// Returns the active transaction without creating a new one (explicit preferred).
     pub fn current_txn(&self) -> Option<Arc<CatalogTxn>> {
-        if let Some(t) = &self.explicit_txn {
-            return Some(t.clone());
-        }
-        self.current_txn.clone()
+        self.txn_state.current_txn()
     }
 
     /// Begin an explicit, session-scoped transaction. Errors if another transaction is active.
     pub fn begin_explicit_txn(&mut self) -> CatalogTxnResult<()> {
-        if self.explicit_txn.is_some() || self.current_txn.is_some() {
-            return Err(minigu_catalog::txn::error::CatalogTxnError::IllegalState {
-                reason: "transaction already active".into(),
-            });
-        }
-        let txn = self.begin_txn()?;
-        self.explicit_txn = Some(txn);
-        Ok(())
+        self.txn_state.begin_explicit_txn()
     }
 
     /// Commit the explicit transaction; error if none exists.
     pub fn commit_explicit_txn(&mut self) -> CatalogTxnResult<()> {
-        let Some(txn) = self.explicit_txn.take() else {
-            return Err(minigu_catalog::txn::error::CatalogTxnError::IllegalState {
-                reason: "no explicit transaction to commit".into(),
-            });
-        };
-        txn.commit()?;
-        Ok(())
+        self.txn_state.commit_explicit_txn()
     }
 
     /// Roll back the explicit transaction; error if none exists.
     pub fn rollback_explicit_txn(&mut self) -> CatalogTxnResult<()> {
-        let Some(txn) = self.explicit_txn.take() else {
-            return Err(minigu_catalog::txn::error::CatalogTxnError::IllegalState {
-                reason: "no explicit transaction to roll back".into(),
-            });
-        };
-        txn.abort()?;
-        Ok(())
+        self.txn_state.rollback_explicit_txn()
     }
 
     /// Execute within a statement-scoped transaction.
@@ -126,38 +82,7 @@ impl SessionContext {
     where
         F: FnOnce(&CatalogTxn) -> CatalogTxnResult<R>,
     {
-        if let Some(txn) = &self.explicit_txn {
-            return f(txn.as_ref());
-        }
-        let created_here: bool;
-        let txn_arc = if let Some(t) = &self.current_txn {
-            created_here = false;
-            t.clone()
-        } else {
-            let t = self.begin_txn()?;
-            self.current_txn = Some(t.clone());
-            created_here = true;
-            t
-        };
-
-        // Execute the function within the transaction.
-        let result = f(txn_arc.as_ref());
-        match result {
-            Ok(v) => {
-                if created_here {
-                    txn_arc.commit()?;
-                    self.clear_current_txn();
-                }
-                Ok(v)
-            }
-            Err(e) => {
-                if created_here {
-                    let _ = txn_arc.abort();
-                    self.clear_current_txn();
-                }
-                Err(e)
-            }
-        }
+        self.txn_state.with_statement_txn(f)
     }
 
     /// Execute within a statement-scoped transaction, letting the caller control the error type.
@@ -169,43 +94,7 @@ impl SessionContext {
         F: FnOnce(&CatalogTxn) -> Result<R, E>,
         E: From<CatalogError>,
     {
-        if let Some(txn) = &self.explicit_txn {
-            return f(txn.as_ref());
-        }
-        let created_here: bool;
-        let txn_arc = if let Some(t) = &self.current_txn {
-            created_here = false;
-            t.clone()
-        } else {
-            let t = self
-                .begin_txn()
-                .map_err(|e| CatalogError::External(Box::new(e)))
-                .map_err(E::from)?;
-            self.current_txn = Some(t.clone());
-            created_here = true;
-            t
-        };
-
-        let result = f(txn_arc.as_ref());
-        match result {
-            Ok(v) => {
-                if created_here {
-                    txn_arc
-                        .commit()
-                        .map_err(|e| CatalogError::External(Box::new(e)))
-                        .map_err(E::from)?;
-                    self.clear_current_txn();
-                }
-                Ok(v)
-            }
-            Err(e) => {
-                if created_here {
-                    let _ = txn_arc.abort();
-                    self.clear_current_txn();
-                }
-                Err(e)
-            }
-        }
+        self.txn_state.with_statement_result(f)
     }
 
     pub fn set_current_schema(&mut self, schema: SchemaRef) -> SessionResult<()> {
