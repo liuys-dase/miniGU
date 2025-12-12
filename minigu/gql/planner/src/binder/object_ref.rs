@@ -4,7 +4,6 @@ use gql_parser::ast::{
 };
 use minigu_catalog::named_ref::{NamedGraphRef, NamedGraphTypeRef, NamedProcedureRef};
 use minigu_catalog::provider::{CatalogProvider, DirectoryOrSchema, SchemaRef};
-use minigu_catalog::txn::catalog_txn::CatalogTxn;
 use minigu_common::error::not_implemented;
 
 use super::Binder;
@@ -23,7 +22,25 @@ impl Binder<'_> {
     }
 
     pub fn bind_absolute_schema_path(&self, schema_path: &SchemaPath) -> BindResult<SchemaRef> {
-        bind_absolute_schema_path(self.catalog, schema_path, self.txn)
+        let mut current = self.catalog.get_root()?;
+        let mut current_path = vec![];
+        for segment in schema_path {
+            let name = match segment.value() {
+                SchemaPathSegment::Name(name) => name,
+                SchemaPathSegment::Parent => unreachable!(),
+            };
+            let current_dir = current
+                .into_directory()
+                .ok_or_else(|| BindError::NotDirectory(path_to_string::<true>(&current_path)))?;
+            current_path.push(segment.value());
+            let child = current_dir.get_child(name, self.txn)?.ok_or_else(|| {
+                BindError::DirectoryOrSchemaNotFound(path_to_string::<true>(&current_path))
+            })?;
+            current = child;
+        }
+        current
+            .into_schema()
+            .ok_or_else(|| BindError::NotSchema(path_to_string::<true>(&current_path)))
     }
 
     pub fn bind_relative_schema_path(&self, schema_path: &SchemaPath) -> BindResult<SchemaRef> {
@@ -31,7 +48,33 @@ impl Binder<'_> {
             .current_schema
             .clone()
             .ok_or(BindError::CurrentSchemaNotSpecified)?;
-        bind_relative_schema_path(current_schema, schema_path, self.txn)
+        let mut current = DirectoryOrSchema::Schema(current_schema);
+        let mut current_path = vec![];
+        for segment in schema_path {
+            match segment.value() {
+                SchemaPathSegment::Name(name) => {
+                    let current_dir = current.into_directory().ok_or_else(|| {
+                        BindError::NotDirectory(path_to_string::<false>(&current_path))
+                    })?;
+                    current_path.push(segment.value());
+                    let child = current_dir.get_child(name, self.txn)?.ok_or_else(|| {
+                        BindError::DirectoryOrSchemaNotFound(path_to_string::<false>(
+                            &current_path,
+                        ))
+                    })?;
+                    current = child;
+                }
+                SchemaPathSegment::Parent => {
+                    current_path.push(segment.value());
+                    if let Some(parent_dir) = current.parent() {
+                        current = DirectoryOrSchema::Directory(parent_dir);
+                    }
+                }
+            }
+        }
+        current
+            .into_schema()
+            .ok_or_else(|| BindError::NotSchema(path_to_string::<false>(&current_path)))
     }
 
     pub fn bind_predefined_schema_ref(
@@ -159,64 +202,6 @@ impl Binder<'_> {
             }
         }
     }
-}
-
-pub fn bind_absolute_schema_path(
-    catalog: &dyn CatalogProvider,
-    path: &SchemaPath,
-    txn: &CatalogTxn,
-) -> BindResult<SchemaRef> {
-    let mut current = catalog.get_root()?;
-    let mut current_path = vec![];
-    for segment in path {
-        let name = match segment.value() {
-            SchemaPathSegment::Name(name) => name,
-            SchemaPathSegment::Parent => unreachable!(),
-        };
-        let current_dir = current
-            .into_directory()
-            .ok_or_else(|| BindError::NotDirectory(path_to_string::<true>(&current_path)))?;
-        current_path.push(segment.value());
-        let child = current_dir.get_child(name, txn)?.ok_or_else(|| {
-            BindError::DirectoryOrSchemaNotFound(path_to_string::<true>(&current_path))
-        })?;
-        current = child;
-    }
-    current
-        .into_schema()
-        .ok_or_else(|| BindError::NotSchema(path_to_string::<true>(&current_path)))
-}
-
-pub fn bind_relative_schema_path(
-    current_schema: SchemaRef,
-    schema_path: &SchemaPath,
-    txn: &CatalogTxn,
-) -> BindResult<SchemaRef> {
-    let mut current = DirectoryOrSchema::Schema(current_schema);
-    let mut current_path = vec![];
-    for segment in schema_path {
-        match segment.value() {
-            SchemaPathSegment::Name(name) => {
-                let current_dir = current.into_directory().ok_or_else(|| {
-                    BindError::NotDirectory(path_to_string::<false>(&current_path))
-                })?;
-                current_path.push(segment.value());
-                let child = current_dir.get_child(name, txn)?.ok_or_else(|| {
-                    BindError::DirectoryOrSchemaNotFound(path_to_string::<false>(&current_path))
-                })?;
-                current = child;
-            }
-            SchemaPathSegment::Parent => {
-                current_path.push(segment.value());
-                if let Some(parent_dir) = current.parent() {
-                    current = DirectoryOrSchema::Directory(parent_dir);
-                }
-            }
-        }
-    }
-    current
-        .into_schema()
-        .ok_or_else(|| BindError::NotSchema(path_to_string::<false>(&current_path)))
 }
 
 fn path_to_string<const ABS: bool>(path: &[&SchemaPathSegment]) -> String {

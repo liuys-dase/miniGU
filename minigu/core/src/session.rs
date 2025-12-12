@@ -152,15 +152,17 @@ impl Session {
             let mut metrics = QueryMetrics::default();
 
             let start = Instant::now();
-            let mut planner = Planner::new(session_snapshot.clone());
-            let plan = planner.plan_query(txn, procedure)?;
+            let mut planner = Planner::new(session_snapshot.clone()).with_txn(txn);
+            let plan = planner.plan_query(procedure)?;
 
             metrics.planning_time = start.elapsed();
 
             let schema = plan.schema().cloned();
             let start = Instant::now();
             let chunks: Vec<_> = session_snapshot.database().runtime().scope(|_| {
-                let mut executor = ExecutorBuilder::new(session_snapshot.clone()).build(&plan, txn);
+                let mut executor = ExecutorBuilder::new(session_snapshot.clone())
+                    .with_txn(txn)
+                    .build(&plan);
                 executor.into_iter().try_collect()
             })?;
             metrics.execution_time = start.elapsed();

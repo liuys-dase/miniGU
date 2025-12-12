@@ -45,6 +45,10 @@ impl SessionContext {
         &self.database
     }
 
+    pub fn database_arc(&self) -> Arc<DatabaseContext> {
+        self.database.clone()
+    }
+
     pub fn catalog_txn_mgr(&self) -> &CatalogTxnManager {
         &self.txn_state.catalog_txn_mgr
     }

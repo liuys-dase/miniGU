@@ -26,27 +26,39 @@ use crate::source::VertexSource;
 
 const DEFAULT_CHUNK_SIZE: usize = 2048;
 
-pub struct ExecutorBuilder {
+pub struct ExecutorBuilder<'a> {
     session: SessionContext,
+    txn: Option<&'a CatalogTxn>,
 }
 
-impl ExecutorBuilder {
+impl<'a> ExecutorBuilder<'a> {
     pub fn new(session: SessionContext) -> Self {
-        Self { session }
+        Self {
+            session,
+            txn: None,
+        }
     }
 
-    pub fn build(mut self, plan: &PlanNode, txn: &CatalogTxn) -> BoxedExecutor {
-        self.build_executor(plan, txn)
+    pub fn with_txn(mut self, txn: &'a CatalogTxn) -> Self {
+        self.txn = Some(txn);
+        self
     }
 
-    fn build_executor(&mut self, physical_plan: &PlanNode, txn: &CatalogTxn) -> BoxedExecutor {
+    pub fn build(mut self, plan: &PlanNode) -> BoxedExecutor {
+        self.build_executor(plan)
+    }
+
+    fn build_executor(&mut self, physical_plan: &PlanNode) -> BoxedExecutor {
+        let txn = self
+            .txn
+            .expect("transaction must be set before building executor");
         let children = physical_plan.children();
         match physical_plan {
             PlanNode::PhysicalFilter(filter) => {
                 assert_eq!(children.len(), 1);
                 let schema = children[0].schema().expect("child should have a schema");
                 let predicate = self.build_evaluator(&filter.predicate, schema);
-                Box::new(self.build_executor(&children[0], txn).filter(move |c| {
+                Box::new(self.build_executor(&children[0]).filter(move |c| {
                     predicate
                         .evaluate(c)
                         .map(|a| a.into_array().as_boolean().clone())
@@ -74,7 +86,7 @@ impl ExecutorBuilder {
             }
             PlanNode::PhysicalExpand(expand) => {
                 assert_eq!(children.len(), 1);
-                let child = self.build_executor(&children[0], txn);
+                let child = self.build_executor(&children[0]);
                 let container: Arc<GraphContainer> = self
                     .session
                     .current_graph
@@ -106,7 +118,7 @@ impl ExecutorBuilder {
             PlanNode::PhysicalProject(project) => {
                 assert_eq!(children.len(), 1);
                 let child_schema = children[0].schema().expect("child should have a schema");
-                let mut child_executor = self.build_executor(&children[0], txn);
+                let mut child_executor = self.build_executor(&children[0]);
                 let output_schema = physical_plan.schema().expect("there should be a schema");
 
                 let mut updated_schema = child_schema.clone();
@@ -223,13 +235,13 @@ impl ExecutorBuilder {
                     })
                     .collect();
                 Box::new(
-                    self.build_executor(&children[0], txn)
+                    self.build_executor(&children[0])
                         .sort(specs, DEFAULT_CHUNK_SIZE),
                 )
             }
             PlanNode::PhysicalLimit(limit) => {
                 assert_eq!(children.len(), 1);
-                Box::new(self.build_executor(&children[0], txn).limit(limit.limit))
+                Box::new(self.build_executor(&children[0]).limit(limit.limit))
             }
             PlanNode::PhysicalCatalogDdl(ddl) => {
                 assert!(children.is_empty());
@@ -240,7 +252,7 @@ impl ExecutorBuilder {
             }
             PlanNode::PhysicalOffset(offset) => {
                 assert_eq!(children.len(), 1);
-                Box::new(self.build_executor(&children[0], txn).offset(offset.offset))
+                Box::new(self.build_executor(&children[0]).offset(offset.offset))
             }
             PlanNode::PhysicalVectorIndexScan(vector_scan) => {
                 assert!(children.is_empty());

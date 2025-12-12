@@ -24,3 +24,9 @@ pub enum PlanError {
 }
 
 pub type PlanResult<T> = std::result::Result<T, PlanError>;
+
+impl From<minigu_catalog::error::CatalogError> for PlanError {
+    fn from(err: minigu_catalog::error::CatalogError) -> Self {
+        PlanError::InvalidOperation(err.to_string())
+    }
+}
