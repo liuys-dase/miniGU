@@ -1,4 +1,3 @@
-use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use minigu_common::types::{LabelId, PropertyId};
@@ -14,6 +13,7 @@ use crate::provider::{
 use crate::txn::catalog_txn::{CatalogTxn, TxnHook};
 use crate::txn::versioned_map::{VersionedMap, WriteOp};
 
+#[derive(Debug)]
 pub struct MemoryGraphTypeCatalog {
     // Because transactional reads/writes are introduced, label-id allocation must be thread-safe.
     // Use a Mutex to protect the counter; allow "gaps" after rollbacks.
@@ -21,16 +21,6 @@ pub struct MemoryGraphTypeCatalog {
     label_map: Arc<VersionedMap<String, LabelId>>,
     vertex_type_map: Arc<VersionedMap<LabelSet, VertexTypeRef>>,
     edge_type_map: Arc<VersionedMap<LabelSet, EdgeTypeRef>>,
-}
-
-impl fmt::Debug for MemoryGraphTypeCatalog {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("MemoryGraphTypeCatalog")
-            .field("label_map", &self.label_map)
-            .field("vertex_type_map", &self.vertex_type_map)
-            .field("edge_type_map", &self.edge_type_map)
-            .finish()
-    }
 }
 
 impl Default for MemoryGraphTypeCatalog {

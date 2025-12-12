@@ -1,4 +1,3 @@
-use std::fmt;
 use std::sync::{Arc, Weak};
 
 use minigu_transaction::Transaction;
@@ -8,15 +7,10 @@ use crate::provider::{DirectoryOrSchema, DirectoryProvider, DirectoryRef};
 use crate::txn::catalog_txn::CatalogTxn;
 use crate::txn::versioned_map::{VersionedMap, WriteOp};
 
+#[derive(Debug)]
 pub struct MemoryDirectoryCatalog {
     parent: Option<Weak<dyn DirectoryProvider>>,
     children: Arc<VersionedMap<String, DirectoryOrSchema>>,
-}
-
-impl fmt::Debug for MemoryDirectoryCatalog {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("MemoryDirectoryCatalog").finish()
-    }
 }
 
 impl MemoryDirectoryCatalog {
