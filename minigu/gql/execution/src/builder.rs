@@ -33,10 +33,7 @@ pub struct ExecutorBuilder<'a> {
 
 impl<'a> ExecutorBuilder<'a> {
     pub fn new(session: SessionContext) -> Self {
-        Self {
-            session,
-            txn: None,
-        }
+        Self { session, txn: None }
     }
 
     pub fn with_txn(mut self, txn: &'a CatalogTxn) -> Self {

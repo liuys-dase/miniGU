@@ -62,6 +62,7 @@ impl<'a> Planner<'a> {
             return bind_and_optimize(active_txn.as_ref());
         }
 
-        self.context.with_statement_result(|txn| bind_and_optimize(txn))
+        self.context
+            .with_statement_result(|txn| bind_and_optimize(txn))
     }
 }

@@ -58,9 +58,7 @@ impl Binder<'_> {
                     })?;
                     current_path.push(segment.value());
                     let child = current_dir.get_child(name, self.txn)?.ok_or_else(|| {
-                        BindError::DirectoryOrSchemaNotFound(path_to_string::<false>(
-                            &current_path,
-                        ))
+                        BindError::DirectoryOrSchemaNotFound(path_to_string::<false>(&current_path))
                     })?;
                     current = child;
                 }
