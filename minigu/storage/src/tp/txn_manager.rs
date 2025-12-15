@@ -3,8 +3,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use crossbeam_skiplist::SkipMap;
+use minigu_common::timestamp::{
+    Timestamp, global_timestamp_generator, global_transaction_id_generator,
+};
 use minigu_common::types::{EdgeId, VertexId};
-use minigu_transaction::{Timestamp, global_timestamp_generator, global_transaction_id_generator};
 
 use super::memory_graph::MemoryGraph;
 use super::transaction::{IsolationLevel, MemTransaction, UndoEntry};

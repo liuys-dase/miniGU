@@ -147,13 +147,13 @@ mod tests {
         MemoryEdgeTypeCatalog, MemoryGraphTypeCatalog, MemoryVertexTypeCatalog,
     };
     use minigu_catalog::property::Property;
+    use minigu_common::IsolationLevel;
     use minigu_common::data_type::LogicalType;
     use minigu_common::types::LabelId;
     use minigu_common::value::ScalarValue;
     use minigu_context::graph::{GraphContainer, GraphStorage};
     use minigu_storage::common::{Edge, PropertyRecord, Vertex};
     use minigu_storage::tp::MemoryGraph;
-    use minigu_transaction::IsolationLevel;
 
     use super::*;
 

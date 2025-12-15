@@ -4,10 +4,10 @@ use arrow::array::{
     ArrayRef, BooleanArray, Float32Array, Float64Array, Int8Array, Int16Array, Int32Array,
     Int64Array, StringArray, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
 };
+use minigu_common::IsolationLevel;
 use minigu_common::types::{PropertyId, VertexIdArray};
 use minigu_common::value::ScalarValue;
 use minigu_context::graph::{GraphContainer, GraphStorage};
-use minigu_transaction::IsolationLevel;
 
 use crate::error::{ExecutionError, ExecutionResult};
 use crate::source::VertexPropertySource;
@@ -178,6 +178,7 @@ mod tests {
 
     use arrow::array::{BooleanArray, Float32Array, Float64Array, Int32Array, Int64Array};
     use minigu_catalog::memory::graph_type::MemoryGraphTypeCatalog;
+    use minigu_common::IsolationLevel;
     use minigu_common::types::{LabelId, PropertyId, VertexId, VertexIdArray};
     use minigu_common::value::ScalarValue;
     use minigu_context::graph::{GraphContainer, GraphStorage};
@@ -185,7 +186,6 @@ mod tests {
     use minigu_storage::common::{PropertyRecord, Vertex};
     use minigu_storage::tp::MemoryGraph;
     use minigu_storage::tp::checkpoint::CheckpointManagerConfig;
-    use minigu_transaction::IsolationLevel;
 
     use crate::source::VertexPropertySource;
 

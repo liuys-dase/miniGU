@@ -5,7 +5,7 @@ use crossbeam_skiplist::SkipSet;
 use dashmap::DashMap;
 use minigu_common::types::{EdgeId, VectorIndexKey, VertexId};
 use minigu_common::value::{ScalarValue, VectorValue};
-use minigu_transaction::{IsolationLevel, Timestamp};
+use minigu_common::{IsolationLevel, Timestamp};
 
 use super::checkpoint::{CheckpointManager, CheckpointManagerConfig};
 use super::transaction::{MemTransaction, UndoEntry, UndoPtr};
@@ -1225,9 +1225,9 @@ fn check_write_conflict(commit_ts: Timestamp, txn: &Arc<MemTransaction>) -> Stor
 pub mod tests {
     use std::fs;
 
+    use minigu_common::IsolationLevel;
     use minigu_common::types::{LabelId, PropertyId};
     use minigu_common::value::{F32, ScalarValue, VectorValue};
-    use minigu_transaction::IsolationLevel;
     use {Edge, Vertex};
 
     use super::*;

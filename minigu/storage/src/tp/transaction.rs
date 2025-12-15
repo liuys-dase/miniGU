@@ -2,9 +2,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, RwLock, Weak};
 
 use dashmap::DashSet;
+use minigu_common::timestamp::global_timestamp_generator;
 use minigu_common::types::{EdgeId, VertexId};
-use minigu_transaction::global_timestamp_generator;
-pub use minigu_transaction::{IsolationLevel, Timestamp};
+pub use minigu_common::{IsolationLevel, Timestamp};
 
 use super::memory_graph::MemoryGraph;
 use crate::common::wal::StorageWal;
@@ -492,7 +492,7 @@ impl Drop for MemTransaction {
 
 #[cfg(test)]
 mod tests {
-    use minigu_transaction::IsolationLevel;
+    use minigu_common::IsolationLevel;
 
     use super::*;
     use crate::tp::memory_graph;
