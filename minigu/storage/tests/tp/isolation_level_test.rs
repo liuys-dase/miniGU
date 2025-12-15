@@ -4,7 +4,7 @@ use minigu_common::value::ScalarValue;
 use minigu_storage::model::edge::Edge;
 use minigu_storage::model::properties::PropertyRecord;
 use minigu_storage::model::vertex::Vertex;
-use minigu_transaction::{GraphTxnManager, IsolationLevel, Transaction};
+use minigu_transaction::IsolationLevel;
 
 use crate::common::*;
 

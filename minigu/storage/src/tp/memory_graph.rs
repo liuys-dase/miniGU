@@ -5,7 +5,7 @@ use crossbeam_skiplist::SkipSet;
 use dashmap::DashMap;
 use minigu_common::types::{EdgeId, VectorIndexKey, VertexId};
 use minigu_common::value::{ScalarValue, VectorValue};
-use minigu_transaction::{IsolationLevel, Timestamp, Transaction};
+use minigu_transaction::{IsolationLevel, Timestamp};
 
 use super::checkpoint::{CheckpointManager, CheckpointManagerConfig};
 use super::transaction::{MemTransaction, UndoEntry, UndoPtr};
@@ -1227,7 +1227,7 @@ pub mod tests {
 
     use minigu_common::types::{LabelId, PropertyId};
     use minigu_common::value::{F32, ScalarValue, VectorValue};
-    use minigu_transaction::{GraphTxnManager, IsolationLevel, Transaction};
+    use minigu_transaction::IsolationLevel;
     use {Edge, Vertex};
 
     use super::*;

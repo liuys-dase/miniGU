@@ -55,7 +55,7 @@ use minigu_context::procedure::Procedure;
 use minigu_context::session::SessionContext;
 use minigu_storage::common::{Edge, PropertyRecord, Vertex};
 use minigu_storage::tp::MemoryGraph;
-use minigu_transaction::{GraphTxnManager, IsolationLevel, Transaction};
+use minigu_transaction::IsolationLevel;
 
 use super::common::{EdgeSpec, FileSpec, Manifest, RecordType, Result, VertexSpec};
 

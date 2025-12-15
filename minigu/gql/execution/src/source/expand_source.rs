@@ -6,7 +6,6 @@ use minigu_context::graph::{GraphContainer, GraphStorage};
 use minigu_storage::common::model::edge::Neighbor;
 use minigu_storage::iterators::AdjacencyIteratorTrait;
 use minigu_storage::tp::transaction::IsolationLevel;
-use minigu_transaction::GraphTxnManager;
 
 use super::ExpandSource;
 use crate::error::ExecutionResult;
@@ -154,7 +153,7 @@ mod tests {
     use minigu_context::graph::{GraphContainer, GraphStorage};
     use minigu_storage::common::{Edge, PropertyRecord, Vertex};
     use minigu_storage::tp::MemoryGraph;
-    use minigu_transaction::{GraphTxnManager, IsolationLevel, Transaction};
+    use minigu_transaction::IsolationLevel;
 
     use super::*;
 

@@ -1593,8 +1593,7 @@ dependencies = [
 name = "minigu-transaction"
 version = "0.1.0"
 dependencies = [
- "serde",
- "thiserror",
+ "minigu-common",
 ]
 
 [[package]]

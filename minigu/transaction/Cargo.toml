@@ -6,8 +6,7 @@ repository = { workspace = true }
 version = { workspace = true }
 
 [dependencies]
-serde = { workspace = true }
-thiserror = { workspace = true }
+minigu-common = { workspace = true }
 
 [lints]
 workspace = true

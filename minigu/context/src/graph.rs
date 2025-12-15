@@ -8,7 +8,6 @@ use minigu_common::types::{LabelId, VertexIdArray};
 use minigu_storage::error::StorageResult;
 use minigu_storage::tp::MemoryGraph;
 use minigu_storage::tp::transaction::IsolationLevel;
-use minigu_transaction::manager::GraphTxnManager;
 
 pub enum GraphStorage {
     Memory(Arc<MemoryGraph>),

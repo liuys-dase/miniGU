@@ -8,7 +8,7 @@ use minigu_context::graph::{GraphContainer, GraphStorage};
 use minigu_context::session::SessionContext;
 use minigu_planner::plan::vector_index_scan::VectorIndexScan;
 use minigu_storage::tp::MemoryGraph;
-use minigu_transaction::{GraphTxnManager, IsolationLevel, Transaction};
+use minigu_transaction::IsolationLevel;
 
 use super::{BoxedExecutor, Executor};
 use crate::error::{ExecutionError, ExecutionResult};

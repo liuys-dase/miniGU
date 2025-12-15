@@ -1,5 +1,5 @@
 use minigu_storage::error::StorageResult;
-use minigu_transaction::{GraphTxnManager, IsolationLevel, Transaction};
+use minigu_transaction::IsolationLevel;
 
 use crate::common::*;
 

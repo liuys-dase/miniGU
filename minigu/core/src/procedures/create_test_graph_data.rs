@@ -14,7 +14,6 @@ use minigu_context::procedure::Procedure;
 use minigu_storage::common::{Edge, PropertyRecord, Vertex};
 use minigu_storage::tp::MemoryGraph;
 use minigu_transaction::IsolationLevel::Serializable;
-use minigu_transaction::{GraphTxnManager, Transaction};
 
 /// Creates a test graph with multiple vertex types (PERSON, COMPANY, CITY) and edge types (FRIEND,
 /// WORKS_AT, LOCATED_IN) with sample data.

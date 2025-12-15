@@ -52,7 +52,7 @@ use minigu_context::graph::{GraphContainer, GraphStorage};
 use minigu_context::procedure::Procedure;
 use minigu_storage::common::{Edge, Vertex};
 use minigu_storage::tp::MemoryGraph;
-use minigu_transaction::{GraphTxnManager, IsolationLevel, Transaction};
+use minigu_transaction::IsolationLevel;
 
 use super::common::{EdgeSpec, FileSpec, Manifest, RecordType, Result, VertexSpec};
 
@@ -398,7 +398,7 @@ mod tests {
     use minigu_storage::tp::MemoryGraph;
     use minigu_storage::tp::checkpoint::CheckpointManagerConfig;
     use minigu_storage::wal::graph_wal::WalManagerConfig;
-    use minigu_transaction::{GraphTxnManager, IsolationLevel, Transaction};
+    use minigu_transaction::IsolationLevel;
     use walkdir::WalkDir;
 
     use super::*;

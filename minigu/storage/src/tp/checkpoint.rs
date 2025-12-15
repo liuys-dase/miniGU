@@ -846,7 +846,7 @@ mod tests {
     use std::{env, fs};
 
     use minigu_common::value::ScalarValue;
-    use minigu_transaction::{GraphTxnManager, IsolationLevel};
+    use minigu_transaction::IsolationLevel;
 
     use super::*;
     use crate::error::CheckpointError;

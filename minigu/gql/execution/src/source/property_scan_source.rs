@@ -7,7 +7,7 @@ use arrow::array::{
 use minigu_common::types::{PropertyId, VertexIdArray};
 use minigu_common::value::ScalarValue;
 use minigu_context::graph::{GraphContainer, GraphStorage};
-use minigu_transaction::{GraphTxnManager, IsolationLevel};
+use minigu_transaction::IsolationLevel;
 
 use crate::error::{ExecutionError, ExecutionResult};
 use crate::source::VertexPropertySource;
@@ -185,9 +185,8 @@ mod tests {
     use minigu_storage::common::{PropertyRecord, Vertex};
     use minigu_storage::tp::MemoryGraph;
     use minigu_storage::tp::checkpoint::CheckpointManagerConfig;
-    use minigu_transaction::{IsolationLevel, Transaction};
+    use minigu_transaction::IsolationLevel;
 
-    use super::*;
     use crate::source::VertexPropertySource;
 
     const PERSON_LABEL_ID: LabelId = LabelId::new(1).unwrap();
