@@ -2,8 +2,12 @@ use std::fmt;
 use std::sync::Arc;
 
 use minigu_catalog::provider::CatalogProvider;
+use minigu_common::types::{EdgeId, VectorIndexKey, VertexId};
+use minigu_common::value::ScalarValue;
 use minigu_common::{IsolationLevel, Timestamp, TimestampError, global_timestamp_generator};
 use minigu_storage::error::StorageError;
+use minigu_storage::model::edge::{Edge, Neighbor};
+use minigu_storage::model::vertex::Vertex;
 use minigu_storage::tp::{GraphTxnView, MemTransaction};
 use thiserror::Error;
 
@@ -88,6 +92,102 @@ impl Transaction {
 
     pub fn core(&self) -> &TransactionCore {
         &self.core
+    }
+
+    pub fn get_vertex(&self, vid: minigu_common::types::VertexId) -> TxnResult<Vertex> {
+        let graph = self.graph.mem().graph();
+        graph.get_vertex(self, vid).map_err(TxnError::from)
+    }
+
+    pub fn get_edge(&self, eid: EdgeId) -> TxnResult<Edge> {
+        let graph = self.graph.mem().graph();
+        graph.get_edge(self, eid).map_err(TxnError::from)
+    }
+
+    pub fn iter_vertices(
+        &self,
+    ) -> TxnResult<Box<dyn Iterator<Item = minigu_storage::error::StorageResult<Vertex>> + '_>>
+    {
+        let graph = self.graph.mem().graph();
+        graph.iter_vertices(self).map_err(TxnError::from)
+    }
+
+    pub fn iter_edges(
+        &self,
+    ) -> TxnResult<Box<dyn Iterator<Item = minigu_storage::error::StorageResult<Edge>> + '_>> {
+        let graph = self.graph.mem().graph();
+        graph.iter_edges(self).map_err(TxnError::from)
+    }
+
+    pub fn iter_adjacency(
+        &self,
+        vid: VertexId,
+    ) -> TxnResult<Box<dyn Iterator<Item = minigu_storage::error::StorageResult<Neighbor>> + '_>>
+    {
+        let graph = self.graph.mem().graph();
+        graph.iter_adjacency(self, vid).map_err(TxnError::from)
+    }
+
+    pub fn create_vertex(&self, vertex: Vertex) -> TxnResult<VertexId> {
+        let graph = self.graph.mem().graph();
+        graph.create_vertex(self, vertex).map_err(TxnError::from)
+    }
+
+    pub fn create_edge(&self, edge: Edge) -> TxnResult<EdgeId> {
+        let graph = self.graph.mem().graph();
+        graph.create_edge(self, edge).map_err(TxnError::from)
+    }
+
+    pub fn delete_vertex(&self, vid: VertexId) -> TxnResult<()> {
+        let graph = self.graph.mem().graph();
+        graph.delete_vertex(self, vid).map_err(TxnError::from)
+    }
+
+    pub fn delete_edge(&self, eid: EdgeId) -> TxnResult<()> {
+        let graph = self.graph.mem().graph();
+        graph.delete_edge(self, eid).map_err(TxnError::from)
+    }
+
+    pub fn set_vertex_property(
+        &self,
+        vid: VertexId,
+        indices: Vec<usize>,
+        props: Vec<ScalarValue>,
+    ) -> TxnResult<()> {
+        let graph = self.graph.mem().graph();
+        graph
+            .set_vertex_property(self, vid, indices, props)
+            .map_err(TxnError::from)
+    }
+
+    pub fn set_edge_property(
+        &self,
+        eid: EdgeId,
+        indices: Vec<usize>,
+        props: Vec<ScalarValue>,
+    ) -> TxnResult<()> {
+        let graph = self.graph.mem().graph();
+        graph
+            .set_edge_property(self, eid, indices, props)
+            .map_err(TxnError::from)
+    }
+
+    pub fn build_vector_index(&self, index_key: VectorIndexKey) -> TxnResult<()> {
+        let graph = self.graph.mem().graph();
+        graph
+            .build_vector_index(self, index_key)
+            .map_err(TxnError::from)
+    }
+
+    pub fn insert_into_vector_index(
+        &self,
+        index_key: VectorIndexKey,
+        node_ids: &[u64],
+    ) -> TxnResult<()> {
+        let graph = self.graph.mem().graph();
+        graph
+            .insert_into_vector_index(self, index_key, node_ids)
+            .map_err(TxnError::from)
     }
 }
 
