@@ -6,8 +6,8 @@ repository = { workspace = true }
 version = { workspace = true }
 
 [dependencies]
-minigu-common = { workspace = true }
 minigu-catalog = { workspace = true }
+minigu-common = { workspace = true }
 minigu-storage = { workspace = true }
 thiserror = { workspace = true }
 

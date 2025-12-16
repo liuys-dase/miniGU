@@ -4,7 +4,7 @@ use std::sync::Arc;
 use minigu_catalog::provider::CatalogProvider;
 use minigu_common::{IsolationLevel, Timestamp, TimestampError, global_timestamp_generator};
 use minigu_storage::error::StorageError;
-use minigu_storage::tp::MemTransaction;
+use minigu_storage::tp::{GraphTxnView, MemTransaction};
 use thiserror::Error;
 
 /// Result alias for transaction operations.
@@ -159,6 +159,18 @@ impl GraphTxnState {
 
     pub fn mem(&self) -> &Arc<MemTransaction> {
         &self.mem
+    }
+}
+
+impl GraphTxnView for GraphTxnState {
+    fn mem_txn(&self) -> &Arc<MemTransaction> {
+        &self.mem
+    }
+}
+
+impl GraphTxnView for Transaction {
+    fn mem_txn(&self) -> &Arc<MemTransaction> {
+        self.graph.mem()
     }
 }
 

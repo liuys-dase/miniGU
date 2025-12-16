@@ -53,6 +53,18 @@ pub type UndoEntry = GenericUndoEntry<DeltaOp>;
 /// Type alias for storage-specific undo pointer
 pub type UndoPtr = GenericUndoPtr<DeltaOp>;
 
+/// Lightweight view trait so callers can pass either raw `Arc<MemTransaction>` or higher-level
+/// transaction wrappers.
+pub trait GraphTxnView {
+    fn mem_txn(&self) -> &Arc<MemTransaction>;
+}
+
+impl GraphTxnView for Arc<MemTransaction> {
+    fn mem_txn(&self) -> &Arc<MemTransaction> {
+        self
+    }
+}
+
 pub struct MemTransaction {
     graph: Arc<MemoryGraph>, // Reference to the associated in-memory graph
 
