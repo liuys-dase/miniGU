@@ -1589,7 +1589,10 @@ dependencies = [
 name = "minigu-transaction"
 version = "0.1.0"
 dependencies = [
+ "minigu-catalog",
  "minigu-common",
+ "minigu-storage",
+ "thiserror",
 ]
 
 [[package]]

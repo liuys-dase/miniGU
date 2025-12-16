@@ -2,6 +2,8 @@ use std::sync::{Arc, Mutex};
 
 use minigu_common::Timestamp;
 
+use crate::txn::error::{CatalogTxnError, CatalogTxnResult};
+
 #[derive(Debug)]
 pub struct CatalogVersionNode<V> {
     value: Mutex<Option<Arc<V>>>,
@@ -27,9 +29,12 @@ impl<V> CatalogVersionNode<V> {
         txn_id: Timestamp,
         value: Option<Arc<V>>,
         tombstone: bool,
-    ) -> Result<(), ()> {
+    ) -> CatalogTxnResult<()> {
         if self.creator_txn != txn_id || self.commit_ts().is_some() {
-            return Err(());
+            return Err(CatalogTxnError::IllegalState {
+                reason: "overwrite_uncommitted on node not owned by txn or already committed"
+                    .to_string(),
+            });
         }
         *self.value.lock().unwrap() = value;
         *self.tombstone.lock().unwrap() = tombstone;

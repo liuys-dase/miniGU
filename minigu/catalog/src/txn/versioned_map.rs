@@ -165,10 +165,7 @@ where
                 });
             }
             if head.commit_ts().is_none() && head.creator_txn() == txn_id {
-                head.overwrite_uncommitted(txn_id, Some(value), false)
-                    .map_err(|_| CatalogTxnError::IllegalState {
-                        reason: "overwrite failed".into(),
-                    })?;
+                head.overwrite_uncommitted(txn_id, Some(value), false)?;
                 return Ok(head);
             }
         }
@@ -193,10 +190,7 @@ where
                 });
             }
             if head.commit_ts().is_none() && head.creator_txn() == txn_id {
-                head.overwrite_uncommitted(txn_id, None, true)
-                    .map_err(|_| CatalogTxnError::IllegalState {
-                        reason: "overwrite failed".into(),
-                    })?;
+                head.overwrite_uncommitted(txn_id, None, true)?;
                 return Ok(head);
             }
         }
@@ -305,12 +299,12 @@ where
     V: Send + Sync + 'static + std::fmt::Debug,
 {
     fn precommit(&self, txn: &CatalogTxn) -> CatalogTxnResult<()> {
-        if let Some(map) = self.map.upgrade() {
-            if map.was_modified_after(&self.key, self.start_ts, txn.txn_id())? {
-                return Err(CatalogTxnError::WriteConflict {
-                    key: format!("{:?}", &self.key),
-                });
-            }
+        if let Some(map) = self.map.upgrade()
+            && map.was_modified_after(&self.key, self.start_ts, txn.txn_id())?
+        {
+            return Err(CatalogTxnError::WriteConflict {
+                key: format!("{:?}", &self.key),
+            });
         }
         Ok(())
     }

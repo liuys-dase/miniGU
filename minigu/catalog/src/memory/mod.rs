@@ -4,6 +4,15 @@ pub mod schema;
 
 use crate::error::CatalogResult;
 use crate::provider::{CatalogProvider, DirectoryOrSchema};
+use crate::txn::CatalogTxnManager;
+
+/// Global catalog transaction manager used for auto-commit compatibility paths.
+pub(crate) fn txn_manager() -> &'static CatalogTxnManager {
+    use std::sync::OnceLock;
+
+    static MANAGER: OnceLock<CatalogTxnManager> = OnceLock::new();
+    MANAGER.get_or_init(CatalogTxnManager::new)
+}
 
 #[derive(Debug)]
 pub struct MemoryCatalog {
