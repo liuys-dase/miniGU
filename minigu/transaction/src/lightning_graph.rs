@@ -2,6 +2,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use minigu_catalog::provider::CatalogProvider;
+use minigu_catalog::txn::CatalogTxnManager;
 use minigu_common::{IsolationLevel, global_timestamp_generator, global_transaction_id_generator};
 use minigu_storage::tp::MemoryGraph;
 
@@ -12,12 +13,14 @@ use crate::transaction::{CatalogTxnState, GraphTxnState, Transaction, Transactio
 pub struct LightningGraph {
     memory_graph: Arc<MemoryGraph>,
     catalog: Option<Arc<dyn CatalogProvider>>,
+    catalog_txn_mgr: Option<Arc<CatalogTxnManager>>,
 }
 
 impl LightningGraph {
     pub fn new(memory_graph: Arc<MemoryGraph>, catalog: Option<Arc<dyn CatalogProvider>>) -> Self {
         Self {
             memory_graph,
+            catalog_txn_mgr: catalog.as_ref().map(|_| Arc::new(CatalogTxnManager::new())),
             catalog,
         }
     }
@@ -45,10 +48,15 @@ impl LightningGraph {
         )?;
         let graph_state = GraphTxnState::new(mem_txn);
 
-        let catalog_state = self
-            .catalog
-            .as_ref()
-            .map(|catalog| CatalogTxnState::new_placeholder(Arc::clone(catalog)));
+        let catalog_state = if let (Some(catalog), Some(mgr)) =
+            (self.catalog.as_ref(), self.catalog_txn_mgr.as_ref())
+        {
+            let catalog_txn =
+                mgr.begin_transaction_at(Some(txn_id), Some(start_ts), isolation_level)?;
+            Some(CatalogTxnState::new(Arc::clone(catalog), catalog_txn))
+        } else {
+            None
+        };
 
         let core = TransactionCore::new(txn_id, start_ts, isolation_level);
 

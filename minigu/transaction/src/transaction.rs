@@ -2,6 +2,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use minigu_catalog::provider::CatalogProvider;
+use minigu_catalog::txn::{CatalogTxn, CatalogTxnError, CatalogTxnView};
 use minigu_common::types::{EdgeId, VectorIndexKey, VertexId};
 use minigu_common::value::ScalarValue;
 use minigu_common::{IsolationLevel, Timestamp, TimestampError, global_timestamp_generator};
@@ -46,7 +47,7 @@ impl Transaction {
         let commit_ts = global_timestamp_generator().next()?;
 
         if let Some(catalog) = self.catalog.as_ref() {
-            catalog.commit(commit_ts)?;
+            catalog.commit_at(commit_ts)?;
         }
 
         match self.graph.commit_at(commit_ts) {
@@ -274,6 +275,15 @@ impl GraphTxnView for Transaction {
     }
 }
 
+impl CatalogTxnView for Transaction {
+    fn catalog_txn(&self) -> &CatalogTxn {
+        self.catalog
+            .as_ref()
+            .expect("catalog transaction missing")
+            .txn()
+    }
+}
+
 impl fmt::Debug for GraphTxnState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("GraphTxnState")
@@ -282,29 +292,31 @@ impl fmt::Debug for GraphTxnState {
     }
 }
 
-/// Catalog-side transaction placeholder. Actual catalog transaction logic will be added later.
 #[derive(Debug, Clone)]
 pub struct CatalogTxnState {
     catalog: Arc<dyn CatalogProvider>,
+    txn: Arc<CatalogTxn>,
 }
 
 impl CatalogTxnState {
-    pub fn new_placeholder(catalog: Arc<dyn CatalogProvider>) -> Self {
-        Self { catalog }
+    pub fn new(catalog: Arc<dyn CatalogProvider>, txn: Arc<CatalogTxn>) -> Self {
+        Self { catalog, txn }
     }
 
     pub fn catalog(&self) -> &Arc<dyn CatalogProvider> {
         &self.catalog
     }
 
-    pub fn commit(&self, _commit_ts: Timestamp) -> TxnResult<()> {
-        // TODO: thread commit semantics once catalog transactions are implemented.
-        Ok(())
+    pub fn txn(&self) -> &Arc<CatalogTxn> {
+        &self.txn
+    }
+
+    pub fn commit_at(&self, commit_ts: Timestamp) -> TxnResult<Timestamp> {
+        self.txn.commit_at(commit_ts).map_err(TxnError::from)
     }
 
     pub fn abort(&self) -> TxnResult<()> {
-        // TODO: thread abort semantics once catalog transactions are implemented.
-        Ok(())
+        self.txn.abort().map_err(TxnError::from)
     }
 }
 
@@ -317,6 +329,6 @@ pub enum TxnError {
     Timestamp(#[from] TimestampError),
     #[error("invalid transaction state: {0}")]
     InvalidState(&'static str),
-    #[error("catalog transaction is not implemented")]
-    CatalogNotImplemented,
+    #[error("catalog error: {0}")]
+    Catalog(#[from] CatalogTxnError),
 }
