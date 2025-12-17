@@ -5,11 +5,11 @@ use std::sync::Arc;
 use minigu_catalog::memory::graph_type::MemoryGraphTypeCatalog;
 use minigu_catalog::provider::{GraphProvider, GraphTypeRef};
 use minigu_catalog::txn::CatalogTxnManager;
+use minigu_common::IsolationLevel;
 use minigu_common::types::{LabelId, VertexIdArray};
-use minigu_common::{IsolationLevel, global_timestamp_generator, global_transaction_id_generator};
 use minigu_storage::error::StorageResult;
 use minigu_storage::tp::MemoryGraph;
-use minigu_transaction::{CatalogTxnState, GraphTxnState, Transaction, TransactionCore, TxnError};
+use minigu_transaction::{Transaction, TransactionManager, TxnError};
 
 pub enum GraphStorage {
     Memory(Arc<MemoryGraph>),
@@ -18,15 +18,21 @@ pub enum GraphStorage {
 pub struct GraphContainer {
     graph_type: Arc<MemoryGraphTypeCatalog>,
     graph_storage: GraphStorage,
-    catalog_txn_mgr: Arc<CatalogTxnManager>,
+    txn_mgr: TransactionManager,
 }
 
 impl GraphContainer {
     pub fn new(graph_type: Arc<MemoryGraphTypeCatalog>, graph_storage: GraphStorage) -> Self {
+        let catalog_txn_mgr = CatalogTxnManager::new();
+        let graph = match &graph_storage {
+            GraphStorage::Memory(mem) => Arc::clone(mem),
+        };
+        let txn_mgr =
+            TransactionManager::new(graph, Arc::clone(&graph_type), Arc::clone(&catalog_txn_mgr));
         Self {
             graph_type,
             graph_storage,
-            catalog_txn_mgr: CatalogTxnManager::new(),
+            txn_mgr,
         }
     }
 
@@ -34,31 +40,7 @@ impl GraphContainer {
         &self,
         isolation_level: IsolationLevel,
     ) -> Result<Transaction, TxnError> {
-        let txn_id = global_transaction_id_generator().next()?;
-        let start_ts = global_timestamp_generator().next()?;
-
-        let GraphStorage::Memory(mem) = &self.graph_storage;
-
-        let mem_txn = mem.txn_manager().begin_transaction_at(
-            Some(txn_id),
-            Some(start_ts),
-            isolation_level,
-            false,
-        )?;
-        let graph_state = GraphTxnState::new(mem_txn);
-
-        let catalog_txn = self.catalog_txn_mgr.begin_transaction_at(
-            Some(txn_id),
-            Some(start_ts),
-            isolation_level,
-        )?;
-        let catalog_state = Some(CatalogTxnState::new(
-            Arc::clone(&self.graph_type),
-            catalog_txn,
-        ));
-
-        let core = TransactionCore::new(txn_id, start_ts, isolation_level);
-        Ok(Transaction::new(core, graph_state, catalog_state))
+        self.txn_mgr.begin_transaction(isolation_level)
     }
 
     #[inline]
