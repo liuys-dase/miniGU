@@ -1236,7 +1236,7 @@ fn check_write_conflict(commit_ts: Timestamp, txn: &Arc<MemTransaction>) -> Stor
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 pub mod tests {
     use std::fs;
 
@@ -1291,19 +1291,18 @@ pub mod tests {
     }
 
     pub fn mock_wal_config() -> WalManagerConfig {
-        let temp_file = temp_file::TempFileBuilder::new()
-            .prefix("test_wal_")
-            .suffix(".log")
-            .build()
-            .unwrap();
-        let path = temp_file.path().to_owned();
-        // TODO: Pass the temp file to the caller so that it can be cleaned up.
-        temp_file.leak();
+        // Avoid `temp-file` so this helper can be compiled under the `test-utils` feature.
+        let temp_dir = temp_dir::TempDir::with_prefix("test_wal_").unwrap();
+        let path = temp_dir.path().join("wal.log");
+        // NOTE: the returned path must outlive this function; the directory is cleaned by
+        // `Cleaner`.
+        temp_dir.leak();
         WalManagerConfig { wal_path: path }
     }
 
     pub struct Cleaner {
         wal_path: std::path::PathBuf,
+        wal_dir: Option<std::path::PathBuf>,
         checkpoint_dir: std::path::PathBuf,
     }
 
@@ -1314,6 +1313,7 @@ pub mod tests {
         ) -> Self {
             Self {
                 wal_path: wal_config.wal_path.clone(),
+                wal_dir: wal_config.wal_path.parent().map(|p| p.to_path_buf()),
                 checkpoint_dir: checkpoint_config.checkpoint_dir.clone(),
             }
         }
@@ -1323,6 +1323,9 @@ pub mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_file(&self.wal_path);
             let _ = fs::remove_dir_all(&self.checkpoint_dir);
+            if let Some(dir) = &self.wal_dir {
+                let _ = fs::remove_dir_all(dir);
+            }
         }
     }
 

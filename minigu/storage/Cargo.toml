@@ -29,5 +29,8 @@ thiserror = { workspace = true }
 uuid = { workspace = true, features = ["v4", "serde"] }
 vector = { workspace = true }
 
+[features]
+test-utils = []
+
 [lints]
 workspace = true

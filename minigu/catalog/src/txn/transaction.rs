@@ -213,12 +213,14 @@ impl CatalogTxn {
     }
 
     pub fn commit_at(&self, commit_ts: Timestamp) -> Result<Timestamp, CatalogTxnError> {
+        global_timestamp_generator().update_if_greater(commit_ts)?;
         self.prepare()?.apply(commit_ts)
     }
 
     pub fn commit(&self) -> Result<Timestamp, CatalogTxnError> {
+        let prepared = self.prepare()?;
         let commit_ts = global_timestamp_generator().next()?;
-        self.commit_at(commit_ts)
+        prepared.apply(commit_ts)
     }
 
     pub fn abort(&self) -> Result<(), CatalogTxnError> {
@@ -306,5 +308,398 @@ pub trait CatalogTxnView {
 impl CatalogTxnView for CatalogTxn {
     fn catalog_txn(&self) -> &CatalogTxn {
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex, mpsc};
+    use std::thread;
+    use std::time::Duration;
+
+    use minigu_common::timestamp::global_timestamp_generator;
+    use minigu_common::{IsolationLevel, Timestamp};
+
+    use super::{CatalogTxn, TxnHook, TxnWriteSet, VersionedMapWriteSet};
+    use crate::txn::manager::CatalogTxnManager;
+    use crate::txn::versioned::{Entry, VersionedMap, WriteOp};
+    use crate::txn::{CatalogTxnError, CatalogTxnResult};
+
+    fn mk_txn_id(raw: u64) -> Timestamp {
+        Timestamp::with_ts(Timestamp::TXN_ID_START + raw)
+    }
+
+    fn mk_start_ts(raw: u64) -> Timestamp {
+        // commit-ts domain
+        Timestamp::with_ts(raw)
+    }
+
+    #[test]
+    fn test_transaction_basic_invariants() {
+        let mgr = CatalogTxnManager::new();
+        let txn_id = mk_txn_id(42);
+        let start_ts = mk_start_ts(100);
+        let txn = CatalogTxn::new(
+            txn_id,
+            start_ts,
+            IsolationLevel::Serializable,
+            Arc::downgrade(&mgr),
+        );
+
+        assert_eq!(txn.txn_id(), txn_id);
+        assert_eq!(txn.start_ts(), start_ts);
+        assert!(txn.commit_ts().is_none());
+        assert!(matches!(
+            txn.isolation_level(),
+            IsolationLevel::Serializable
+        ));
+        assert!(txn.is_serializable());
+
+        let txn2 = CatalogTxn::new(
+            mk_txn_id(43),
+            mk_start_ts(101),
+            IsolationLevel::Snapshot,
+            Arc::downgrade(&mgr),
+        );
+        assert!(!txn2.is_serializable());
+    }
+
+    #[test]
+    fn test_record_write_commit_visible() {
+        let mgr = CatalogTxnManager::new();
+        let map: Arc<VersionedMap<String, u64>> = Arc::new(VersionedMap::new());
+
+        let txn = mgr
+            .begin_transaction(IsolationLevel::Serializable)
+            .expect("begin_transaction should succeed");
+        let node = map
+            .put("k".to_string(), Arc::new(1), txn.as_ref())
+            .expect("put should succeed");
+        txn.record_write(&map, "k".to_string(), node, WriteOp::Create);
+
+        let commit_ts = txn.commit().expect("commit should succeed");
+        assert_eq!(txn.commit_ts(), Some(commit_ts));
+
+        let read_txn = mgr
+            .begin_transaction(IsolationLevel::Serializable)
+            .expect("begin_transaction should succeed");
+        let val = map.get(&"k".to_string(), read_txn.as_ref());
+        assert_eq!(val.map(|v| *v), Some(1));
+        read_txn.abort().ok();
+    }
+
+    #[test]
+    fn test_record_write_abort_invisible() {
+        let mgr = CatalogTxnManager::new();
+        let map: Arc<VersionedMap<String, u64>> = Arc::new(VersionedMap::new());
+
+        let txn = mgr
+            .begin_transaction(IsolationLevel::Serializable)
+            .expect("begin_transaction should succeed");
+        let node = map
+            .put("k".to_string(), Arc::new(1), txn.as_ref())
+            .expect("put should succeed");
+        txn.record_write(&map, "k".to_string(), node, WriteOp::Create);
+
+        txn.abort().expect("abort should succeed");
+        assert!(txn.commit_ts().is_none());
+
+        let read_txn = mgr
+            .begin_transaction(IsolationLevel::Serializable)
+            .expect("begin_transaction should succeed");
+        let val = map.get(&"k".to_string(), read_txn.as_ref());
+        assert!(val.is_none());
+        read_txn.abort().ok();
+    }
+
+    #[test]
+    fn test_drop_is_implicit_abort_and_advances_low_watermark() {
+        let mgr = CatalogTxnManager::new();
+        let map: Arc<VersionedMap<String, u64>> = Arc::new(VersionedMap::new());
+
+        let txn = mgr
+            .begin_transaction(IsolationLevel::Serializable)
+            .expect("begin_transaction should succeed");
+        let start_ts = txn.start_ts();
+        assert_eq!(mgr.low_watermark(), start_ts);
+
+        let node = map
+            .put("k".to_string(), Arc::new(1), txn.as_ref())
+            .expect("put should succeed");
+        txn.record_write(&map, "k".to_string(), node, WriteOp::Create);
+
+        drop(txn);
+
+        assert!(
+            mgr.low_watermark().raw() > start_ts.raw(),
+            "low watermark should advance after dropping the last active txn"
+        );
+
+        let read_txn = mgr
+            .begin_transaction(IsolationLevel::Serializable)
+            .expect("begin_transaction should succeed");
+        let val = map.get(&"k".to_string(), read_txn.as_ref());
+        assert!(val.is_none());
+        read_txn.abort().ok();
+    }
+
+    #[test]
+    fn test_prepare_without_apply_is_not_visible_and_commit_ts_stays_none() {
+        let mgr = CatalogTxnManager::new();
+        let map: Arc<VersionedMap<String, u64>> = Arc::new(VersionedMap::new());
+
+        let txn = mgr
+            .begin_transaction(IsolationLevel::Serializable)
+            .expect("begin_transaction should succeed");
+        let node = map
+            .put("k".to_string(), Arc::new(1), txn.as_ref())
+            .expect("put should succeed");
+        txn.record_write(&map, "k".to_string(), node, WriteOp::Create);
+
+        let prepared = txn.prepare().expect("prepare should succeed");
+        drop(prepared);
+
+        assert!(
+            txn.commit_ts().is_none(),
+            "commit_ts must remain None until apply"
+        );
+
+        let read_txn = mgr
+            .begin_transaction(IsolationLevel::Serializable)
+            .expect("begin_transaction should succeed");
+        let val = map.get(&"k".to_string(), read_txn.as_ref());
+        assert!(
+            val.is_none(),
+            "prepared-but-not-applied writes must be invisible"
+        );
+        read_txn.abort().ok();
+
+        txn.abort().ok();
+    }
+
+    #[test]
+    fn test_write_set_apply_without_validate_is_illegal_state() {
+        let map: Arc<VersionedMap<String, u64>> = Arc::new(VersionedMap::new());
+        let write_set = VersionedMapWriteSet::<String, u64> {
+            map: Arc::downgrade(&map),
+            entries: Vec::new(),
+            plans: Mutex::new(None),
+        };
+
+        let err = write_set
+            .apply(mk_start_ts(1))
+            .expect_err("apply without validate should fail");
+        assert!(matches!(
+            err,
+            CatalogTxnError::IllegalState { ref reason } if reason == "apply without prior validate"
+        ));
+    }
+
+    #[derive(Debug)]
+    struct AlwaysFailHook;
+
+    impl TxnHook for AlwaysFailHook {
+        fn precommit(&self, _txn: &CatalogTxn) -> CatalogTxnResult<()> {
+            Err(CatalogTxnError::ReferentialIntegrity {
+                reason: "hook failed".to_string(),
+            })
+        }
+    }
+
+    #[test]
+    fn test_precommit_hook_failure_aborts_commit_and_no_apply() {
+        let mgr = CatalogTxnManager::new();
+        let map: Arc<VersionedMap<String, u64>> = Arc::new(VersionedMap::new());
+
+        let txn = mgr
+            .begin_transaction(IsolationLevel::Serializable)
+            .expect("begin_transaction should succeed");
+        txn.add_hook(Box::new(AlwaysFailHook));
+
+        let node = map
+            .put("k".to_string(), Arc::new(1), txn.as_ref())
+            .expect("put should succeed");
+        txn.record_write(&map, "k".to_string(), node, WriteOp::Create);
+
+        let res = txn.commit();
+        assert!(matches!(
+            res,
+            Err(CatalogTxnError::ReferentialIntegrity { .. })
+        ));
+        drop(txn);
+
+        let read_txn = mgr
+            .begin_transaction(IsolationLevel::Serializable)
+            .expect("begin_transaction should succeed");
+        let val = map.get(&"k".to_string(), read_txn.as_ref());
+        assert!(val.is_none(), "failed commit must not publish writes");
+        read_txn.abort().ok();
+    }
+
+    #[test]
+    fn test_commit_then_commit_or_prepare_is_illegal_state() {
+        let mgr = CatalogTxnManager::new();
+        let txn = mgr
+            .begin_transaction(IsolationLevel::Serializable)
+            .expect("begin_transaction should succeed");
+
+        let commit_ts_1 = txn.commit().expect("commit should succeed");
+        assert_eq!(txn.commit_ts(), Some(commit_ts_1));
+
+        let commit_again = txn.commit();
+        assert!(matches!(
+            commit_again,
+            Err(CatalogTxnError::IllegalState { .. })
+        ));
+        assert_eq!(txn.commit_ts(), Some(commit_ts_1));
+
+        let prepare_again = txn.prepare();
+        assert!(matches!(
+            prepare_again,
+            Err(CatalogTxnError::IllegalState { .. })
+        ));
+        assert_eq!(txn.commit_ts(), Some(commit_ts_1));
+    }
+
+    #[derive(Debug)]
+    struct ProbeWriteSet {
+        id: &'static str,
+        log: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl ProbeWriteSet {
+        fn new(id: &'static str, log: Arc<Mutex<Vec<String>>>) -> Self {
+            Self { id, log }
+        }
+    }
+
+    impl TxnWriteSet for ProbeWriteSet {
+        fn validate(&self) -> CatalogTxnResult<()> {
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("validate:{}", self.id));
+            Ok(())
+        }
+
+        fn apply(&self, _commit_ts: Timestamp) -> CatalogTxnResult<()> {
+            self.log.lock().unwrap().push(format!("apply:{}", self.id));
+            Ok(())
+        }
+
+        fn abort(&self) -> CatalogTxnResult<()> {
+            self.log.lock().unwrap().push(format!("abort:{}", self.id));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_write_set_ordering_validate_apply_and_abort_reverse() {
+        let mgr = CatalogTxnManager::new();
+
+        // validate/apply ordering
+        let log = Arc::new(Mutex::new(Vec::<String>::new()));
+        let txn = mgr
+            .begin_transaction(IsolationLevel::Serializable)
+            .expect("begin_transaction should succeed");
+        {
+            let mut ws = txn.write_sets.lock().unwrap();
+            ws.push(Box::new(ProbeWriteSet::new("A", Arc::clone(&log))));
+            ws.push(Box::new(ProbeWriteSet::new("B", Arc::clone(&log))));
+        }
+
+        let prepared = txn.prepare().expect("prepare should succeed");
+        let commit_ts = global_timestamp_generator().next().expect("commit ts");
+        prepared.apply(commit_ts).expect("apply should succeed");
+
+        let got = log.lock().unwrap().clone();
+        assert_eq!(got, vec!["validate:A", "validate:B", "apply:A", "apply:B"]);
+
+        // abort ordering (reverse)
+        let log2 = Arc::new(Mutex::new(Vec::<String>::new()));
+        let txn2 = mgr
+            .begin_transaction(IsolationLevel::Serializable)
+            .expect("begin_transaction should succeed");
+        {
+            let mut ws = txn2.write_sets.lock().unwrap();
+            ws.push(Box::new(ProbeWriteSet::new("A", Arc::clone(&log2))));
+            ws.push(Box::new(ProbeWriteSet::new("B", Arc::clone(&log2))));
+        }
+        txn2.abort().expect("abort should succeed");
+
+        let got2 = log2.lock().unwrap().clone();
+        assert_eq!(got2, vec!["abort:B", "abort:A"]);
+    }
+
+    #[test]
+    fn test_commit_lock_serializes_concurrent_commits() {
+        let mgr = CatalogTxnManager::new();
+
+        let txn1 = mgr
+            .begin_transaction(IsolationLevel::Serializable)
+            .expect("begin_transaction should succeed");
+        let prepared = txn1.prepare().expect("prepare should succeed");
+
+        let (ready_tx, ready_rx) = mpsc::channel::<()>();
+        let (done_tx, done_rx) = mpsc::channel::<Timestamp>();
+        let mgr2 = Arc::clone(&mgr);
+
+        let handle = thread::spawn(move || {
+            ready_tx.send(()).unwrap();
+            let txn2 = mgr2
+                .begin_transaction(IsolationLevel::Serializable)
+                .expect("begin_transaction should succeed");
+            let ts = txn2.commit().expect("commit should succeed");
+            done_tx.send(ts).unwrap();
+        });
+
+        ready_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("worker should be ready");
+
+        // While txn1 holds the commit lock via `prepared`, txn2 should be blocked in commit().
+        assert!(
+            done_rx.recv_timeout(Duration::from_millis(50)).is_err(),
+            "txn2 commit should be blocked until txn1 apply releases commit lock"
+        );
+
+        let commit_ts1 = global_timestamp_generator().next().expect("commit ts");
+        prepared.apply(commit_ts1).expect("apply should succeed");
+
+        let commit_ts2 = done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("txn2 should complete after txn1 apply");
+
+        assert!(
+            commit_ts2 > commit_ts1,
+            "commit timestamps should reflect serialized commit order"
+        );
+
+        handle.join().expect("worker thread join");
+    }
+
+    // Ensure `VersionedMapWriteSet` can still be constructed with entries and validated/applied.
+    #[test]
+    fn test_versioned_map_write_set_validate_apply_roundtrip() {
+        let mgr = CatalogTxnManager::new();
+        let map: Arc<VersionedMap<String, u64>> = Arc::new(VersionedMap::new());
+        let txn = mgr
+            .begin_transaction(IsolationLevel::Serializable)
+            .expect("begin_transaction should succeed");
+        let node = map
+            .put("k".to_string(), Arc::new(1), txn.as_ref())
+            .expect("put should succeed");
+        let entries = vec![Entry {
+            key: "k".to_string(),
+            node,
+            op: WriteOp::Create,
+        }];
+        let ws = VersionedMapWriteSet::<String, u64> {
+            map: Arc::downgrade(&map),
+            entries,
+            plans: Mutex::new(None),
+        };
+        ws.validate().expect("validate should succeed");
+        ws.apply(mk_start_ts(10)).expect("apply should succeed");
     }
 }

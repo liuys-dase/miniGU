@@ -141,3 +141,107 @@ impl GraphProvider for GraphContainer {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use minigu_catalog::memory::graph_type::MemoryGraphTypeCatalog;
+    use minigu_catalog::provider::GraphTypeProvider;
+    use minigu_catalog::txn::versioned::{VersionedMap, WriteOp};
+    use minigu_catalog::txn::{CatalogTxnManager, CatalogTxnView};
+    use minigu_common::IsolationLevel;
+    use minigu_storage::tp::{GraphTxnView, memory_graph};
+
+    use super::{GraphContainer, GraphStorage};
+
+    #[test]
+    fn begin_transaction_aligns_core_and_sub_txns() {
+        let (graph, _cleaner) = memory_graph::tests::mock_empty_graph();
+        let graph_type = Arc::new(MemoryGraphTypeCatalog::new());
+        let container = GraphContainer::new(Arc::clone(&graph_type), GraphStorage::Memory(graph));
+
+        let txn = container
+            .begin_transaction(IsolationLevel::Serializable)
+            .expect("begin_transaction should succeed");
+
+        let mem_txn = txn.mem_txn();
+        let catalog_txn = txn.catalog_txn();
+
+        assert_eq!(txn.core.txn_id, mem_txn.txn_id());
+        assert_eq!(txn.core.start_ts, mem_txn.start_ts());
+        assert!(matches!(
+            txn.core.isolation_level,
+            IsolationLevel::Serializable
+        ));
+        assert!(matches!(
+            mem_txn.isolation_level(),
+            IsolationLevel::Serializable
+        ));
+
+        assert_eq!(txn.core.txn_id, catalog_txn.txn_id());
+        assert_eq!(txn.core.start_ts, catalog_txn.start_ts());
+        assert!(matches!(
+            catalog_txn.isolation_level(),
+            IsolationLevel::Serializable
+        ));
+    }
+
+    #[test]
+    fn catalog_write_is_visible_after_transaction_commit() {
+        let (graph, _cleaner) = memory_graph::tests::mock_empty_graph();
+        let graph_type = Arc::new(MemoryGraphTypeCatalog::new());
+        let container = GraphContainer::new(Arc::clone(&graph_type), GraphStorage::Memory(graph));
+
+        let mut txn = container
+            .begin_transaction(IsolationLevel::Serializable)
+            .expect("begin_transaction should succeed");
+
+        let label_name = "Person".to_string();
+        let id = graph_type
+            .add_label_txn(label_name.clone(), txn.catalog_txn())
+            .expect("add_label_txn should succeed");
+
+        txn.commit().expect("commit should succeed");
+
+        let visible = graph_type
+            .get_label_id(&label_name)
+            .expect("get_label_id should succeed");
+        assert_eq!(visible, Some(id));
+    }
+
+    #[test]
+    fn catalog_txn_drop_aborts_and_cleans_uncommitted_versions() {
+        let mgr = CatalogTxnManager::new();
+        let map: Arc<VersionedMap<String, u64>> = Arc::new(VersionedMap::new());
+
+        let key = "k".to_string();
+
+        let txn = mgr
+            .begin_transaction(IsolationLevel::Serializable)
+            .expect("begin_transaction should succeed");
+        let start_ts = txn.start_ts();
+
+        assert_eq!(mgr.low_watermark(), start_ts);
+
+        let node = map
+            .put(key.clone(), Arc::new(1), txn.as_ref())
+            .expect("put should succeed");
+        txn.record_write(&map, key.clone(), node, WriteOp::Create);
+
+        drop(txn);
+
+        // Dropping the txn should best-effort abort it and remove it from the manager's active set.
+        assert!(
+            mgr.low_watermark().raw() > start_ts.raw(),
+            "low watermark should advance after dropping the last active txn"
+        );
+
+        // The uncommitted head should have been removed by abort.
+        let read_txn = mgr
+            .begin_transaction(IsolationLevel::Serializable)
+            .expect("begin_transaction should succeed");
+        let val = map.get(&key, read_txn.as_ref());
+        assert!(val.is_none(), "aborted write should not be visible");
+    }
+}

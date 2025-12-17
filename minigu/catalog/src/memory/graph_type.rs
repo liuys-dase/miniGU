@@ -699,3 +699,500 @@ impl PropertiesProvider for MemoryEdgeTypeCatalog {
             .collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::iter;
+    use std::sync::Arc;
+
+    use minigu_common::data_type::LogicalType;
+
+    use super::{MemoryEdgeTypeCatalog, MemoryGraphTypeCatalog, MemoryVertexTypeCatalog};
+    use crate::label_set::LabelSet;
+    use crate::property::Property;
+    use crate::provider::GraphTypeProvider;
+    use crate::txn::{CatalogTxnError, CatalogTxnManager};
+
+    fn ls1(label: minigu_common::types::LabelId) -> LabelSet {
+        iter::once(label).collect()
+    }
+
+    fn vt(label_set: LabelSet, prop_name: &str) -> Arc<MemoryVertexTypeCatalog> {
+        Arc::new(MemoryVertexTypeCatalog::new(
+            label_set,
+            vec![Property::new(
+                prop_name.to_string(),
+                LogicalType::Int32,
+                true,
+            )],
+        ))
+    }
+
+    fn empty_vt(label_set: LabelSet) -> Arc<MemoryVertexTypeCatalog> {
+        Arc::new(MemoryVertexTypeCatalog::new(label_set, Vec::new()))
+    }
+
+    fn empty_et(
+        label_set: LabelSet,
+        src: crate::provider::VertexTypeRef,
+        dst: crate::provider::VertexTypeRef,
+    ) -> Arc<MemoryEdgeTypeCatalog> {
+        Arc::new(MemoryEdgeTypeCatalog::new(label_set, src, dst, Vec::new()))
+    }
+
+    #[test]
+    fn test_catalog_txn_creation_invariants() {
+        let mgr = CatalogTxnManager::new();
+        let graph_type = MemoryGraphTypeCatalog::new();
+
+        let txn = mgr
+            .begin_transaction(minigu_common::IsolationLevel::Serializable)
+            .expect("begin_transaction should succeed");
+
+        let txn_id_1 = txn.txn_id();
+        let txn_id_2 = txn.txn_id();
+        assert_eq!(txn_id_1, txn_id_2);
+        assert!(txn_id_1.is_txn_id(), "txn_id should be in txn-id domain");
+
+        let start_ts = txn.start_ts();
+        assert!(start_ts.raw() > 0, "start_ts should be > 0");
+        assert!(
+            start_ts.is_commit_ts(),
+            "start_ts should be in commit-ts domain"
+        );
+
+        assert!(matches!(
+            txn.isolation_level(),
+            minigu_common::IsolationLevel::Serializable
+        ));
+
+        let _ = graph_type
+            .get_label_id_txn("nonexistent", txn.as_ref())
+            .expect("get_label_id_txn should succeed");
+        assert_eq!(
+            txn.txn_id(),
+            txn_id_1,
+            "txn_id must remain stable within a txn"
+        );
+    }
+
+    #[test]
+    fn test_add_label_txn_commit_visible() {
+        let mgr = CatalogTxnManager::new();
+        let graph_type = MemoryGraphTypeCatalog::new();
+
+        let txn1 = mgr
+            .begin_transaction(minigu_common::IsolationLevel::Serializable)
+            .expect("begin_transaction should succeed");
+        let id = graph_type
+            .add_label_txn("A".to_string(), txn1.as_ref())
+            .expect("add_label_txn should succeed");
+        txn1.commit().expect("commit should succeed");
+        assert!(id.get() > 0, "LabelId must be non-zero");
+
+        let txn2 = mgr
+            .begin_transaction(minigu_common::IsolationLevel::Serializable)
+            .expect("begin_transaction should succeed");
+        let visible = graph_type
+            .get_label_id_txn("A", txn2.as_ref())
+            .expect("get_label_id_txn should succeed");
+        txn2.abort().ok();
+
+        assert_eq!(visible, Some(id));
+    }
+
+    #[test]
+    fn test_add_label_txn_abort_or_drop_not_visible_and_no_leftover_head() {
+        let mgr = CatalogTxnManager::new();
+        let graph_type = MemoryGraphTypeCatalog::new();
+
+        let txn = mgr
+            .begin_transaction(minigu_common::IsolationLevel::Serializable)
+            .expect("begin_transaction should succeed");
+        let _ = graph_type
+            .add_label_txn("A".to_string(), txn.as_ref())
+            .expect("add_label_txn should succeed");
+
+        // Exercise Drop-based best-effort abort.
+        drop(txn);
+
+        let txn2 = mgr
+            .begin_transaction(minigu_common::IsolationLevel::Serializable)
+            .expect("begin_transaction should succeed");
+        let visible = graph_type
+            .get_label_id_txn("A", txn2.as_ref())
+            .expect("get_label_id_txn should succeed");
+        assert!(
+            visible.is_none(),
+            "aborted/uncommitted label must be invisible"
+        );
+
+        // If an uncommitted head leaked, this could fail with WriteConflict or similar.
+        let res = graph_type.add_label_txn("A".to_string(), txn2.as_ref());
+        assert!(
+            res.is_ok(),
+            "after abort/drop, the same key should be creatable again (no leaked head)"
+        );
+        txn2.abort().ok();
+    }
+
+    #[test]
+    fn test_add_label_txn_duplicate_already_exists() {
+        let mgr = CatalogTxnManager::new();
+        let graph_type = MemoryGraphTypeCatalog::new();
+
+        let txn = mgr
+            .begin_transaction(minigu_common::IsolationLevel::Serializable)
+            .expect("begin_transaction should succeed");
+        let _ = graph_type
+            .add_label_txn("A".to_string(), txn.as_ref())
+            .expect("first add_label_txn should succeed");
+        let res = graph_type.add_label_txn("A".to_string(), txn.as_ref());
+        assert!(matches!(res, Err(CatalogTxnError::AlreadyExists { .. })));
+    }
+
+    #[test]
+    fn p0_5_remove_label_used_by_vertex_type_commit_fails_and_state_kept() {
+        let mgr = CatalogTxnManager::new();
+        let graph_type = MemoryGraphTypeCatalog::new();
+
+        // T0: create label + vertex type, commit them.
+        let txn0 = mgr
+            .begin_transaction(minigu_common::IsolationLevel::Serializable)
+            .expect("begin_transaction should succeed");
+        let label_id = graph_type
+            .add_label_txn("L".to_string(), txn0.as_ref())
+            .expect("add_label_txn should succeed");
+        let v_ls = ls1(label_id);
+        graph_type
+            .add_vertex_type_txn(v_ls.clone(), empty_vt(v_ls.clone()), txn0.as_ref())
+            .expect("add_vertex_type_txn should succeed");
+        txn0.commit().expect("commit should succeed");
+
+        // T1: attempt to delete label, should fail at commit due to hook.
+        let txn1 = mgr
+            .begin_transaction(minigu_common::IsolationLevel::Serializable)
+            .expect("begin_transaction should succeed");
+        graph_type
+            .remove_label_txn("L", txn1.as_ref())
+            .expect("remove_label_txn should succeed");
+        let commit_res = txn1.commit();
+        assert!(matches!(
+            commit_res,
+            Err(CatalogTxnError::ReferentialIntegrity { .. })
+        ));
+        drop(txn1);
+
+        // Both label and vertex type should still exist (from T0).
+        let txn2 = mgr
+            .begin_transaction(minigu_common::IsolationLevel::Serializable)
+            .expect("begin_transaction should succeed");
+        let label_visible = graph_type
+            .get_label_id_txn("L", txn2.as_ref())
+            .expect("get_label_id_txn should succeed");
+        assert_eq!(label_visible, Some(label_id));
+
+        let vt_visible = graph_type
+            .get_vertex_type_txn(&v_ls, txn2.as_ref())
+            .expect("get_vertex_type_txn should succeed");
+        assert!(
+            vt_visible.is_some(),
+            "vertex type should remain after failed delete"
+        );
+        txn2.abort().ok();
+    }
+
+    #[test]
+    fn test_add_vertex_type_txn_commit_visible() {
+        let mgr = CatalogTxnManager::new();
+        let graph_type = MemoryGraphTypeCatalog::new();
+
+        // Create the label first for a realistic label_set.
+        let txn0 = mgr
+            .begin_transaction(minigu_common::IsolationLevel::Serializable)
+            .expect("begin_transaction should succeed");
+        let label_id = graph_type
+            .add_label_txn("V".to_string(), txn0.as_ref())
+            .expect("add_label_txn should succeed");
+        txn0.commit().expect("commit should succeed");
+
+        let key = ls1(label_id);
+        let txn1 = mgr
+            .begin_transaction(minigu_common::IsolationLevel::Serializable)
+            .expect("begin_transaction should succeed");
+        graph_type
+            .add_vertex_type_txn(key.clone(), empty_vt(key.clone()), txn1.as_ref())
+            .expect("add_vertex_type_txn should succeed");
+        txn1.commit().expect("commit should succeed");
+
+        let txn2 = mgr
+            .begin_transaction(minigu_common::IsolationLevel::Serializable)
+            .expect("begin_transaction should succeed");
+        let vt_ref = graph_type
+            .get_vertex_type_txn(&key, txn2.as_ref())
+            .expect("get_vertex_type_txn should succeed")
+            .expect("vertex type should be visible after commit");
+        assert_eq!(vt_ref.label_set(), key);
+        txn2.abort().ok();
+    }
+
+    #[test]
+    fn test_remove_vertex_type_referenced_by_edge_type_commit_fails() {
+        let mgr = CatalogTxnManager::new();
+        let graph_type = MemoryGraphTypeCatalog::new();
+
+        // T0: create A/B vertex types + edge type, commit.
+        let txn0 = mgr
+            .begin_transaction(minigu_common::IsolationLevel::Serializable)
+            .expect("begin_transaction should succeed");
+        let a_id = graph_type
+            .add_label_txn("A".to_string(), txn0.as_ref())
+            .expect("add_label_txn should succeed");
+        let b_id = graph_type
+            .add_label_txn("B".to_string(), txn0.as_ref())
+            .expect("add_label_txn should succeed");
+        let e_id = graph_type
+            .add_label_txn("E".to_string(), txn0.as_ref())
+            .expect("add_label_txn should succeed");
+
+        let a_ls = ls1(a_id);
+        let b_ls = ls1(b_id);
+        let e_ls = ls1(e_id);
+
+        let a_vt: Arc<MemoryVertexTypeCatalog> = empty_vt(a_ls.clone());
+        let b_vt: Arc<MemoryVertexTypeCatalog> = empty_vt(b_ls.clone());
+        graph_type
+            .add_vertex_type_txn(a_ls.clone(), Arc::clone(&a_vt), txn0.as_ref())
+            .expect("add_vertex_type_txn(A) should succeed");
+        graph_type
+            .add_vertex_type_txn(b_ls.clone(), Arc::clone(&b_vt), txn0.as_ref())
+            .expect("add_vertex_type_txn(B) should succeed");
+
+        let a_ref: crate::provider::VertexTypeRef = a_vt;
+        let b_ref: crate::provider::VertexTypeRef = b_vt;
+        let edge = empty_et(e_ls.clone(), a_ref, b_ref);
+        graph_type
+            .add_edge_type_txn(e_ls.clone(), edge, txn0.as_ref())
+            .expect("add_edge_type_txn should succeed");
+        txn0.commit().expect("commit should succeed");
+
+        // T1: remove vertex type A should fail at commit due to vertex_delete hook.
+        let txn1 = mgr
+            .begin_transaction(minigu_common::IsolationLevel::Serializable)
+            .expect("begin_transaction should succeed");
+        graph_type
+            .remove_vertex_type_txn(&a_ls, txn1.as_ref())
+            .expect("remove_vertex_type_txn should succeed");
+        let commit_res = txn1.commit();
+        assert!(matches!(
+            commit_res,
+            Err(CatalogTxnError::ReferentialIntegrity { .. })
+        ));
+        drop(txn1);
+
+        // Vertex type A and edge type E should still exist.
+        let txn2 = mgr
+            .begin_transaction(minigu_common::IsolationLevel::Serializable)
+            .expect("begin_transaction should succeed");
+        assert!(
+            graph_type
+                .get_vertex_type_txn(&a_ls, txn2.as_ref())
+                .unwrap()
+                .is_some(),
+            "vertex type A should remain after failed delete"
+        );
+        assert!(
+            graph_type
+                .get_edge_type_txn(&e_ls, txn2.as_ref())
+                .unwrap()
+                .is_some(),
+            "edge type should remain after failed delete"
+        );
+        txn2.abort().ok();
+    }
+
+    #[test]
+    fn test_add_edge_type_src_dst_missing_fails_immediately_and_no_write() {
+        let mgr = CatalogTxnManager::new();
+        let graph_type = MemoryGraphTypeCatalog::new();
+
+        // T0: create src vertex type only.
+        let txn0 = mgr
+            .begin_transaction(minigu_common::IsolationLevel::Serializable)
+            .expect("begin_transaction should succeed");
+        let src_id = graph_type
+            .add_label_txn("SRC".to_string(), txn0.as_ref())
+            .expect("add_label_txn should succeed");
+        let dst_id = graph_type
+            .add_label_txn("DST".to_string(), txn0.as_ref())
+            .expect("add_label_txn should succeed");
+        let e_id = graph_type
+            .add_label_txn("E".to_string(), txn0.as_ref())
+            .expect("add_label_txn should succeed");
+
+        let src_ls = ls1(src_id);
+        let dst_ls = ls1(dst_id);
+        let e_ls = ls1(e_id);
+
+        let src_vt: Arc<MemoryVertexTypeCatalog> = empty_vt(src_ls.clone());
+        graph_type
+            .add_vertex_type_txn(src_ls.clone(), Arc::clone(&src_vt), txn0.as_ref())
+            .expect("add_vertex_type_txn(SRC) should succeed");
+        txn0.commit().expect("commit should succeed");
+
+        // T1: try to add edge type with missing dst vertex type; should fail before any write.
+        let txn1 = mgr
+            .begin_transaction(minigu_common::IsolationLevel::Serializable)
+            .expect("begin_transaction should succeed");
+        let src_ref: crate::provider::VertexTypeRef = src_vt;
+        let dst_ref: crate::provider::VertexTypeRef = empty_vt(dst_ls.clone());
+        let edge = empty_et(e_ls.clone(), src_ref, dst_ref);
+        let res = graph_type.add_edge_type_txn(e_ls.clone(), edge, txn1.as_ref());
+        assert!(matches!(
+            res,
+            Err(CatalogTxnError::ReferentialIntegrity { .. })
+        ));
+
+        let visible = graph_type
+            .get_edge_type_txn(&e_ls, txn1.as_ref())
+            .expect("get_edge_type_txn should succeed");
+        assert!(
+            visible.is_none(),
+            "no edge type should be visible in txn after failure"
+        );
+
+        txn1.commit().expect("empty commit should succeed");
+    }
+
+    #[test]
+    fn test_edge_src_dst_exist_hook_commit_fails_if_dst_deleted_in_same_txn() {
+        let mgr = CatalogTxnManager::new();
+        let graph_type = MemoryGraphTypeCatalog::new();
+
+        // T0: create A/B vertex types + edge type E, commit.
+        let txn0 = mgr
+            .begin_transaction(minigu_common::IsolationLevel::Serializable)
+            .expect("begin_transaction should succeed");
+        let a_id = graph_type
+            .add_label_txn("A".to_string(), txn0.as_ref())
+            .expect("add_label_txn should succeed");
+        let b_id = graph_type
+            .add_label_txn("B".to_string(), txn0.as_ref())
+            .expect("add_label_txn should succeed");
+        let e_id = graph_type
+            .add_label_txn("E".to_string(), txn0.as_ref())
+            .expect("add_label_txn should succeed");
+
+        let a_ls = ls1(a_id);
+        let b_ls = ls1(b_id);
+        let e_ls = ls1(e_id);
+
+        let a_vt: Arc<MemoryVertexTypeCatalog> = empty_vt(a_ls.clone());
+        let b_vt: Arc<MemoryVertexTypeCatalog> = empty_vt(b_ls.clone());
+        graph_type
+            .add_vertex_type_txn(a_ls.clone(), Arc::clone(&a_vt), txn0.as_ref())
+            .expect("add_vertex_type_txn(A) should succeed");
+        graph_type
+            .add_vertex_type_txn(b_ls.clone(), Arc::clone(&b_vt), txn0.as_ref())
+            .expect("add_vertex_type_txn(B) should succeed");
+
+        let a_ref: crate::provider::VertexTypeRef = a_vt.clone();
+        let b_ref: crate::provider::VertexTypeRef = b_vt.clone();
+        let edge = empty_et(e_ls.clone(), a_ref, b_ref);
+        graph_type
+            .add_edge_type_txn(e_ls.clone(), edge, txn0.as_ref())
+            .expect("add_edge_type_txn should succeed");
+        txn0.commit().expect("commit should succeed");
+
+        // T1: replace edge type (registers EdgeSrcDstExist hook), then delete dst vertex type.
+        let txn1 = mgr
+            .begin_transaction(minigu_common::IsolationLevel::Serializable)
+            .expect("begin_transaction should succeed");
+
+        let a_ref_new: crate::provider::VertexTypeRef = a_vt;
+        let b_ref_new: crate::provider::VertexTypeRef = b_vt;
+        let new_edge = empty_et(e_ls.clone(), a_ref_new, b_ref_new);
+        graph_type
+            .replace_edge_type_txn(&e_ls, new_edge, txn1.as_ref())
+            .expect("replace_edge_type_txn should succeed");
+        graph_type
+            .remove_vertex_type_txn(&b_ls, txn1.as_ref())
+            .expect("remove_vertex_type_txn(B) should succeed");
+
+        let commit_res = txn1.commit();
+        assert!(matches!(
+            commit_res,
+            Err(CatalogTxnError::ReferentialIntegrity { .. })
+        ));
+        drop(txn1);
+
+        // After abort, both vertex type B and edge type E should still exist as in T0.
+        let txn2 = mgr
+            .begin_transaction(minigu_common::IsolationLevel::Serializable)
+            .expect("begin_transaction should succeed");
+        assert!(
+            graph_type
+                .get_vertex_type_txn(&b_ls, txn2.as_ref())
+                .unwrap()
+                .is_some(),
+            "dst vertex type should remain after failed commit"
+        );
+        assert!(
+            graph_type
+                .get_edge_type_txn(&e_ls, txn2.as_ref())
+                .unwrap()
+                .is_some(),
+            "edge type should remain after failed commit"
+        );
+        txn2.abort().ok();
+    }
+
+    #[test]
+    fn test_replace_vertex_type_txn_atomic_replace_semantics() {
+        let mgr = CatalogTxnManager::new();
+        let graph_type = MemoryGraphTypeCatalog::new();
+
+        // T0: create label + vertex type V1, commit.
+        let txn0 = mgr
+            .begin_transaction(minigu_common::IsolationLevel::Serializable)
+            .expect("begin_transaction should succeed");
+        let id = graph_type
+            .add_label_txn("V".to_string(), txn0.as_ref())
+            .expect("add_label_txn should succeed");
+        let key = ls1(id);
+        graph_type
+            .add_vertex_type_txn(key.clone(), vt(key.clone(), "p1"), txn0.as_ref())
+            .expect("add_vertex_type_txn should succeed");
+        txn0.commit().expect("commit should succeed");
+
+        // T1: replace with V2 and commit.
+        let txn1 = mgr
+            .begin_transaction(minigu_common::IsolationLevel::Serializable)
+            .expect("begin_transaction should succeed");
+        graph_type
+            .replace_vertex_type_txn(&key, vt(key.clone(), "p2"), txn1.as_ref())
+            .expect("replace_vertex_type_txn should succeed");
+        txn1.commit().expect("commit should succeed");
+
+        // Verify: key unchanged, value replaced.
+        let txn2 = mgr
+            .begin_transaction(minigu_common::IsolationLevel::Serializable)
+            .expect("begin_transaction should succeed");
+        let vt_ref = graph_type
+            .get_vertex_type_txn(&key, txn2.as_ref())
+            .expect("get_vertex_type_txn should succeed")
+            .expect("vertex type should exist");
+        assert_eq!(vt_ref.label_set(), key);
+
+        let props = vt_ref.properties();
+        assert!(
+            props.iter().any(|(_, p)| p.name() == "p2"),
+            "replaced vertex type should contain new property"
+        );
+        assert!(
+            !props.iter().any(|(_, p)| p.name() == "p1"),
+            "replaced vertex type should not contain old property"
+        );
+        txn2.abort().ok();
+    }
+}
