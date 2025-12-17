@@ -222,10 +222,10 @@ impl CatalogTxn {
     }
 
     pub fn abort(&self) -> Result<(), CatalogTxnError> {
-        let _guard = self.op_mutex.lock().expect("op mutex poisoned");
+        let _guard = self.op_mutex.lock().unwrap_or_else(|e| e.into_inner());
 
         {
-            let write_sets = self.write_sets.lock().expect("poisoned write_sets mutex");
+            let write_sets = self.write_sets.lock().unwrap_or_else(|e| e.into_inner());
             for set in write_sets.iter().rev() {
                 set.abort()?;
             }
@@ -236,6 +236,27 @@ impl CatalogTxn {
         }
 
         Ok(())
+    }
+}
+
+impl Drop for CatalogTxn {
+    fn drop(&mut self) {
+        let commit_ts = self.commit_ts();
+        if commit_ts.is_some() {
+            return;
+        }
+        {
+            let _guard = self.op_mutex.lock().unwrap_or_else(|e| e.into_inner());
+
+            let write_sets = self.write_sets.lock().unwrap_or_else(|e| e.into_inner());
+            for set in write_sets.iter().rev() {
+                let _ = set.abort();
+            }
+
+            if let Some(mgr) = self.mgr.upgrade() {
+                let _ = mgr.finish_transaction(self);
+            }
+        }
     }
 }
 
