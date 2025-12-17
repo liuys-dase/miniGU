@@ -26,16 +26,19 @@ fn decode_commit_ts(raw: u64) -> Option<Timestamp> {
     }
 }
 
-/// Unified abstraction of "the containers touched by this transaction" - two-phase interface.
-trait TxnTouchedSet: Send + Sync + std::fmt::Debug {
+/// Unified abstraction of "the write sets touched by this transaction" - two-phase interface.
+///
+/// This is closer to a transaction "write set / write intents" than a generic access list:
+/// the implementor is expected to validate and then apply its buffered writes at commit time.
+trait TxnWriteSet: Send + Sync + std::fmt::Debug {
     fn validate(&self) -> CatalogTxnResult<()>;
     fn apply(&self, commit_ts: Timestamp) -> CatalogTxnResult<()>;
     fn abort(&self) -> CatalogTxnResult<()>;
 }
 
-/// Touched-set implementation for `VersionedMap<K, V>`.
+/// Per-map write-set implementation for `VersionedMap<K, V>`.
 #[derive(Debug)]
-struct VersionedMapTouched<K, V>
+struct VersionedMapWriteSet<K, V>
 where
     K: Eq + Hash + Clone + Send + Sync + 'static + std::fmt::Debug,
     V: Send + Sync + 'static + std::fmt::Debug,
@@ -45,7 +48,7 @@ where
     plans: Mutex<Option<Vec<CommitPlan<K, V>>>>,
 }
 
-impl<K, V> TxnTouchedSet for VersionedMapTouched<K, V>
+impl<K, V> TxnWriteSet for VersionedMapWriteSet<K, V>
 where
     K: Eq + Hash + Clone + Send + Sync + 'static + std::fmt::Debug,
     V: Send + Sync + 'static + std::fmt::Debug,
@@ -91,8 +94,8 @@ pub struct CatalogTxn {
     start_ts: Timestamp,
     commit_ts_raw: AtomicU64, // 0 means not committed yet.
     isolation: IsolationLevel,
-    touched: Mutex<Vec<Box<dyn TxnTouchedSet>>>, // Record the touched containers.
-    hooks: Mutex<Vec<Box<dyn TxnHook>>>,         // Record the hooks for pre-commit validation.
+    write_sets: Mutex<Vec<Box<dyn TxnWriteSet>>>,
+    hooks: Mutex<Vec<Box<dyn TxnHook>>>, // Record the hooks for pre-commit validation.
     mgr: Weak<CatalogTxnManager>,
     op_mutex: Mutex<()>, // commit/abort mutex.
 }
@@ -109,7 +112,7 @@ impl CatalogTxn {
             start_ts,
             commit_ts_raw: AtomicU64::new(0),
             isolation,
-            touched: Mutex::new(Vec::new()),
+            write_sets: Mutex::new(Vec::new()),
             hooks: Mutex::new(Vec::new()),
             mgr,
             op_mutex: Mutex::new(()),
@@ -125,15 +128,15 @@ impl CatalogTxn {
         K: Eq + Hash + Clone + Send + Sync + 'static + std::fmt::Debug,
         V: Send + Sync + 'static + std::fmt::Debug,
     {
-        let touched = VersionedMapTouched {
+        let write_set = VersionedMapWriteSet {
             map: Arc::downgrade(map),
             items,
             plans: Mutex::new(None),
         };
-        self.touched
+        self.write_sets
             .lock()
-            .expect("poisoned touched mutex")
-            .push(Box::new(touched));
+            .expect("poisoned write_sets mutex")
+            .push(Box::new(write_set));
     }
 
     /// Transaction-level hook registration (e.g., consistency checks before commit).
@@ -178,7 +181,7 @@ impl CatalogTxn {
         &self.isolation
     }
 
-    /// Prepare this transaction for commit by running precommit hooks and validating touched sets.
+    /// Prepare this transaction for commit by running precommit hooks and validating write sets.
     ///
     /// This method acquires a global commit lock to prevent other catalog transactions from
     /// committing between validation and apply. The returned guard must be consumed via
@@ -207,8 +210,8 @@ impl CatalogTxn {
         }
 
         {
-            let touched = self.touched.lock().expect("poisoned touched mutex");
-            for set in touched.iter() {
+            let write_sets = self.write_sets.lock().expect("poisoned write_sets mutex");
+            for set in write_sets.iter() {
                 set.validate()?;
             }
         }
@@ -233,8 +236,8 @@ impl CatalogTxn {
         let _guard = self.op_mutex.lock().expect("op mutex poisoned");
 
         {
-            let touched = self.touched.lock().expect("poisoned touched mutex");
-            for set in touched.iter().rev() {
+            let write_sets = self.write_sets.lock().expect("poisoned write_sets mutex");
+            for set in write_sets.iter().rev() {
                 set.abort()?;
             }
         }
@@ -265,8 +268,12 @@ pub struct PreparedCatalogTxn<'a> {
 impl PreparedCatalogTxn<'_> {
     pub fn apply(self, commit_ts: Timestamp) -> Result<Timestamp, CatalogTxnError> {
         {
-            let touched = self.txn.touched.lock().expect("poisoned touched mutex");
-            for set in touched.iter() {
+            let write_sets = self
+                .txn
+                .write_sets
+                .lock()
+                .expect("poisoned write_sets mutex");
+            for set in write_sets.iter() {
                 set.apply(commit_ts)?;
             }
         }

@@ -12,41 +12,37 @@ use crate::txn::transaction::CatalogTxn;
 
 #[derive(Debug)]
 pub struct CatalogTxnManager {
-    active: RwLock<HashMap<u64, Timestamp>>, // txn_id.raw() -> start_ts
-    low_watermark_raw: AtomicU64,
+    active_txns: RwLock<HashMap<u64, Timestamp>>, // txn_id.raw() -> start_ts
+    watermark: AtomicU64,
     commit_lock: Arc<Mutex<()>>,
 }
 
 impl CatalogTxnManager {
-    fn new_inner() -> Self {
-        Self {
-            active: RwLock::new(HashMap::new()),
-            low_watermark_raw: AtomicU64::new(0),
-            commit_lock: Arc::new(Mutex::new(())),
-        }
-    }
-
     pub fn new() -> Arc<Self> {
-        Arc::new(Self::new_inner())
+        Arc::new(Self {
+            active_txns: RwLock::new(HashMap::new()),
+            watermark: AtomicU64::new(0),
+            commit_lock: Arc::new(Mutex::new(())),
+        })
     }
 
     pub(crate) fn commit_lock(&self) -> Arc<Mutex<()>> {
         Arc::clone(&self.commit_lock)
     }
 
-    fn update_low_watermark_locked(&self, guard: &HashMap<u64, Timestamp>) {
+    fn update_watermark(&self, guard: &HashMap<u64, Timestamp>) {
         let lw = guard
             .values()
             .map(|ts| ts.raw())
             .min()
             .unwrap_or_else(|| global_timestamp_generator().current().raw());
-        self.low_watermark_raw.store(lw, Ordering::SeqCst);
+        self.watermark.store(lw, Ordering::SeqCst);
     }
 
     pub fn finish_transaction(&self, txn: &CatalogTxn) -> CatalogTxnResult<()> {
-        let mut guard = self.active.write().expect("poisoned active set");
+        let mut guard = self.active_txns.write().expect("poisoned active set");
         guard.remove(&txn.txn_id().raw());
-        self.update_low_watermark_locked(&guard);
+        self.update_watermark(&guard);
         Ok(())
     }
 
@@ -83,9 +79,9 @@ impl CatalogTxnManager {
             Arc::downgrade(self),
         ));
 
-        let mut guard = self.active.write().expect("poisoned active set");
+        let mut guard = self.active_txns.write().expect("poisoned active set");
         guard.insert(txn_id.raw(), start_ts);
-        self.update_low_watermark_locked(&guard);
+        self.update_watermark(&guard);
 
         Ok(txn)
     }
@@ -95,6 +91,6 @@ impl CatalogTxnManager {
     }
 
     pub fn low_watermark(&self) -> Timestamp {
-        Timestamp::with_ts(self.low_watermark_raw.load(Ordering::SeqCst))
+        Timestamp::with_ts(self.watermark.load(Ordering::SeqCst))
     }
 }

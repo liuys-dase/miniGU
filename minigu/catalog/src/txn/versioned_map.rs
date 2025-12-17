@@ -197,7 +197,7 @@ where
         Ok(chain.append_uncommitted(None, true, txn_id))
     }
 
-    /// Validate a batch of touched items and produce commit plans.
+    /// Validate a batch of write-intent items and produce commit plans.
     pub fn validate_batch(
         &self,
         items: &[TouchedItem<K, V>],
@@ -274,7 +274,7 @@ where
     }
 }
 
-/// Commit plan entry for a touched item
+/// Commit plan entry for a write-intent item
 #[derive(Debug)]
 pub struct CommitPlan<K, V> {
     pub key: K,
