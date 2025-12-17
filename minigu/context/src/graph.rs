@@ -5,9 +5,10 @@ use std::sync::Arc;
 use minigu_catalog::memory::graph_type::MemoryGraphTypeCatalog;
 use minigu_catalog::provider::{GraphProvider, GraphTypeRef};
 use minigu_common::types::{LabelId, VertexIdArray};
+use minigu_common::{IsolationLevel, global_timestamp_generator, global_transaction_id_generator};
 use minigu_storage::error::StorageResult;
 use minigu_storage::tp::MemoryGraph;
-use minigu_storage::tp::transaction::IsolationLevel;
+use minigu_transaction::{GraphTxnState, Transaction, TransactionCore, TxnError};
 
 pub enum GraphStorage {
     Memory(Arc<MemoryGraph>),
@@ -24,6 +25,29 @@ impl GraphContainer {
             graph_type,
             graph_storage,
         }
+    }
+
+    pub fn begin_transaction(
+        &self,
+        isolation_level: IsolationLevel,
+    ) -> Result<Transaction, TxnError> {
+        let txn_id = global_transaction_id_generator().next()?;
+        let start_ts = global_timestamp_generator().next()?;
+
+        let mem = match &self.graph_storage {
+            GraphStorage::Memory(mem) => mem,
+        };
+
+        let mem_txn = mem.txn_manager().begin_transaction_at(
+            Some(txn_id),
+            Some(start_ts),
+            isolation_level,
+            false,
+        )?;
+        let graph_state = GraphTxnState::new(mem_txn);
+
+        let core = TransactionCore::new(txn_id, start_ts, isolation_level);
+        Ok(Transaction::new(core, graph_state, None))
     }
 
     #[inline]
