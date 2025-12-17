@@ -1,7 +1,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-use minigu_catalog::provider::CatalogProvider;
+use minigu_catalog::memory::graph_type::MemoryGraphTypeCatalog;
 use minigu_catalog::txn::{CatalogTxn, CatalogTxnError, CatalogTxnView};
 use minigu_common::types::{EdgeId, VectorIndexKey, VertexId};
 use minigu_common::value::ScalarValue;
@@ -309,17 +309,17 @@ impl fmt::Debug for GraphTxnState {
 
 #[derive(Debug, Clone)]
 pub struct CatalogTxnState {
-    catalog: Arc<dyn CatalogProvider>,
+    graph_type: Arc<MemoryGraphTypeCatalog>,
     txn: Arc<CatalogTxn>,
 }
 
 impl CatalogTxnState {
-    pub fn new(catalog: Arc<dyn CatalogProvider>, txn: Arc<CatalogTxn>) -> Self {
-        Self { catalog, txn }
+    pub fn new(graph_type: Arc<MemoryGraphTypeCatalog>, txn: Arc<CatalogTxn>) -> Self {
+        Self { graph_type, txn }
     }
 
-    pub fn catalog(&self) -> &Arc<dyn CatalogProvider> {
-        &self.catalog
+    pub fn graph_type(&self) -> &Arc<MemoryGraphTypeCatalog> {
+        &self.graph_type
     }
 
     pub fn txn(&self) -> &Arc<CatalogTxn> {

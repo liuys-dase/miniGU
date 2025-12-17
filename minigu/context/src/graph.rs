@@ -4,11 +4,12 @@ use std::sync::Arc;
 
 use minigu_catalog::memory::graph_type::MemoryGraphTypeCatalog;
 use minigu_catalog::provider::{GraphProvider, GraphTypeRef};
+use minigu_catalog::txn::CatalogTxnManager;
 use minigu_common::types::{LabelId, VertexIdArray};
 use minigu_common::{IsolationLevel, global_timestamp_generator, global_transaction_id_generator};
 use minigu_storage::error::StorageResult;
 use minigu_storage::tp::MemoryGraph;
-use minigu_transaction::{GraphTxnState, Transaction, TransactionCore, TxnError};
+use minigu_transaction::{CatalogTxnState, GraphTxnState, Transaction, TransactionCore, TxnError};
 
 pub enum GraphStorage {
     Memory(Arc<MemoryGraph>),
@@ -17,6 +18,7 @@ pub enum GraphStorage {
 pub struct GraphContainer {
     graph_type: Arc<MemoryGraphTypeCatalog>,
     graph_storage: GraphStorage,
+    catalog_txn_mgr: Arc<CatalogTxnManager>,
 }
 
 impl GraphContainer {
@@ -24,6 +26,7 @@ impl GraphContainer {
         Self {
             graph_type,
             graph_storage,
+            catalog_txn_mgr: Arc::new(CatalogTxnManager::new()),
         }
     }
 
@@ -46,8 +49,18 @@ impl GraphContainer {
         )?;
         let graph_state = GraphTxnState::new(mem_txn);
 
+        let catalog_txn = self.catalog_txn_mgr.begin_transaction_at(
+            Some(txn_id),
+            Some(start_ts),
+            isolation_level,
+        )?;
+        let catalog_state = Some(CatalogTxnState::new(
+            Arc::clone(&self.graph_type),
+            catalog_txn,
+        ));
+
         let core = TransactionCore::new(txn_id, start_ts, isolation_level);
-        Ok(Transaction::new(core, graph_state, None))
+        Ok(Transaction::new(core, graph_state, catalog_state))
     }
 
     #[inline]
