@@ -13,7 +13,7 @@ use crate::provider::{
 };
 use crate::txn::CatalogTxnError;
 use crate::txn::transaction::{CatalogTxn, TxnHook};
-use crate::txn::versioned_map::{VersionedMap, WriteOp};
+use crate::txn::versioned::{VersionedMap, WriteOp};
 
 #[derive(Debug)]
 pub struct MemoryGraphTypeCatalog {

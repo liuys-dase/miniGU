@@ -5,7 +5,7 @@ use minigu_common::IsolationLevel;
 use crate::error::{CatalogError, CatalogResult};
 use crate::memory::txn_manager;
 use crate::provider::{DirectoryOrSchema, DirectoryProvider, DirectoryRef};
-use crate::txn::versioned_map::{VersionedMap, WriteOp};
+use crate::txn::versioned::{VersionedMap, WriteOp};
 use crate::txn::{CatalogTxn, CatalogTxnError};
 
 #[derive(Debug)]

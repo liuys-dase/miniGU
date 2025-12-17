@@ -9,7 +9,7 @@ use crate::memory::txn_manager;
 use crate::provider::{
     DirectoryProvider, DirectoryRef, GraphRef, GraphTypeRef, ProcedureRef, SchemaProvider,
 };
-use crate::txn::versioned_map::{VersionedMap, WriteOp};
+use crate::txn::versioned::{VersionedMap, WriteOp};
 use crate::txn::{CatalogTxn, CatalogTxnError};
 
 pub struct MemorySchemaCatalog {

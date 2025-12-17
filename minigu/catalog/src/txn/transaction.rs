@@ -8,23 +8,7 @@ use parking_lot::lock_api::ArcMutexGuard;
 
 use crate::txn::error::{CatalogTxnError, CatalogTxnResult};
 use crate::txn::manager::CatalogTxnManager;
-use crate::txn::versioned::CatalogVersionNode;
-use crate::txn::versioned_map::{CommitPlan, TouchedItem, VersionedMap, WriteOp};
-
-fn encode_commit_ts(opt: Option<Timestamp>) -> u64 {
-    match opt {
-        Some(ts) => ts.raw(),
-        None => 0,
-    }
-}
-
-fn decode_commit_ts(raw: u64) -> Option<Timestamp> {
-    if raw == 0 {
-        None
-    } else {
-        Some(Timestamp::with_ts(raw))
-    }
-}
+use crate::txn::versioned::{CatalogVersionNode, CommitPlan, Entry, VersionedMap, WriteOp};
 
 /// Unified abstraction of "the write sets touched by this transaction" - two-phase interface.
 ///
@@ -44,7 +28,7 @@ where
     V: Send + Sync + 'static + std::fmt::Debug,
 {
     map: Weak<VersionedMap<K, V>>,
-    items: Vec<TouchedItem<K, V>>,
+    entries: Vec<Entry<K, V>>,
     plans: Mutex<Option<Vec<CommitPlan<K, V>>>>,
 }
 
@@ -55,7 +39,7 @@ where
 {
     fn validate(&self) -> CatalogTxnResult<()> {
         if let Some(map) = self.map.upgrade() {
-            let plans = map.validate_batch(&self.items)?;
+            let plans = map.validate_batch(&self.entries)?;
             let mut slot = self.plans.lock().expect("plans mutex poisoned");
             *slot = Some(plans);
             Ok(())
@@ -80,7 +64,7 @@ where
 
     fn abort(&self) -> CatalogTxnResult<()> {
         if let Some(map) = self.map.upgrade() {
-            map.abort_batch(&self.items)
+            map.abort_batch(&self.entries)
         } else {
             Ok(())
         }
@@ -92,8 +76,8 @@ where
 pub struct CatalogTxn {
     txn_id: Timestamp,
     start_ts: Timestamp,
-    commit_ts_raw: AtomicU64, // 0 means not committed yet.
-    isolation: IsolationLevel,
+    commit_ts: AtomicU64, // 0 means not committed yet.
+    isolation_level: IsolationLevel,
     write_sets: Mutex<Vec<Box<dyn TxnWriteSet>>>,
     hooks: Mutex<Vec<Box<dyn TxnHook>>>, // Record the hooks for pre-commit validation.
     mgr: Weak<CatalogTxnManager>,
@@ -110,8 +94,8 @@ impl CatalogTxn {
         Self {
             txn_id,
             start_ts,
-            commit_ts_raw: AtomicU64::new(0),
-            isolation,
+            commit_ts: AtomicU64::new(0),
+            isolation_level: isolation,
             write_sets: Mutex::new(Vec::new()),
             hooks: Mutex::new(Vec::new()),
             mgr,
@@ -123,14 +107,14 @@ impl CatalogTxn {
     pub fn record_versioned_map_writes<K, V>(
         &self,
         map: &Arc<VersionedMap<K, V>>,
-        items: Vec<TouchedItem<K, V>>,
+        entries: Vec<Entry<K, V>>,
     ) where
         K: Eq + Hash + Clone + Send + Sync + 'static + std::fmt::Debug,
         V: Send + Sync + 'static + std::fmt::Debug,
     {
         let write_set = VersionedMapWriteSet {
             map: Arc::downgrade(map),
-            items,
+            entries,
             plans: Mutex::new(None),
         };
         self.write_sets
@@ -147,7 +131,7 @@ impl CatalogTxn {
     /// Whether this transaction runs under Serializable isolation
     #[inline]
     pub fn is_serializable(&self) -> bool {
-        matches!(self.isolation, IsolationLevel::Serializable)
+        matches!(self.isolation_level, IsolationLevel::Serializable)
     }
 
     /// Construct and record a single write entry.
@@ -161,8 +145,8 @@ impl CatalogTxn {
         K: Eq + Hash + Clone + Send + Sync + 'static + std::fmt::Debug,
         V: Send + Sync + 'static + std::fmt::Debug,
     {
-        let item = TouchedItem { key, node, op };
-        self.record_versioned_map_writes(map, vec![item]);
+        let entry = Entry { key, node, op };
+        self.record_versioned_map_writes(map, vec![entry]);
     }
 
     pub fn txn_id(&self) -> Timestamp {
@@ -174,11 +158,16 @@ impl CatalogTxn {
     }
 
     pub fn commit_ts(&self) -> Option<Timestamp> {
-        decode_commit_ts(self.commit_ts_raw.load(Ordering::SeqCst))
+        let raw = self.commit_ts.load(Ordering::SeqCst);
+        if raw == 0 {
+            None
+        } else {
+            Some(Timestamp::with_ts(raw))
+        }
     }
 
     pub fn isolation_level(&self) -> &IsolationLevel {
-        &self.isolation
+        &self.isolation_level
     }
 
     /// Prepare this transaction for commit by running precommit hooks and validating write sets.
@@ -278,9 +267,7 @@ impl PreparedCatalogTxn<'_> {
             }
         }
 
-        self.txn
-            .commit_ts_raw
-            .store(encode_commit_ts(Some(commit_ts)), Ordering::SeqCst);
+        self.txn.commit_ts.store(commit_ts.raw(), Ordering::SeqCst);
 
         if let Some(mgr) = self.txn.mgr.upgrade() {
             mgr.finish_transaction(self.txn)?;
