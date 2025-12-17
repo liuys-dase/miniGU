@@ -1,28 +1,33 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 
 use minigu_common::{
     IsolationLevel, Timestamp, global_timestamp_generator, global_transaction_id_generator,
 };
+use parking_lot::Mutex;
 
 use crate::txn::error::{CatalogTxnError, CatalogTxnResult};
 use crate::txn::transaction::CatalogTxn;
 
 #[derive(Debug)]
-pub struct CatalogTxnManagerInner {
+pub struct CatalogTxnManager {
     active: RwLock<HashMap<u64, Timestamp>>, // txn_id.raw() -> start_ts
     low_watermark_raw: AtomicU64,
     commit_lock: Arc<Mutex<()>>,
 }
 
-impl CatalogTxnManagerInner {
-    fn new() -> Self {
+impl CatalogTxnManager {
+    fn new_inner() -> Self {
         Self {
             active: RwLock::new(HashMap::new()),
             low_watermark_raw: AtomicU64::new(0),
             commit_lock: Arc::new(Mutex::new(())),
         }
+    }
+
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self::new_inner())
     }
 
     pub(crate) fn commit_lock(&self) -> Arc<Mutex<()>> {
@@ -38,45 +43,22 @@ impl CatalogTxnManagerInner {
         self.low_watermark_raw.store(lw, Ordering::SeqCst);
     }
 
-    pub(crate) fn finish_transaction(&self, txn: &CatalogTxn) -> CatalogTxnResult<()> {
+    pub fn finish_transaction(&self, txn: &CatalogTxn) -> CatalogTxnResult<()> {
         let mut guard = self.active.write().expect("poisoned active set");
         guard.remove(&txn.txn_id().raw());
         self.update_low_watermark_locked(&guard);
         Ok(())
     }
-}
-
-#[derive(Clone, Debug)]
-pub struct CatalogTxnManager {
-    inner: Arc<CatalogTxnManagerInner>,
-}
-
-impl Default for CatalogTxnManager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl CatalogTxnManager {
-    pub fn new() -> Self {
-        Self {
-            inner: Arc::new(CatalogTxnManagerInner::new()),
-        }
-    }
-
-    pub fn inner(&self) -> Arc<CatalogTxnManagerInner> {
-        self.inner.clone()
-    }
 
     pub fn begin_transaction(
-        &self,
+        self: &Arc<Self>,
         isolation_level: IsolationLevel,
     ) -> Result<Arc<CatalogTxn>, CatalogTxnError> {
         self.begin_transaction_at(None, None, isolation_level)
     }
 
     pub fn begin_transaction_at(
-        &self,
+        self: &Arc<Self>,
         txn_id: Option<Timestamp>,
         start_ts: Option<Timestamp>,
         isolation_level: IsolationLevel,
@@ -98,19 +80,14 @@ impl CatalogTxnManager {
             txn_id,
             start_ts,
             isolation_level,
-            Arc::downgrade(&self.inner),
-            self.inner.commit_lock(),
+            Arc::downgrade(self),
         ));
 
-        let mut guard = self.inner.active.write().expect("poisoned active set");
+        let mut guard = self.active.write().expect("poisoned active set");
         guard.insert(txn_id.raw(), start_ts);
-        self.inner.update_low_watermark_locked(&guard);
+        self.update_low_watermark_locked(&guard);
 
         Ok(txn)
-    }
-
-    pub fn finish_transaction(&self, txn: &CatalogTxn) -> Result<(), CatalogTxnError> {
-        self.inner.finish_transaction(txn)
     }
 
     pub fn garbage_collect(&self) -> Result<(), CatalogTxnError> {
@@ -118,6 +95,6 @@ impl CatalogTxnManager {
     }
 
     pub fn low_watermark(&self) -> Timestamp {
-        Timestamp::with_ts(self.inner.low_watermark_raw.load(Ordering::SeqCst))
+        Timestamp::with_ts(self.low_watermark_raw.load(Ordering::SeqCst))
     }
 }

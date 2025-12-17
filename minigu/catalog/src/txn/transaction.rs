@@ -3,9 +3,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
 use minigu_common::{IsolationLevel, Timestamp, global_timestamp_generator};
+use parking_lot::RawMutex;
+use parking_lot::lock_api::ArcMutexGuard;
 
 use crate::txn::error::{CatalogTxnError, CatalogTxnResult};
-use crate::txn::manager::CatalogTxnManagerInner;
+use crate::txn::manager::CatalogTxnManager;
 use crate::txn::versioned::CatalogVersionNode;
 use crate::txn::versioned_map::{CommitPlan, TouchedItem, VersionedMap, WriteOp};
 
@@ -91,9 +93,8 @@ pub struct CatalogTxn {
     isolation: IsolationLevel,
     touched: Mutex<Vec<Box<dyn TxnTouchedSet>>>, // Record the touched containers.
     hooks: Mutex<Vec<Box<dyn TxnHook>>>,         // Record the hooks for pre-commit validation.
-    mgr: Weak<CatalogTxnManagerInner>,
+    mgr: Weak<CatalogTxnManager>,
     op_mutex: Mutex<()>, // commit/abort mutex.
-    commit_lock: Arc<Mutex<()>>,
 }
 
 impl CatalogTxn {
@@ -101,8 +102,7 @@ impl CatalogTxn {
         txn_id: Timestamp,
         start_ts: Timestamp,
         isolation: IsolationLevel,
-        mgr: Weak<CatalogTxnManagerInner>,
-        commit_lock: Arc<Mutex<()>>,
+        mgr: Weak<CatalogTxnManager>,
     ) -> Self {
         Self {
             txn_id,
@@ -113,7 +113,6 @@ impl CatalogTxn {
             hooks: Mutex::new(Vec::new()),
             mgr,
             op_mutex: Mutex::new(()),
-            commit_lock,
         }
     }
 
@@ -191,7 +190,13 @@ impl CatalogTxn {
             });
         }
 
-        let commit_guard = self.commit_lock.lock().expect("commit lock poisoned");
+        let mgr = self
+            .mgr
+            .upgrade()
+            .ok_or_else(|| CatalogTxnError::IllegalState {
+                reason: "transaction manager dropped".into(),
+            })?;
+        let commit_guard = mgr.commit_lock().lock_arc();
         let op_guard = self.op_mutex.lock().expect("op mutex poisoned");
 
         {
@@ -253,7 +258,7 @@ pub trait TxnHook: Send + Sync + std::fmt::Debug {
 /// serializable read-validation hooks remain valid until the changes are applied.
 pub struct PreparedCatalogTxn<'a> {
     txn: &'a CatalogTxn,
-    _commit_guard: MutexGuard<'a, ()>,
+    _commit_guard: ArcMutexGuard<RawMutex, ()>,
     _op_guard: MutexGuard<'a, ()>,
 }
 

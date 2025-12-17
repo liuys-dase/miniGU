@@ -26,7 +26,7 @@ impl GraphContainer {
         Self {
             graph_type,
             graph_storage,
-            catalog_txn_mgr: Arc::new(CatalogTxnManager::new()),
+            catalog_txn_mgr: CatalogTxnManager::new(),
         }
     }
 
@@ -37,9 +37,7 @@ impl GraphContainer {
         let txn_id = global_transaction_id_generator().next()?;
         let start_ts = global_timestamp_generator().next()?;
 
-        let mem = match &self.graph_storage {
-            GraphStorage::Memory(mem) => mem,
-        };
+        let GraphStorage::Memory(mem) = &self.graph_storage;
 
         let mem_txn = mem.txn_manager().begin_transaction_at(
             Some(txn_id),
