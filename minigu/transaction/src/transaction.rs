@@ -36,7 +36,10 @@ impl Transaction {
         }
     }
 
-    /// Commit catalog first (when available), then graph, sharing a single commit timestamp.
+    /// Commit graph and catalog updates as a single global transaction.
+    ///
+    /// The catalog sub-transaction is validated first (prepare), then the graph is committed,
+    /// and finally the catalog changes are published (apply) using the same commit timestamp.
     pub fn commit(&mut self) -> TxnResult<Timestamp> {
         if self.core.state != TxnState::Active {
             return Err(TxnError::InvalidState(
@@ -44,18 +47,30 @@ impl Transaction {
             ));
         }
 
+        // Phase 1: validate catalog writes (no publish)
+        let catalog_txn = self.catalog.as_ref().map(|c| Arc::clone(c.txn()));
+        let prepared_catalog = if let Some(txn) = catalog_txn.as_deref() {
+            Some(txn.prepare()?)
+        } else {
+            None
+        };
+
         let commit_ts = global_timestamp_generator().next()?;
 
-        if let Some(catalog) = self.catalog.as_ref() {
-            catalog.commit_at(commit_ts)?;
-        }
-
+        // Phase 2: publish graph first; if this fails, we can still abort catalog safely.
         match self.graph.commit_at(commit_ts) {
             Ok(ts) => {
+                // Publish catalog after graph commit. `prepare()` holds the catalog commit lock,
+                // so apply is expected to be non-failing.
+                if let Some(prepared) = prepared_catalog {
+                    prepared.apply(commit_ts)?;
+                }
                 self.core.mark_committed(ts);
                 Ok(ts)
             }
             Err(err) => {
+                // Drop the prepared guard before aborting.
+                drop(prepared_catalog);
                 if let Some(catalog) = self.catalog.as_ref() {
                     let _ = catalog.abort();
                 }

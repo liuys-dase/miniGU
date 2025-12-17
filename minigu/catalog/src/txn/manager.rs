@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use minigu_common::{
     IsolationLevel, Timestamp, global_timestamp_generator, global_transaction_id_generator,
@@ -13,6 +13,7 @@ use crate::txn::error::{CatalogTxnError, CatalogTxnResult};
 pub struct CatalogTxnManagerInner {
     active: RwLock<HashMap<u64, Timestamp>>, // txn_id.raw() -> start_ts
     low_watermark_raw: AtomicU64,
+    commit_lock: Arc<Mutex<()>>,
 }
 
 impl CatalogTxnManagerInner {
@@ -20,7 +21,12 @@ impl CatalogTxnManagerInner {
         Self {
             active: RwLock::new(HashMap::new()),
             low_watermark_raw: AtomicU64::new(0),
+            commit_lock: Arc::new(Mutex::new(())),
         }
+    }
+
+    pub(crate) fn commit_lock(&self) -> Arc<Mutex<()>> {
+        Arc::clone(&self.commit_lock)
     }
 
     fn update_low_watermark_locked(&self, guard: &HashMap<u64, Timestamp>) {
@@ -93,6 +99,7 @@ impl CatalogTxnManager {
             start_ts,
             isolation_level,
             Arc::downgrade(&self.inner),
+            self.inner.commit_lock(),
         ));
 
         let mut guard = self.inner.active.write().expect("poisoned active set");

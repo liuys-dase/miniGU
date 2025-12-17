@@ -1,6 +1,6 @@
 use std::hash::Hash;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
 use minigu_common::{IsolationLevel, Timestamp, global_timestamp_generator};
 
@@ -93,6 +93,7 @@ pub struct CatalogTxn {
     hooks: Mutex<Vec<Box<dyn TxnHook>>>,         // Record the hooks for pre-commit validation.
     mgr: Weak<CatalogTxnManagerInner>,
     op_mutex: Mutex<()>, // commit/abort mutex.
+    commit_lock: Arc<Mutex<()>>,
 }
 
 impl CatalogTxn {
@@ -101,6 +102,7 @@ impl CatalogTxn {
         start_ts: Timestamp,
         isolation: IsolationLevel,
         mgr: Weak<CatalogTxnManagerInner>,
+        commit_lock: Arc<Mutex<()>>,
     ) -> Self {
         Self {
             txn_id,
@@ -111,6 +113,7 @@ impl CatalogTxn {
             hooks: Mutex::new(Vec::new()),
             mgr,
             op_mutex: Mutex::new(()),
+            commit_lock,
         }
     }
 
@@ -176,8 +179,20 @@ impl CatalogTxn {
         &self.isolation
     }
 
-    pub fn commit_at(&self, commit_ts: Timestamp) -> Result<Timestamp, CatalogTxnError> {
-        let _guard = self.op_mutex.lock().expect("op mutex poisoned");
+    /// Prepare this transaction for commit by running precommit hooks and validating touched sets.
+    ///
+    /// This method acquires a global commit lock to prevent other catalog transactions from
+    /// committing between validation and apply. The returned guard must be consumed via
+    /// [`PreparedCatalogTxn::apply`] to finalize the commit.
+    pub fn prepare(&self) -> Result<PreparedCatalogTxn<'_>, CatalogTxnError> {
+        if self.commit_ts().is_some() {
+            return Err(CatalogTxnError::IllegalState {
+                reason: "transaction already committed".into(),
+            });
+        }
+
+        let commit_guard = self.commit_lock.lock().expect("commit lock poisoned");
+        let op_guard = self.op_mutex.lock().expect("op mutex poisoned");
 
         {
             let hooks = self.hooks.lock().expect("poisoned hooks mutex");
@@ -193,21 +208,15 @@ impl CatalogTxn {
             }
         }
 
-        {
-            let touched = self.touched.lock().expect("poisoned touched mutex");
-            for set in touched.iter() {
-                set.apply(commit_ts)?;
-            }
-        }
+        Ok(PreparedCatalogTxn {
+            txn: self,
+            _commit_guard: commit_guard,
+            _op_guard: op_guard,
+        })
+    }
 
-        self.commit_ts_raw
-            .store(encode_commit_ts(Some(commit_ts)), Ordering::SeqCst);
-
-        if let Some(mgr) = self.mgr.upgrade() {
-            mgr.finish_transaction(self)?;
-        }
-
-        Ok(commit_ts)
+    pub fn commit_at(&self, commit_ts: Timestamp) -> Result<Timestamp, CatalogTxnError> {
+        self.prepare()?.apply(commit_ts)
     }
 
     pub fn commit(&self) -> Result<Timestamp, CatalogTxnError> {
@@ -236,6 +245,37 @@ impl CatalogTxn {
 /// Transaction hook interface exposed to external users (e.g., pre-commit checks).
 pub trait TxnHook: Send + Sync + std::fmt::Debug {
     fn precommit(&self, txn: &CatalogTxn) -> CatalogTxnResult<()>;
+}
+
+/// RAII guard representing a catalog transaction that has been successfully validated for commit.
+///
+/// Holding this guard prevents other catalog transactions from committing, ensuring that
+/// serializable read-validation hooks remain valid until the changes are applied.
+pub struct PreparedCatalogTxn<'a> {
+    txn: &'a CatalogTxn,
+    _commit_guard: MutexGuard<'a, ()>,
+    _op_guard: MutexGuard<'a, ()>,
+}
+
+impl PreparedCatalogTxn<'_> {
+    pub fn apply(self, commit_ts: Timestamp) -> Result<Timestamp, CatalogTxnError> {
+        {
+            let touched = self.txn.touched.lock().expect("poisoned touched mutex");
+            for set in touched.iter() {
+                set.apply(commit_ts)?;
+            }
+        }
+
+        self.txn
+            .commit_ts_raw
+            .store(encode_commit_ts(Some(commit_ts)), Ordering::SeqCst);
+
+        if let Some(mgr) = self.txn.mgr.upgrade() {
+            mgr.finish_transaction(self.txn)?;
+        }
+
+        Ok(commit_ts)
+    }
 }
 
 /// View trait to allow accepting either `CatalogTxn` or higher-level `Transaction`.
