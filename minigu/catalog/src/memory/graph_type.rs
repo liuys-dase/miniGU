@@ -12,7 +12,7 @@ use crate::provider::{
     VertexTypeRef,
 };
 use crate::txn::CatalogTxnError;
-use crate::txn::catalog_txn::{CatalogTxn, TxnHook};
+use crate::txn::transaction::{CatalogTxn, TxnHook};
 use crate::txn::versioned_map::{VersionedMap, WriteOp};
 
 #[derive(Debug)]

@@ -8,8 +8,8 @@ use minigu_common::value::{ScalarValue, VectorValue};
 use minigu_common::{IsolationLevel, Timestamp};
 
 use super::checkpoint::{CheckpointManager, CheckpointManagerConfig};
+use super::manager::MemTxnManager;
 use super::transaction::{GraphTxnView, MemTransaction, UndoEntry, UndoPtr};
-use super::txn_manager::MemTxnManager;
 use super::vector_index::filter::create_filter_mask;
 use super::vector_index::in_mem_diskann::create_vector_index_config;
 use super::vector_index::{InMemANNAdapter, VectorIndex};

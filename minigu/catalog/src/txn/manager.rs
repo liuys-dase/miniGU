@@ -6,8 +6,8 @@ use minigu_common::{
     IsolationLevel, Timestamp, global_timestamp_generator, global_transaction_id_generator,
 };
 
-use crate::txn::catalog_txn::CatalogTxn;
 use crate::txn::error::{CatalogTxnError, CatalogTxnResult};
+use crate::txn::transaction::CatalogTxn;
 
 #[derive(Debug)]
 pub struct CatalogTxnManagerInner {

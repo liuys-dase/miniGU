@@ -1,9 +1,9 @@
-pub mod catalog_txn;
 pub mod error;
 pub mod manager;
+pub mod transaction;
 pub mod versioned;
 pub mod versioned_map;
 
-pub use catalog_txn::{CatalogTxn, CatalogTxnView};
 pub use error::{CatalogTxnError, CatalogTxnResult};
 pub use manager::CatalogTxnManager;
+pub use transaction::{CatalogTxn, CatalogTxnView};

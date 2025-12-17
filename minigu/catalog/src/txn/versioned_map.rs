@@ -4,8 +4,8 @@ use std::sync::{Arc, RwLock, Weak};
 
 use minigu_common::{IsolationLevel, Timestamp};
 
-use crate::txn::catalog_txn::{CatalogTxn, CatalogTxnView, TxnHook};
 use crate::txn::error::{CatalogTxnError, CatalogTxnResult};
+use crate::txn::transaction::{CatalogTxn, CatalogTxnView, TxnHook};
 use crate::txn::versioned::{CatalogVersionChain, CatalogVersionNode};
 
 /// Type of write operation (used for commit validation)
