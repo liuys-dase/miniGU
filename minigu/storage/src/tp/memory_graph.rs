@@ -1237,6 +1237,7 @@ fn check_write_conflict(commit_ts: Timestamp, txn: &Arc<MemTransaction>) -> Stor
 }
 
 #[cfg(any(test, feature = "test-utils"))]
+#[cfg_attr(feature = "test-utils", allow(dead_code))]
 pub mod tests {
     use std::fs;
 
