@@ -40,7 +40,7 @@ const DEFAULT_CHECKPOINT_DIR_NAME: &str = ".checkpoint";
 /// 1. Metadata about the checkpoint (timestamp, LSN, etc.)
 /// 2. Serialized vertices and edges
 /// 3. Adjacency list information
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphCheckpoint {
     /// Metadata about the checkpoint
     pub metadata: CheckpointMetadata,
