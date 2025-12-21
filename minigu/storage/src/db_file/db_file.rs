@@ -320,6 +320,94 @@ impl DbFile {
         self.write_header()?;
         Ok(())
     }
+
+    /// Truncates WAL entries with LSN less than the given minimum LSN.
+    ///
+    /// This is useful for WAL compaction after a checkpoint. The method:
+    /// 1. Reads all current WAL entries
+    /// 2. Filters to keep only entries with LSN >= min_lsn
+    /// 3. Rewrites the WAL region with retained entries
+    ///
+    /// # Arguments
+    ///
+    /// * `min_lsn` - Minimum LSN to keep. Entries with LSN < min_lsn are removed.
+    ///
+    /// # Returns
+    ///
+    /// The number of entries that were removed.
+    pub fn truncate_wal_until(&mut self, min_lsn: u64) -> DbFileResult<usize> {
+        // Read all current entries
+        let all_entries = self.read_wal_entries()?;
+        let original_count = all_entries.len();
+
+        // Filter to keep only entries >= min_lsn
+        let retained: Vec<_> = all_entries
+            .into_iter()
+            .filter(|e| e.lsn >= min_lsn)
+            .collect();
+
+        let removed_count = original_count - retained.len();
+
+        if removed_count == 0 {
+            return Ok(0);
+        }
+
+        // Reset WAL region
+        self.header.wal_length = 0;
+        if retained.is_empty() {
+            self.header.flags.clear(DbFileFlags::HAS_WAL);
+        }
+
+        self.header.update_crc();
+        self.write_header()?;
+
+        // Rewrite retained entries
+        for entry in &retained {
+            self.append_wal(entry)?;
+        }
+
+        self.sync_all()?;
+
+        Ok(removed_count)
+    }
+
+    /// Returns database file statistics.
+    pub fn stats(&self) -> DbFileStats {
+        DbFileStats {
+            header_size: self.header.header_size as u64,
+            checkpoint_offset: self.header.checkpoint_offset,
+            checkpoint_length: self.header.checkpoint_length,
+            wal_offset: self.header.wal_offset,
+            wal_length: self.header.wal_length,
+            last_lsn: self.header.last_lsn,
+            last_commit_ts: self.header.last_commit_ts,
+            has_checkpoint: self.header.flags.has(DbFileFlags::HAS_CHECKPOINT),
+            has_wal: self.header.flags.has(DbFileFlags::HAS_WAL),
+        }
+    }
+}
+
+/// Statistics about the database file.
+#[derive(Debug, Clone)]
+pub struct DbFileStats {
+    /// Size of the header in bytes.
+    pub header_size: u64,
+    /// Offset of the checkpoint region.
+    pub checkpoint_offset: u64,
+    /// Length of the checkpoint region.
+    pub checkpoint_length: u64,
+    /// Offset of the WAL region.
+    pub wal_offset: u64,
+    /// Length of the WAL region.
+    pub wal_length: u64,
+    /// Last LSN in the WAL.
+    pub last_lsn: u64,
+    /// Last commit timestamp.
+    pub last_commit_ts: u64,
+    /// Whether a checkpoint exists.
+    pub has_checkpoint: bool,
+    /// Whether WAL entries exist.
+    pub has_wal: bool,
 }
 
 #[cfg(test)]
@@ -412,6 +500,78 @@ mod tests {
         // Should open
         {
             let _db = DbFile::open_or_create(&path).unwrap();
+        }
+
+        cleanup(&path);
+    }
+
+    #[test]
+    #[serial]
+    fn test_truncate_wal_until() {
+        let path = temp_db_path();
+        cleanup(&path);
+
+        {
+            let mut db = DbFile::create(&path).unwrap();
+
+            // Append 10 entries
+            for i in 1..=10 {
+                let entry = RedoEntry {
+                    lsn: i,
+                    txn_id: Timestamp::with_ts(100 + i),
+                    iso_level: IsolationLevel::Serializable,
+                    op: Operation::Delta(DeltaOp::DelVertex(i)),
+                };
+                db.append_wal(&entry).unwrap();
+            }
+            db.sync_all().unwrap();
+
+            // Truncate entries with LSN < 6 (keep 6-10)
+            let removed = db.truncate_wal_until(6).unwrap();
+            assert_eq!(removed, 5);
+
+            // Verify remaining entries
+            let entries = db.read_wal_entries().unwrap();
+            assert_eq!(entries.len(), 5);
+            assert_eq!(entries[0].lsn, 6);
+            assert_eq!(entries[4].lsn, 10);
+        }
+
+        cleanup(&path);
+    }
+
+    #[test]
+    #[serial]
+    fn test_stats() {
+        let path = temp_db_path();
+        cleanup(&path);
+
+        {
+            let mut db = DbFile::create(&path).unwrap();
+
+            // Initial stats
+            let stats = db.stats();
+            assert_eq!(stats.header_size, 256);
+            assert!(!stats.has_checkpoint);
+            assert!(!stats.has_wal);
+
+            // Add some WAL entries
+            for i in 1..=3 {
+                let entry = RedoEntry {
+                    lsn: i,
+                    txn_id: Timestamp::with_ts(100 + i),
+                    iso_level: IsolationLevel::Serializable,
+                    op: Operation::Delta(DeltaOp::DelVertex(i)),
+                };
+                db.append_wal(&entry).unwrap();
+            }
+            db.sync_all().unwrap();
+
+            // Stats after WAL
+            let stats = db.stats();
+            assert!(stats.has_wal);
+            assert!(stats.wal_length > 0);
+            assert_eq!(stats.last_lsn, 3);
         }
 
         cleanup(&path);

@@ -7,6 +7,7 @@
 //! - WAL region for write-ahead log entries
 //! - Crash recovery from a single file
 //! - Migration from legacy multi-file format
+//! - High-level manager for recovery and persistence
 //!
 //! # File Layout
 //!
@@ -29,14 +30,16 @@ pub mod db_file;
 pub mod error;
 pub mod header;
 pub mod migration;
+pub mod single_file_manager;
 
 #[cfg(test)]
 mod stress_tests;
 
-pub use db_file::DbFile;
+pub use db_file::{DbFile, DbFileStats};
 pub use error::DbFileError;
-pub use header::{CURRENT_VERSION, DbFileHeader, HEADER_SIZE, MAGIC};
+pub use header::{CURRENT_VERSION, DbFileFlags, DbFileHeader, HEADER_SIZE, MAGIC};
 pub use migration::{
     LegacyFormatInfo, MigrationConfig, MigrationResult, ValidationResult, detect_legacy_format,
     migrate_to_single_file, validate_database_file,
 };
+pub use single_file_manager::{RecoveryData, SingleFileConfig, SingleFileManager};
