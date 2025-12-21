@@ -8,7 +8,6 @@ use minigu_common::types::{EdgeId, VectorIndexKey, VertexId};
 use minigu_common::value::{ScalarValue, VectorValue};
 use minigu_transaction::{IsolationLevel, Timestamp, Transaction};
 
-// use super::checkpoint::GraphCheckpoint;
 use super::db_file_persistence::DbFilePersistence;
 use super::in_memory_persistence::InMemoryPersistence;
 use super::persistence::PersistenceProvider;
@@ -642,6 +641,11 @@ impl MemoryGraph {
         vid: VertexId,
     ) -> StorageResult<Box<dyn Iterator<Item = StorageResult<Neighbor>> + 'a>> {
         Ok(Box::new(txn.iter_adjacency(vid)))
+    }
+
+    #[doc(hidden)]
+    pub fn persistence(&self) -> &Arc<dyn PersistenceProvider> {
+        &self.persistence
     }
 
     // ===== Mutable graph methods =====
@@ -2195,154 +2199,6 @@ pub mod tests {
         assert!(graph.delete_vertex(&txn1, vid).is_err());
         let _ = txn1.abort();
     }
-
-    // TODO: Rewrite test_wal_replay and test_checkpoint_and_wal_recovery using PersistenceProvider
-    // These tests were removed as they relied on obsolete CheckpointManagerConfig and
-    // WalManagerConfig
-
-    // let v1 = create_vertex_eve();
-    // let vid1 = graph.create_vertex(&txn1, v1.clone()).unwrap();
-    // assert!(txn1.commit().is_ok());
-    //
-    // Create and commit a transaction with another vertex
-    // let txn2 = graph
-    // .txn_manager()
-    // .begin_transaction(IsolationLevel::Serializable)
-    // .unwrap();
-    // let v2 = create_vertex_frank();
-    // let vid2 = graph.create_vertex(&txn2, v2.clone()).unwrap();
-    //
-    // Create an edge between the vertices
-    // let e1 = Edge::new(
-    // 100,    // edge id
-    // vid1,   // from Eve
-    // vid2,   // to Frank
-    // FRIEND, // label
-    // PropertyRecord::new(vec![ScalarValue::String(Some("2023-01-01".to_string()))]),
-    // );
-    // let eid1 = graph.create_edge(&txn2, e1.clone()).unwrap();
-    // assert!(txn2.commit().is_ok());
-    //
-    // Verify the graph state before recovery
-    // let txn_verify = graph
-    // .txn_manager()
-    // .begin_transaction(IsolationLevel::Serializable)
-    // .unwrap();
-    // assert_eq!(graph.get_vertex(&txn_verify, vid1).unwrap(), v1);
-    // assert_eq!(graph.get_vertex(&txn_verify, vid2).unwrap(), v2);
-    // assert_eq!(graph.get_edge(&txn_verify, eid1).unwrap().src_id(), vid1);
-    // assert_eq!(graph.get_edge(&txn_verify, eid1).unwrap().dst_id(), vid2);
-    // txn_verify.abort().unwrap();
-    //
-    // Create a new graph instance without recovery
-    // let new_graph =
-    // MemoryGraph::with_config_fresh(checkpoint_config.clone(), wal_config.clone());
-    //
-    // Recover the graph from WAL
-    // assert!(new_graph.recover_from_wal().is_ok());
-    //
-    // Verify the graph state after recovery
-    // let txn_after = new_graph
-    // .txn_manager()
-    // .begin_transaction(IsolationLevel::Serializable)
-    // .unwrap();
-    // assert_eq!(new_graph.get_vertex(&txn_after, vid1).unwrap(), v1);
-    // assert_eq!(new_graph.get_vertex(&txn_after, vid2).unwrap(), v2);
-    // assert_eq!(new_graph.get_edge(&txn_after, eid1).unwrap().src_id(), vid1);
-    // assert_eq!(new_graph.get_edge(&txn_after, eid1).unwrap().dst_id(), vid2);
-    // txn_after.abort().unwrap();
-    // }
-    //
-    // #[test]
-    // fn test_checkpoint_and_wal_recovery() {
-    // Creates a new graph
-    // let checkpoint_config = mock_checkpoint_config();
-    // let wal_config = mock_wal_config();
-    // let _cleaner = Cleaner::new(&checkpoint_config, &wal_config);
-    // let graph = MemoryGraph::with_config_fresh(checkpoint_config.clone(), wal_config.clone());
-    //
-    // Create initial data (before checkpoint)
-    // let txn1 = graph
-    // .txn_manager()
-    // .begin_transaction(IsolationLevel::Serializable)
-    // .unwrap();
-    // let vertex1 = Vertex::new(
-    // 1,
-    // LabelId::new(1).unwrap(),
-    // PropertyRecord::new(vec![ScalarValue::String(Some(
-    // "Before Checkpoint".to_string(),
-    // ))]),
-    // );
-    //
-    // graph.create_vertex(&txn1, vertex1.clone()).unwrap();
-    // txn1.commit().unwrap();
-    //
-    // Check the size of wal entries before checkpoint
-    // let entries = graph.wal_manager.wal().read().unwrap().read_all().unwrap();
-    // assert_eq!(entries.len(), 3); // txn1 begin, create vertex, commit
-    //
-    // Create a checkpoint
-    // let _checkpoint_id = graph
-    // .create_managed_checkpoint(Some("Test checkpoint".to_string()))
-    // .unwrap();
-    //
-    // Check the size of wal entries after checkpoint
-    // let entries = graph.wal_manager.wal().read().unwrap().read_all().unwrap();
-    // assert_eq!(entries.len(), 0); // Should be empty as we truncate the WAL
-    //
-    // Create more data (after checkpoint)
-    // let txn2 = graph
-    // .txn_manager()
-    // .begin_transaction(IsolationLevel::Serializable)
-    // .unwrap();
-    // let vertex2 = Vertex::new(
-    // 2,
-    // LabelId::new(1).unwrap(),
-    // PropertyRecord::new(vec![ScalarValue::String(Some(
-    // "After Checkpoint".to_string(),
-    // ))]),
-    // );
-    // graph.create_vertex(&txn2, vertex2.clone()).unwrap();
-    // txn2.commit().unwrap();
-    //
-    // Check the size of wal entries before recovery
-    // let entries = graph.wal_manager.wal().read().unwrap().read_all().unwrap();
-    // assert_eq!(entries.len(), 3); // txn2 begin, create vertex, commit
-    //
-    // Now recover a new graph from checkpoint and WAL
-    // let recovered_graph = MemoryGraph::with_config_recovered(checkpoint_config, wal_config);
-    //
-    // Check the size of wal entries after recovery
-    // let entries = recovered_graph
-    // .wal_manager
-    // .wal()
-    // .read()
-    // .unwrap()
-    // .read_all()
-    // .unwrap();
-    //
-    // assert_eq!(entries.len(), 3); // Should be still 3, since we didn't truncate the WAL
-    //
-    // Verify the recovered graph has both vertices
-    // let txn = recovered_graph
-    // .txn_manager()
-    // .begin_transaction(IsolationLevel::Serializable)
-    // .unwrap();
-    // let recovered_vertex1 = recovered_graph.get_vertex(&txn, 1).unwrap();
-    // let recovered_vertex2 = recovered_graph.get_vertex(&txn, 2).unwrap();
-    //
-    // assert_eq!(recovered_vertex1.vid(), vertex1.vid());
-    // assert_eq!(
-    // recovered_vertex1.properties()[0],
-    // ScalarValue::String(Some("Before Checkpoint".to_string()))
-    // );
-    //
-    // assert_eq!(recovered_vertex2.vid(), vertex2.vid());
-    // assert_eq!(
-    // recovered_vertex2.properties()[0],
-    // ScalarValue::String(Some("After Checkpoint".to_string()))
-    // );
-    // }
 
     #[test]
     fn test_vector_index_build_and_verify() -> StorageResult<()> {

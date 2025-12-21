@@ -1,4 +1,3 @@
-use std::env;
 // graph_wal.rs
 // Minimal standalone Write‑Ahead Log (WAL) implementation for an **in‑memory graph database**.
 //
@@ -21,8 +20,6 @@ use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
 
 use crc32fast::Hasher;
 use minigu_transaction::{IsolationLevel, Timestamp};
@@ -33,7 +30,6 @@ use crate::common::DeltaOp;
 use crate::error::{StorageError, StorageResult, WalError};
 
 const HEADER_SIZE: usize = 8; // 4 bytes length + 4 bytes crc32
-const DEFAULT_WAL_DIR_NAME: &str = ".wal";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RedoEntry {
@@ -64,6 +60,9 @@ impl LogRecord for RedoEntry {
 }
 
 /// Write‑ahead log in append‑only mode, tailored for an in‑memory graph store.
+///
+/// **Note**: This implementation is legacy and primarily used for migration from
+/// the old multi-file format. New code should use the integrated WAL in `DbFilePersistence`.
 pub struct GraphWal {
     pub file: BufWriter<File>,
     pub path: PathBuf,
@@ -317,61 +316,6 @@ impl GraphWal {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct WalManagerConfig {
-    pub wal_path: PathBuf,
-}
-
-fn default_wal_path() -> PathBuf {
-    let dir = env::current_dir().unwrap();
-    dir.join(DEFAULT_WAL_DIR_NAME)
-}
-
-impl Default for WalManagerConfig {
-    fn default() -> Self {
-        Self {
-            wal_path: default_wal_path(),
-        }
-    }
-}
-
-pub struct WalManager {
-    pub(super) wal: Arc<RwLock<GraphWal>>,
-    pub(super) next_lsn: AtomicU64,
-    pub(super) wal_path: PathBuf,
-}
-
-impl WalManager {
-    pub fn new(config: WalManagerConfig) -> Self {
-        let path = config.wal_path;
-        Self {
-            wal: Arc::new(RwLock::new(GraphWal::open(&path).unwrap())),
-            next_lsn: AtomicU64::new(0),
-            wal_path: path.to_path_buf(),
-        }
-    }
-
-    pub fn next_lsn(&self) -> u64 {
-        self.next_lsn.fetch_add(1, Ordering::SeqCst)
-    }
-
-    pub fn set_next_lsn(&self, lsn: u64) {
-        self.next_lsn.store(lsn, Ordering::SeqCst);
-    }
-
-    pub fn wal(&self) -> &Arc<RwLock<GraphWal>> {
-        &self.wal
-    }
-
-    pub fn truncate_until(&self, lsn: u64) -> StorageResult<()> {
-        self.wal.write().unwrap().truncate_until(lsn)
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.wal_path
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -476,271 +420,6 @@ mod tests {
                 wal.iter().unwrap().collect::<Result<Vec<_>, _>>().unwrap();
 
             assert_eq!(entries.len(), 2);
-
-            // Verify first entry
-            assert_eq!(entries[0].lsn, 1);
-            assert_eq!(entries[0].txn_id.raw(), 100);
-            match &entries[0].op {
-                Operation::Delta(DeltaOp::DelVertex(vid)) => assert_eq!(*vid, 42),
-                _ => panic!("Expected Delta(DelVertex) operation"),
-            }
-
-            // Verify second entry
-            assert_eq!(entries[1].lsn, 2);
-            assert_eq!(entries[1].txn_id.raw(), 101);
-            match &entries[1].op {
-                Operation::Delta(DeltaOp::DelEdge(eid)) => assert_eq!(*eid, 24),
-                _ => panic!("Expected Delta(DelEdge) operation"),
-            }
-        }
-
-        cleanup(&path);
-    }
-
-    #[test]
-    #[serial]
-    fn test_walentry_recovery_sequence() {
-        let path = temp_wal_path();
-        cleanup(&path);
-
-        // Create a sequence of operations in the WAL
-        {
-            let mut wal = GraphWal::open(&path).unwrap();
-
-            // Transaction 1: Delete vertex 10
-            let entry1 = RedoEntry {
-                lsn: 1,
-                txn_id: Timestamp::with_ts(100),
-                iso_level: IsolationLevel::Serializable,
-                op: Operation::Delta(DeltaOp::DelVertex(10)),
-            };
-            wal.append(&entry1).unwrap();
-
-            // Transaction 2: Delete edge 20
-            let entry2 = RedoEntry {
-                lsn: 2,
-                txn_id: Timestamp::with_ts(101),
-                iso_level: IsolationLevel::Serializable,
-                op: Operation::Delta(DeltaOp::DelEdge(20)),
-            };
-            wal.append(&entry2).unwrap();
-
-            // Transaction 3: Delete vertex 30
-            let entry3 = RedoEntry {
-                lsn: 3,
-                txn_id: Timestamp::with_ts(102),
-                iso_level: IsolationLevel::Serializable,
-                op: Operation::Delta(DeltaOp::DelVertex(30)),
-            };
-            wal.append(&entry3).unwrap();
-
-            wal.flush().unwrap();
-        }
-
-        // Read and verify the recovery sequence
-        {
-            let wal = GraphWal::open(&path).unwrap();
-            let entries = wal.iter().unwrap();
-
-            // Process entries in sequence
-            let mut deleted_vertices = Vec::new();
-            let mut deleted_edges = Vec::new();
-
-            for entry_result in entries {
-                let entry = entry_result.unwrap();
-                match &entry.op {
-                    Operation::Delta(DeltaOp::DelVertex(vid)) => deleted_vertices.push(*vid),
-                    Operation::Delta(DeltaOp::DelEdge(eid)) => deleted_edges.push(*eid),
-                    _ => {}
-                }
-            }
-
-            // Verify the recovery state
-            assert_eq!(deleted_vertices, vec![10, 30]);
-            assert_eq!(deleted_edges, vec![20]);
-        }
-
-        cleanup(&path);
-    }
-
-    #[test]
-    #[serial]
-    fn test_walentry_invalid_data() {
-        let path = temp_wal_path();
-        cleanup(&path);
-
-        // Write a valid record
-        {
-            let mut wal = GraphWal::open(&path).unwrap();
-            let entry = RedoEntry {
-                lsn: 1,
-                txn_id: Timestamp::with_ts(100),
-                iso_level: IsolationLevel::Serializable,
-                op: Operation::Delta(DeltaOp::DelVertex(42)),
-            };
-            wal.append(&entry).unwrap();
-            wal.flush().unwrap();
-        }
-
-        // Append invalid data directly to the file
-        {
-            let mut file = OpenOptions::new().append(true).open(&path).unwrap();
-
-            // Write invalid header (correct length but wrong checksum)
-            let payload = vec![0u8; 20]; // Empty payload with correct structure
-            let len = payload.len() as u32;
-            let invalid_checksum = 12345u32;
-
-            file.write_all(&len.to_le_bytes()).unwrap();
-            file.write_all(&invalid_checksum.to_le_bytes()).unwrap();
-            file.write_all(&payload).unwrap();
-            file.sync_data().unwrap();
-        }
-
-        // Read records - should get one valid record and one error
-        {
-            let wal = GraphWal::open(&path).unwrap();
-            let mut entries = wal.iter().unwrap();
-            // First entry should be valid
-            let first = entries.next().unwrap().unwrap();
-            match &first.op {
-                Operation::Delta(DeltaOp::DelVertex(vid)) => assert_eq!(*vid, 42),
-                _ => panic!("Expected Delta(DelVertex) operation"),
-            }
-
-            // Second entry should be an error due to checksum mismatch
-            let second = entries.next().unwrap();
-            assert!(second.is_err());
-            match second {
-                Err(StorageError::Wal(WalError::ChecksumMismatch)) => {}
-                _ => panic!("Expected checksum mismatch error"),
-            }
-
-            // No more entries
-            assert!(entries.next().is_none());
-        }
-
-        cleanup(&path);
-    }
-
-    #[test]
-    #[serial]
-    fn test_read_all() {
-        let path = temp_wal_path();
-        cleanup(&path);
-
-        // Create and write two entries
-        {
-            let mut wal = GraphWal::open(&path).unwrap();
-
-            // Entry 1: Delete vertex 42
-            let entry1 = RedoEntry {
-                lsn: 1,
-                txn_id: Timestamp::with_ts(100),
-                iso_level: IsolationLevel::Serializable,
-                op: Operation::Delta(DeltaOp::DelVertex(42)),
-            };
-            wal.append(&entry1).unwrap();
-
-            // Entry 2: Delete edge 24
-            let entry2 = RedoEntry {
-                lsn: 2,
-                txn_id: Timestamp::with_ts(101),
-                iso_level: IsolationLevel::Serializable,
-                op: Operation::Delta(DeltaOp::DelEdge(24)),
-            };
-            wal.append(&entry2).unwrap();
-
-            wal.flush().unwrap();
-        }
-
-        // Read all entries at once using read_all
-        {
-            let wal = GraphWal::open(&path).unwrap();
-            let entries = wal.read_all().unwrap();
-
-            // Verify we got both entries in correct order
-            assert_eq!(entries.len(), 2);
-
-            // Verify first entry
-            assert_eq!(entries[0].lsn, 1);
-            assert_eq!(entries[0].txn_id.raw(), 100);
-            match &entries[0].op {
-                Operation::Delta(DeltaOp::DelVertex(vid)) => assert_eq!(*vid, 42),
-                _ => panic!("Expected Delta(DelVertex) operation"),
-            }
-
-            // Verify second entry
-            assert_eq!(entries[1].lsn, 2);
-            assert_eq!(entries[1].txn_id.raw(), 101);
-            match &entries[1].op {
-                Operation::Delta(DeltaOp::DelEdge(eid)) => assert_eq!(*eid, 24),
-                _ => panic!("Expected Delta(DelEdge) operation"),
-            }
-        }
-
-        cleanup(&path);
-    }
-
-    #[test]
-    #[serial]
-    fn test_truncate_until() {
-        let path = temp_wal_path();
-        cleanup(&path);
-
-        // Create and write entries with different LSNs
-        {
-            let mut wal = GraphWal::open(&path).unwrap();
-
-            // Entry with LSN 1
-            let entry1 = RedoEntry {
-                lsn: 1,
-                txn_id: Timestamp::with_ts(100),
-                iso_level: IsolationLevel::Serializable,
-                op: Operation::Delta(DeltaOp::DelVertex(10)),
-            };
-            wal.append(&entry1).unwrap();
-
-            // Entry with LSN 2
-            let entry2 = RedoEntry {
-                lsn: 2,
-                txn_id: Timestamp::with_ts(101),
-                iso_level: IsolationLevel::Serializable,
-                op: Operation::Delta(DeltaOp::DelVertex(20)),
-            };
-            wal.append(&entry2).unwrap();
-
-            // Entry with LSN 3
-            let entry3 = RedoEntry {
-                lsn: 3,
-                txn_id: Timestamp::with_ts(102),
-                iso_level: IsolationLevel::Serializable,
-                op: Operation::Delta(DeltaOp::DelVertex(30)),
-            };
-            wal.append(&entry3).unwrap();
-
-            wal.flush().unwrap();
-
-            let entries = wal.read_all().unwrap();
-            assert_eq!(entries.len(), 3);
-
-            // Truncate entries with LSN <= 2
-            wal.truncate_until(2).unwrap();
-
-            // Verify only entries with LSN >= 2 remain
-            let entries = wal.read_all().unwrap();
-            assert_eq!(entries.len(), 2);
-            assert_eq!(entries[0].lsn, 2);
-            assert_eq!(entries[1].lsn, 3);
-        }
-
-        // Reopen the WAL and verify truncation persisted
-        {
-            let wal = GraphWal::open(&path).unwrap();
-            let entries = wal.read_all().unwrap();
-            assert_eq!(entries.len(), 2);
-            assert_eq!(entries[0].lsn, 2);
-            assert_eq!(entries[1].lsn, 3);
         }
 
         cleanup(&path);

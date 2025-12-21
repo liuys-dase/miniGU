@@ -173,7 +173,6 @@ impl VertexPropertySource for GraphContainer {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
     use std::sync::Arc;
 
     use arrow::array::{BooleanArray, Float32Array, Float64Array, Int32Array, Int64Array};
@@ -181,39 +180,14 @@ mod tests {
     use minigu_common::types::{LabelId, PropertyId, VertexId, VertexIdArray};
     use minigu_common::value::ScalarValue;
     use minigu_context::graph::{GraphContainer, GraphStorage};
-    use minigu_storage::common::graph_wal::WalManagerConfig;
     use minigu_storage::common::{PropertyRecord, Vertex};
     use minigu_storage::tp::MemoryGraph;
-    use minigu_storage::tp::checkpoint::CheckpointManagerConfig;
     use minigu_transaction::{IsolationLevel, Transaction};
 
     use super::*;
     use crate::source::VertexPropertySource;
 
     const PERSON_LABEL_ID: LabelId = LabelId::new(1).unwrap();
-
-    #[allow(dead_code)]
-    struct TestCleaner {
-        wal_path: std::path::PathBuf,
-        checkpoint_dir: std::path::PathBuf,
-    }
-
-    impl TestCleaner {
-        #[allow(dead_code)]
-        fn new(checkpoint_config: &CheckpointManagerConfig, wal_config: &WalManagerConfig) -> Self {
-            Self {
-                wal_path: wal_config.wal_path.clone(),
-                checkpoint_dir: checkpoint_config.checkpoint_dir.clone(),
-            }
-        }
-    }
-
-    impl Drop for TestCleaner {
-        fn drop(&mut self) {
-            let _ = fs::remove_file(&self.wal_path);
-            let _ = fs::remove_dir_all(&self.checkpoint_dir);
-        }
-    }
 
     fn create_test_graph_container() -> GraphContainer {
         let graph = MemoryGraph::in_memory();
