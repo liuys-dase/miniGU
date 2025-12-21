@@ -23,9 +23,7 @@ fn convert_error(e: DbFileError) -> StorageError {
             WalError::DeserializationFailed(format!("Unsupported version: {}", v)),
         ),
         DbFileError::HeaderChecksumMismatch { .. } => StorageError::Wal(WalError::ChecksumMismatch),
-        DbFileError::CheckpointChecksumMismatch { .. } => {
-            StorageError::Wal(WalError::ChecksumMismatch)
-        }
+        DbFileError::CheckpointChecksumMismatch => StorageError::Wal(WalError::ChecksumMismatch),
         DbFileError::WalChecksumMismatch { .. } => StorageError::Wal(WalError::ChecksumMismatch),
         DbFileError::FileTruncated { expected, actual } => {
             StorageError::Wal(WalError::DeserializationFailed(format!(

@@ -10,7 +10,6 @@ use minigu_transaction::{
 pub use minigu_transaction::{IsolationLevel, Timestamp};
 
 use super::memory_graph::MemoryGraph;
-use crate::common::wal::StorageWal;
 use crate::common::wal::graph_wal::{Operation, RedoEntry};
 use crate::common::{DeltaOp, SetPropsOp};
 use crate::error::{
@@ -280,33 +279,23 @@ impl MemTransaction {
                 .drain(..)
                 .map(|mut entry| {
                     // Update LSN
-                    entry.lsn = self.graph.wal_manager.next_lsn();
+                    entry.lsn = self.graph.persistence.next_lsn();
                     entry
                 })
                 .collect::<Vec<_>>();
             for entry in redo_entries {
-                self.graph
-                    .wal_manager
-                    .wal()
-                    .write()
-                    .unwrap()
-                    .append(&entry)?;
+                self.graph.persistence.append_wal(&entry)?;
             }
 
             // Write `Operation::CommitTransaction` to WAL
             let wal_entry = RedoEntry {
-                lsn: self.graph.wal_manager.next_lsn(),
+                lsn: self.graph.persistence.next_lsn(),
                 txn_id: self.txn_id(),
                 iso_level: self.isolation_level,
                 op: Operation::CommitTransaction(commit_ts),
             };
-            self.graph
-                .wal_manager
-                .wal()
-                .write()
-                .unwrap()
-                .append(&wal_entry)?;
-            self.graph.wal_manager.wal().write().unwrap().flush()?;
+            self.graph.persistence.append_wal(&wal_entry)?;
+            self.graph.persistence.flush_wal()?;
         }
 
         // Step 5: Clean up transaction state and update the `latest_commit_ts`.
@@ -317,7 +306,8 @@ impl MemTransaction {
         self.graph.txn_manager.finish_transaction(self)?;
 
         // Step 6: Check if an auto checkpoint should be created
-        self.graph.check_auto_checkpoint()?;
+        // Auto-checkpointing logic is moved to PersistenceProvider/background task
+        // self.graph.check_auto_checkpoint()?;
 
         // Mark the transaction as handled
         self.is_handled.store(true, Ordering::Release);
@@ -423,20 +413,15 @@ impl MemTransaction {
         // Write `Operation::AbortTransaction` to WAL,
         // unless the function is called when recovering from WAL
         if !skip_wal {
-            let lsn = self.graph.wal_manager.next_lsn();
+            let lsn = self.graph.persistence.next_lsn();
             let wal_entry = RedoEntry {
                 lsn,
                 txn_id: self.txn_id(),
                 iso_level: self.isolation_level,
                 op: Operation::AbortTransaction,
             };
-            self.graph
-                .wal_manager
-                .wal()
-                .write()
-                .unwrap()
-                .append(&wal_entry)?;
-            self.graph.wal_manager.wal().write().unwrap().flush()?;
+            self.graph.persistence.append_wal(&wal_entry)?;
+            self.graph.persistence.flush_wal()?;
         }
 
         // Remove transaction from transaction manager

@@ -26,7 +26,7 @@
 //! └────────────────────────────────────────────────────────┘
 //! ```
 
-pub mod db_file;
+pub mod core;
 pub mod error;
 pub mod header;
 pub mod migration;
@@ -35,7 +35,8 @@ pub mod single_file_manager;
 #[cfg(test)]
 mod stress_tests;
 
-pub use db_file::{DbFile, DbFileStats};
+pub use core::{DbFile, DbFileStats};
+
 pub use error::DbFileError;
 pub use header::{CURRENT_VERSION, DbFileFlags, DbFileHeader, HEADER_SIZE, MAGIC};
 pub use migration::{

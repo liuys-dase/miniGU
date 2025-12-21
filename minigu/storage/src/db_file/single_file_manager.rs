@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::db_file::DbFile;
+use super::core::DbFile;
 use super::error::{DbFileError, DbFileResult};
 use super::header::DbFileFlags;
 use crate::common::wal::graph_wal::RedoEntry;

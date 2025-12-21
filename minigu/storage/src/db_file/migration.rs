@@ -8,7 +8,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::db_file::DbFile;
+use super::core::DbFile;
 use super::error::{DbFileError, DbFileResult};
 use crate::common::wal::StorageWal;
 use crate::common::wal::graph_wal::GraphWal;
