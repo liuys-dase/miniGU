@@ -6,6 +6,7 @@
 //! - Checkpoint region for graph state snapshots
 //! - WAL region for write-ahead log entries
 //! - Crash recovery from a single file
+//! - Migration from legacy multi-file format
 //!
 //! # File Layout
 //!
@@ -27,7 +28,15 @@
 pub mod db_file;
 pub mod error;
 pub mod header;
+pub mod migration;
+
+#[cfg(test)]
+mod stress_tests;
 
 pub use db_file::DbFile;
 pub use error::DbFileError;
 pub use header::{CURRENT_VERSION, DbFileHeader, HEADER_SIZE, MAGIC};
+pub use migration::{
+    LegacyFormatInfo, MigrationConfig, MigrationResult, ValidationResult, detect_legacy_format,
+    migrate_to_single_file, validate_database_file,
+};
