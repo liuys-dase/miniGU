@@ -14,7 +14,7 @@ use serial_test::serial;
 
 use crate::common::DeltaOp;
 use crate::common::wal::graph_wal::{Operation, RedoEntry};
-use crate::db_file::{DbFile, validate_database_file};
+use crate::db_file::DbFile;
 
 static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -65,10 +65,6 @@ fn test_large_wal_volume() {
         }
         db.sync_all().unwrap();
     }
-
-    // Verify file is valid
-    let validation = validate_database_file(&db_path).unwrap();
-    assert!(validation.is_valid());
 
     // Read and verify all entries
     {
@@ -241,8 +237,6 @@ fn test_variable_entry_sizes() {
     // Verify
     {
         let mut db = DbFile::open(&db_path).unwrap();
-        let validation = validate_database_file(&db_path).unwrap();
-        assert!(validation.is_valid());
 
         let entries = db.read_wal_entries().unwrap();
         assert_eq!(entries.len(), num_entries);

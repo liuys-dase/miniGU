@@ -6,12 +6,8 @@
 // It can be used for backup, recovery, or state transfer purposes.
 
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{BufReader, BufWriter, Read, Write};
-use std::path::Path;
 use std::sync::Arc;
 
-use crc32fast::Hasher;
 use minigu_common::types::{EdgeId, VertexId};
 use minigu_transaction::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -19,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use super::memory_graph::{AdjacencyContainer, MemoryGraph, VersionedEdge, VersionedVertex};
 use crate::common::model::edge::{Edge, Neighbor};
 use crate::common::model::vertex::Vertex;
-use crate::error::{CheckpointError, StorageError, StorageResult};
+use crate::error::StorageResult;
 
 /// Represents a checkpoint of a MemoryGraph at a specific point in time.
 ///
@@ -97,10 +93,10 @@ impl GraphCheckpoint {
     /// - The full adjacency list (both outgoing and incoming edges)
     ///
     /// It does **not** include historical versions of vertices or edges—only the
-    /// latest committed state is serialized.
+    /// Creates a new checkpoint snapshot of the current graph state.
     ///
-    /// This checkpoint can later be saved to disk using [`GraphCheckpoint::save_to_file`],
-    /// and used for recovery via [`GraphCheckpoint::restore`] or the checkpoint manager.
+    /// This checkpoint can be persisted using
+    /// `PersistenceProvider::write_checkpoint`.phCheckpoint::restore`] or the checkpoint manager.
     ///
     /// # Arguments
     ///
@@ -190,86 +186,6 @@ impl GraphCheckpoint {
         }
     }
 
-    /// Saves the checkpoint to a file
-    pub fn save_to_file<P: AsRef<Path>>(&self, path: P) -> StorageResult<()> {
-        let file =
-            File::create(path).map_err(|e| StorageError::Checkpoint(CheckpointError::Io(e)))?;
-
-        let mut writer = BufWriter::new(file);
-
-        // Serialize the checkpoint
-        let serialized = postcard::to_allocvec(self).map_err(|e| {
-            StorageError::Checkpoint(CheckpointError::SerializationFailed(e.to_string()))
-        })?;
-
-        // Calculate checksum
-        let mut hasher = Hasher::new();
-        hasher.update(&serialized);
-        let checksum = hasher.finalize();
-
-        // Write length and checksum
-        let len = serialized.len() as u32;
-        writer
-            .write_all(&len.to_le_bytes())
-            .map_err(|e| StorageError::Checkpoint(CheckpointError::Io(e)))?;
-        writer
-            .write_all(&checksum.to_le_bytes())
-            .map_err(|e| StorageError::Checkpoint(CheckpointError::Io(e)))?;
-
-        // Write serialized data
-        writer
-            .write_all(&serialized)
-            .map_err(|e| StorageError::Checkpoint(CheckpointError::Io(e)))?;
-
-        // Flush to ensure data is written
-        writer
-            .flush()
-            .map_err(|e| StorageError::Checkpoint(CheckpointError::Io(e)))?;
-
-        Ok(())
-    }
-
-    /// Loads a checkpoint from a file
-    pub fn load_from_file<P: AsRef<Path>>(path: P) -> StorageResult<Self> {
-        let file =
-            File::open(path).map_err(|e| StorageError::Checkpoint(CheckpointError::Io(e)))?;
-
-        let mut reader = BufReader::new(file);
-
-        // Read length and checksum
-        let mut len_bytes = [0u8; 4];
-        reader
-            .read_exact(&mut len_bytes)
-            .map_err(|e| StorageError::Checkpoint(CheckpointError::Io(e)))?;
-        let len = u32::from_le_bytes(len_bytes) as usize;
-
-        let mut checksum_bytes = [0u8; 4];
-        reader
-            .read_exact(&mut checksum_bytes)
-            .map_err(|e| StorageError::Checkpoint(CheckpointError::Io(e)))?;
-        let checksum = u32::from_le_bytes(checksum_bytes);
-
-        // Read serialized data
-        let mut serialized = vec![0u8; len];
-        reader
-            .read_exact(&mut serialized)
-            .map_err(|e| StorageError::Checkpoint(CheckpointError::Io(e)))?;
-
-        // Verify checksum
-        let mut hasher = Hasher::new();
-        hasher.update(&serialized);
-        if hasher.finalize() != checksum {
-            return Err(StorageError::Checkpoint(CheckpointError::ChecksumMismatch));
-        }
-
-        // Deserialize
-        postcard::from_bytes(&serialized).map_err(|e| {
-            StorageError::Checkpoint(CheckpointError::DeserializationFailed(e.to_string()))
-        })
-    }
-
-    /// Restores a new [`MemoryGraph`] instance from this checkpoint snapshot.
-    ///
     /// This method reconstructs an in-memory graph by replaying the serialized state
     /// stored in the checkpoint, including:
     /// - Metadata (log sequence number and latest commit timestamp)
@@ -349,121 +265,15 @@ impl GraphCheckpoint {
     }
 }
 
-impl MemoryGraph {
-    // Recovers a [`MemoryGraph`] by loading the latest checkpoint and replaying WAL entries.
-    //
-    // This method implements a two-phase recovery process:
-    //
-    // 1. **Checkpoint-based Recovery**   If a valid checkpoint exists in the configured directory,
-    //    the graph is restored from it, and all WAL entries with LSN ≥ checkpoint LSN are applied
-    //    to reach the latest consistent state.
-    //
-    // 2. **WAL-only Recovery**   If no checkpoint is found, the graph is initialized empty and
-    //    recovered solely from WAL entries.
-    //
-    // # Returns
-    //
-    // A fully recovered [`Arc<MemoryGraph>`] containing the most recent state reconstructed
-    // from persisted checkpoints and logs.
-    // TODO: Reimplement recover_from_checkpoint_and_wal using new persistence architecture
-    // This function needs to be rewritten to work with the new PersistenceProvider
-    // pub fn recover_from_checkpoint_and_wal(
-    // checkpoint_config: CheckpointManagerConfig,
-    // wal_config: WalManagerConfig,
-    // ) -> StorageResult<Arc<MemoryGraph>> {
-    // let checkpoint_path = Self::find_most_recent_checkpoint(&checkpoint_config)?;
-    //
-    // if checkpoint_path.is_none() {
-    // let graph = Self::with_config_fresh(checkpoint_config.clone(), wal_config.clone());
-    // graph.recover_from_wal()?;
-    // return Ok(graph);
-    // }
-    //
-    // Restore from checkpoint
-    // let checkpoint = GraphCheckpoint::load_from_file(checkpoint_path.unwrap())?;
-    // let checkpoint_lsn = checkpoint.metadata.lsn;
-    // let graph = checkpoint.restore(checkpoint_config, wal_config)?;
-    //
-    // Read WAL entries with LSN >= checkpoint_lsn
-    // let all_entries = graph.persistence.read_wal_entries()?;
-    //
-    // let new_entries: Vec<_> = all_entries
-    // .into_iter()
-    // .filter(|entry| entry.lsn >= checkpoint_lsn)
-    // .collect();
-    //
-    // Apply new WAL entries
-    // if !new_entries.is_empty() {
-    // graph.apply_wal_entries(new_entries)?;
-    // }
-    //
-    // Ok(graph)
-    // }
-
-    // Unused helper - commented out until recovery logic is reimplemented
-    // Finds the most recent checkpoint in the checkpoint directory
-    // fn find_most_recent_checkpoint(
-    // config: &CheckpointManagerConfig,
-    // ) -> StorageResult<Option<PathBuf>> {
-    // let entries = match fs::read_dir(&config.checkpoint_dir) {
-    // Ok(entries) => entries,
-    // Err(e) => return Err(StorageError::Checkpoint(CheckpointError::Io(e))),
-    // };
-    // ... (implementation omitted)
-    // Ok(None) // Placeholder
-    // }
-    // Ok(latest_checkpoint.map(|(path, _)| path))
-    // }
-
-    // TODO: Re-implement create_managed_checkpoint using persistence provider
-    // Temporarily disabled due to CheckpointManager refactoring
-    // pub fn create_managed_checkpoint(&self, description: Option<String>) -> StorageResult<String>
-    // { match &self.checkpoint_manager {
-    // Some(manager) => {
-    // let manager_ptr = manager as *const CheckpointManager as *mut CheckpointManager;
-    // unsafe { (*manager_ptr).create_checkpoint(description) }
-    // }
-    // None => Err(StorageError::Checkpoint(
-    // crate::error::CheckpointError::DirectoryError(
-    // "No checkpoint manager configured".to_string(),
-    // ),
-    // )),
-    // }
-    // }
-
-    // TODO: Re-implement check_auto_checkpoint using persistence provider
-    // Temporarily disabled due to CheckpointManager refactoring
-    // pub fn check_auto_checkpoint(&self) -> StorageResult<Option<String>> {
-    // match &self.checkpoint_manager {
-    // Some(manager) => {
-    // Need to get a mutable reference to the manager
-    // This is safe because we're only modifying the manager's internal state
-    // let manager_ptr = manager as *const CheckpointManager as *mut CheckpointManager;
-    // unsafe { (*manager_ptr).check_auto_checkpoint() }
-    // }
-    // None => Ok(None), // No checkpoint manager, so no auto checkpoint
-    // }
-    // }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::io::Seek;
-    use std::{env, fs};
 
     use minigu_common::types::VertexId;
     use minigu_common::value::ScalarValue;
     use minigu_transaction::{GraphTxnManager, IsolationLevel};
 
     use super::*;
-    use crate::error::CheckpointError;
     use crate::tp::memory_graph;
-
-    fn get_temp_file_path(prefix: &str) -> std::path::PathBuf {
-        let mut path = env::temp_dir();
-        path.push(format!("{}_{}.bin", prefix, uuid::Uuid::new_v4()));
-        path
-    }
 
     #[test]
     fn test_checkpoint_creation() {
@@ -490,33 +300,6 @@ mod tests {
         let alice_adj = checkpoint.adjacency_list.get(&alice_vid).unwrap();
         assert!(alice_adj.outgoing.len() == 2);
         assert!(alice_adj.incoming.len() == 1);
-    }
-
-    #[test]
-    fn test_checkpoint_save_and_load() {
-        // Create a graph with mock data
-        let (graph, _cleaner) = memory_graph::tests::mock_graph();
-
-        // Create and save checkpoint
-        let checkpoint_path = get_temp_file_path("checkpoint_save_load");
-        let checkpoint = GraphCheckpoint::new(&graph);
-        checkpoint.save_to_file(&checkpoint_path).unwrap();
-
-        // Load checkpoint
-        let loaded_checkpoint = GraphCheckpoint::load_from_file(&checkpoint_path).unwrap();
-
-        // Verify loaded checkpoint has same number of elements
-        assert_eq!(loaded_checkpoint.vertices.len(), checkpoint.vertices.len());
-        assert_eq!(loaded_checkpoint.edges.len(), checkpoint.edges.len());
-        assert_eq!(
-            loaded_checkpoint.adjacency_list.len(),
-            checkpoint.adjacency_list.len()
-        );
-
-        // Clean up
-        if checkpoint_path.exists() {
-            fs::remove_file(checkpoint_path).unwrap();
-        }
     }
 
     #[test]
@@ -603,41 +386,5 @@ mod tests {
             original_alice_adj.incoming.len(),
             restored_alice_adj.incoming.len()
         );
-    }
-
-    #[test]
-    fn test_checkpoint_with_corrupted_file() {
-        // Create a graph with mock data
-        let (graph, _cleaner) = memory_graph::tests::mock_graph();
-
-        // Create and save checkpoint
-        let checkpoint_path = get_temp_file_path("checkpoint_corrupted");
-        let checkpoint = GraphCheckpoint::new(&graph);
-        checkpoint.save_to_file(&checkpoint_path).unwrap();
-
-        // Corrupt the file
-        {
-            let mut file = fs::OpenOptions::new()
-                .write(true)
-                .open(&checkpoint_path)
-                .unwrap();
-            file.seek(std::io::SeekFrom::Start(8)).unwrap(); // Skip length and checksum
-            file.write_all(&[0, 0, 0, 0]).unwrap(); // Write some garbage
-        }
-
-        // Try to load the corrupted checkpoint
-        let result = GraphCheckpoint::load_from_file(&checkpoint_path);
-        assert!(result.is_err());
-
-        // Verify it's a checksum error
-        match result {
-            Err(StorageError::Checkpoint(CheckpointError::ChecksumMismatch)) => (),
-            _ => panic!("Expected ChecksumMismatch error"),
-        }
-
-        // Clean up
-        if checkpoint_path.exists() {
-            fs::remove_file(checkpoint_path).unwrap();
-        }
     }
 }
