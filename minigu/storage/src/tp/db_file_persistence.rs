@@ -7,40 +7,10 @@ use std::sync::RwLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::common::wal::graph_wal::RedoEntry;
-use crate::db_file::{DbFileError, SingleFileConfig, SingleFileManager};
+use crate::db_file::{SingleFileConfig, SingleFileManager};
 use crate::error::{StorageError, StorageResult, WalError};
 use crate::tp::checkpoint::GraphCheckpoint;
 use crate::tp::persistence::PersistenceProvider;
-
-/// Converts DbFileError to StorageError.
-fn convert_error(e: DbFileError) -> StorageError {
-    match e {
-        DbFileError::Io(io_err) => StorageError::Wal(WalError::Io(io_err)),
-        DbFileError::InvalidMagic => StorageError::Wal(WalError::DeserializationFailed(
-            "Invalid magic number".into(),
-        )),
-        DbFileError::UnsupportedVersion(v, _current) => StorageError::Wal(
-            WalError::DeserializationFailed(format!("Unsupported version: {}", v)),
-        ),
-        DbFileError::HeaderChecksumMismatch { .. } => StorageError::Wal(WalError::ChecksumMismatch),
-        DbFileError::CheckpointChecksumMismatch => StorageError::Wal(WalError::ChecksumMismatch),
-        DbFileError::WalChecksumMismatch { .. } => StorageError::Wal(WalError::ChecksumMismatch),
-        DbFileError::FileTruncated { expected, actual } => {
-            StorageError::Wal(WalError::DeserializationFailed(format!(
-                "File truncated: expected {} bytes, got {}",
-                expected, actual
-            )))
-        }
-        DbFileError::Serialization(msg) => StorageError::Wal(WalError::SerializationFailed(msg)),
-        DbFileError::Deserialization(msg) => {
-            StorageError::Wal(WalError::DeserializationFailed(msg))
-        }
-        DbFileError::InvalidFile(msg) => StorageError::Wal(WalError::DeserializationFailed(msg)),
-        DbFileError::NoCheckpoint => StorageError::Wal(WalError::DeserializationFailed(
-            "No checkpoint found".into(),
-        )),
-    }
-}
 
 /// DbFile-backed persistence provider.
 ///
@@ -66,7 +36,7 @@ impl DbFilePersistence {
     /// Opens or creates a database file at the given path.
     pub fn open<P: AsRef<std::path::Path>>(path: P) -> StorageResult<Self> {
         let config = SingleFileConfig::new(path);
-        let manager = SingleFileManager::open(config).map_err(convert_error)?;
+        let manager = SingleFileManager::open(config)?;
         Ok(Self::new(manager))
     }
 
@@ -84,7 +54,7 @@ impl DbFilePersistence {
         }
 
         let config = SingleFileConfig::new(path).with_create_if_missing(true);
-        let manager = SingleFileManager::open(config).map_err(convert_error)?;
+        let manager = SingleFileManager::open(config)?;
         Ok(Self::new(manager))
     }
 }
@@ -103,48 +73,38 @@ impl PersistenceProvider for DbFilePersistence {
     }
 
     fn append_wal(&self, entry: &RedoEntry) -> StorageResult<()> {
-        self.manager
-            .write()
-            .unwrap()
-            .append_wal(entry)
-            .map_err(convert_error)
+        self.manager.write().unwrap().append_wal(entry)?;
+        Ok(())
     }
 
     fn flush_wal(&self) -> StorageResult<()> {
-        self.manager.write().unwrap().flush().map_err(convert_error)
+        self.manager.write().unwrap().flush()?;
+        Ok(())
     }
 
     fn read_wal_entries(&self) -> StorageResult<Vec<RedoEntry>> {
-        self.manager
-            .write()
-            .unwrap()
-            .read_wal_entries()
-            .map_err(convert_error)
+        let entries = self.manager.write().unwrap().read_wal_entries()?;
+        Ok(entries)
     }
 
     fn truncate_wal_until(&self, min_lsn: u64) -> StorageResult<usize> {
-        self.manager
+        let count = self
+            .manager
             .write()
             .unwrap()
             .db_file_mut()
-            .truncate_wal_until(min_lsn)
-            .map_err(convert_error)
+            .truncate_wal_until(min_lsn)?;
+        Ok(count)
     }
 
     fn write_checkpoint(&self, checkpoint: &GraphCheckpoint) -> StorageResult<()> {
-        self.manager
-            .write()
-            .unwrap()
-            .write_checkpoint(checkpoint)
-            .map_err(convert_error)
+        self.manager.write().unwrap().write_checkpoint(checkpoint)?;
+        Ok(())
     }
 
     fn read_checkpoint(&self) -> StorageResult<Option<GraphCheckpoint>> {
-        self.manager
-            .write()
-            .unwrap()
-            .read_checkpoint()
-            .map_err(convert_error)
+        let checkpoint = self.manager.write().unwrap().read_checkpoint()?;
+        Ok(checkpoint)
     }
 
     fn has_checkpoint(&self) -> bool {
@@ -152,11 +112,8 @@ impl PersistenceProvider for DbFilePersistence {
     }
 
     fn sync_all(&self) -> StorageResult<()> {
-        self.manager
-            .write()
-            .unwrap()
-            .sync_all()
-            .map_err(convert_error)
+        self.manager.write().unwrap().sync_all()?;
+        Ok(())
     }
 }
 
