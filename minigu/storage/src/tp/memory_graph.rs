@@ -411,7 +411,7 @@ impl MemoryGraph {
     }
 
     /// Creates a new [`MemoryGraph`] with the given persistence provider and checkpoint config.
-    pub fn with_persistence_and_config(
+    fn with_persistence_and_config(
         persistence: Arc<dyn PersistenceProvider>,
         checkpoint_config: CheckpointConfig,
     ) -> Arc<Self> {
@@ -450,7 +450,7 @@ impl MemoryGraph {
 
     /// Creates a new [`MemoryGraph`] backed by a single database file with custom checkpoint
     /// config.
-    pub fn with_db_file_and_config<P: AsRef<Path>>(
+    fn with_db_file_and_config<P: AsRef<Path>>(
         path: P,
         checkpoint_config: CheckpointConfig,
     ) -> StorageResult<Arc<Self>> {
