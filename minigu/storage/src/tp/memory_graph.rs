@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock, Weak};
 
 use arrow::array::BooleanArray;
@@ -347,6 +348,22 @@ impl AdjacencyContainer {
     }
 }
 
+/// Configuration for automatic checkpointing.
+#[derive(Debug, Clone)]
+pub struct CheckpointConfig {
+    /// Number of WAL entries before triggering auto checkpoint.
+    /// 0 means disabled.
+    pub wal_threshold: usize,
+}
+
+impl Default for CheckpointConfig {
+    fn default() -> Self {
+        Self {
+            wal_threshold: 1000, // Default: checkpoint every 1000 WAL entries
+        }
+    }
+}
+
 pub struct MemoryGraph {
     // ---- Versioned data storage ----
     pub(super) vertices: DashMap<VertexId, VersionedVertex>, // Stores versioned vertices
@@ -363,6 +380,12 @@ pub struct MemoryGraph {
 
     // ---- Checkpoint lock ----
     pub(super) checkpoint_lock: RwLock<()>,
+
+    // ---- Checkpoint configuration ----
+    checkpoint_config: CheckpointConfig,
+
+    // ---- WAL entries counter since last checkpoint ----
+    wal_entries_since_checkpoint: AtomicUsize,
 
     // ---- Vector indices ----
     pub(super) vector_indices: DashMap<VectorIndexKey, Arc<RwLock<Box<dyn VectorIndex>>>>,
@@ -384,6 +407,14 @@ impl MemoryGraph {
     ///
     /// This is the core constructor that all other constructors delegate to.
     pub fn with_persistence(persistence: Arc<dyn PersistenceProvider>) -> Arc<Self> {
+        Self::with_persistence_and_config(persistence, CheckpointConfig::default())
+    }
+
+    /// Creates a new [`MemoryGraph`] with the given persistence provider and checkpoint config.
+    pub fn with_persistence_and_config(
+        persistence: Arc<dyn PersistenceProvider>,
+        checkpoint_config: CheckpointConfig,
+    ) -> Arc<Self> {
         let graph = Arc::new(Self {
             vertices: DashMap::new(),
             edges: DashMap::new(),
@@ -391,6 +422,8 @@ impl MemoryGraph {
             txn_manager: MemTxnManager::new(),
             persistence,
             checkpoint_lock: RwLock::new(()),
+            checkpoint_config,
+            wal_entries_since_checkpoint: AtomicUsize::new(0),
             vector_indices: DashMap::new(),
         });
 
@@ -412,8 +445,17 @@ impl MemoryGraph {
     ///
     /// * `path` - Path to the database file (`.minigu`)
     pub fn with_db_file<P: AsRef<Path>>(path: P) -> StorageResult<Arc<Self>> {
+        Self::with_db_file_and_config(path, CheckpointConfig::default())
+    }
+
+    /// Creates a new [`MemoryGraph`] backed by a single database file with custom checkpoint
+    /// config.
+    pub fn with_db_file_and_config<P: AsRef<Path>>(
+        path: P,
+        checkpoint_config: CheckpointConfig,
+    ) -> StorageResult<Arc<Self>> {
         let persistence = Arc::new(DbFilePersistence::open(path)?);
-        let graph = Self::with_persistence(persistence);
+        let graph = Self::with_persistence_and_config(persistence, checkpoint_config);
         graph.recover()?;
         Ok(graph)
     }
@@ -502,6 +544,65 @@ impl MemoryGraph {
             }
         }
         Ok(())
+    }
+
+    // ===== Checkpoint methods =====
+
+    /// Creates a checkpoint of the current graph state.
+    ///
+    /// This will:
+    /// 1. Create a GraphCheckpoint snapshot
+    /// 2. Write it to persistence
+    /// 3. Truncate WAL entries before the checkpoint LSN
+    /// 4. Reset the WAL counter
+    ///
+    /// Returns the checkpoint LSN.
+    pub fn create_checkpoint(self: &Arc<Self>) -> StorageResult<u64> {
+        use super::checkpoint::GraphCheckpoint;
+
+        // Acquire checkpoint lock to prevent concurrent modifications
+        let _lock = self.checkpoint_lock.write().unwrap();
+
+        // Create checkpoint
+        let checkpoint = GraphCheckpoint::new(self);
+        let checkpoint_lsn = checkpoint.metadata.lsn;
+
+        // Write to persistence
+        self.persistence.write_checkpoint(&checkpoint)?;
+
+        // Truncate old WAL entries
+        self.persistence.truncate_wal_until(checkpoint_lsn)?;
+
+        // Reset counter
+        self.wal_entries_since_checkpoint.store(0, Ordering::SeqCst);
+
+        // Sync to disk
+        self.persistence.sync_all()?;
+
+        Ok(checkpoint_lsn)
+    }
+
+    /// Checks if auto checkpoint should be triggered and executes if needed.
+    ///
+    /// Returns the checkpoint LSN if created, None otherwise.
+    pub fn check_auto_checkpoint(self: &Arc<Self>) -> StorageResult<Option<u64>> {
+        if self.checkpoint_config.wal_threshold == 0 {
+            return Ok(None); // Auto checkpoint disabled
+        }
+
+        let count = self.wal_entries_since_checkpoint.load(Ordering::SeqCst);
+        if count >= self.checkpoint_config.wal_threshold {
+            let lsn = self.create_checkpoint()?;
+            Ok(Some(lsn))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Increments the WAL entry counter (called after each WAL append).
+    pub(crate) fn increment_wal_counter(&self) {
+        self.wal_entries_since_checkpoint
+            .fetch_add(1, Ordering::SeqCst);
     }
 
     /// Returns a reference to the transaction manager.

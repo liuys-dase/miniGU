@@ -26,7 +26,6 @@ fn cleanup(path: &PathBuf) {
 fn test_recovery_from_wal() {
     let db_path = test_db_path();
     cleanup(&db_path);
-
     // 1. Create a graph backed by a file
     {
         let graph = MemoryGraph::with_db_file(&db_path).unwrap();

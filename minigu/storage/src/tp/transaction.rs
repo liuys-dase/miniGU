@@ -305,9 +305,9 @@ impl MemTransaction {
             .store(commit_ts.raw(), Ordering::SeqCst);
         self.graph.txn_manager.finish_transaction(self)?;
 
-        // Step 6: Check if an auto checkpoint should be created
-        // Auto-checkpointing logic is moved to PersistenceProvider/background task
-        // self.graph.check_auto_checkpoint()?;
+        // Step 6: Increment WAL counter and check if auto checkpoint should be created
+        self.graph.increment_wal_counter();
+        self.graph.check_auto_checkpoint()?;
 
         // Mark the transaction as handled
         self.is_handled.store(true, Ordering::Release);
