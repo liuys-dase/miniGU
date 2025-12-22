@@ -403,10 +403,34 @@ impl MemoryGraph {
         Self::with_persistence(persistence)
     }
 
+    /// Creates a new [`MemoryGraph`] backed by a single database file.
+    ///
+    /// If the file exists, the graph will be recovered from the checkpoint
+    /// and WAL entries stored in the file.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the database file (`.minigu`)
+    pub fn with_db_file<P: AsRef<Path>>(path: P) -> StorageResult<Arc<Self>> {
+        Self::with_db_file_and_config(path, CheckpointConfig::default())
+    }
+
+    /// Creates a new [`MemoryGraph`] backed by a single database file with custom checkpoint
+    /// config.
+    fn with_db_file_and_config<P: AsRef<Path>>(
+        path: P,
+        checkpoint_config: CheckpointConfig,
+    ) -> StorageResult<Arc<Self>> {
+        let persistence = Arc::new(DbFilePersistence::open(path)?);
+        let graph = Self::with_persistence_and_config(persistence, checkpoint_config);
+        graph.recover()?;
+        Ok(graph)
+    }
+
     /// Creates a new [`MemoryGraph`] with the given persistence provider.
     ///
     /// This is the core constructor that all other constructors delegate to.
-    pub fn with_persistence(persistence: Arc<dyn PersistenceProvider>) -> Arc<Self> {
+    fn with_persistence(persistence: Arc<dyn PersistenceProvider>) -> Arc<Self> {
         Self::with_persistence_and_config(persistence, CheckpointConfig::default())
     }
 
@@ -436,34 +460,10 @@ impl MemoryGraph {
         graph
     }
 
-    /// Creates a new [`MemoryGraph`] backed by a single database file.
-    ///
-    /// If the file exists, the graph will be recovered from the checkpoint
-    /// and WAL entries stored in the file.
-    ///
-    /// # Arguments
-    ///
-    /// * `path` - Path to the database file (`.minigu`)
-    pub fn with_db_file<P: AsRef<Path>>(path: P) -> StorageResult<Arc<Self>> {
-        Self::with_db_file_and_config(path, CheckpointConfig::default())
-    }
-
-    /// Creates a new [`MemoryGraph`] backed by a single database file with custom checkpoint
-    /// config.
-    fn with_db_file_and_config<P: AsRef<Path>>(
-        path: P,
-        checkpoint_config: CheckpointConfig,
-    ) -> StorageResult<Arc<Self>> {
-        let persistence = Arc::new(DbFilePersistence::open(path)?);
-        let graph = Self::with_persistence_and_config(persistence, checkpoint_config);
-        graph.recover()?;
-        Ok(graph)
-    }
-
     /// Recovers the graph from the persistence layer.
     ///
     /// This loads the checkpoint (if any) and replays WAL entries.
-    pub fn recover(self: &Arc<Self>) -> StorageResult<()> {
+    fn recover(self: &Arc<Self>) -> StorageResult<()> {
         // Load checkpoint if it exists
         if let Some(checkpoint) = self.persistence.read_checkpoint()? {
             checkpoint.restore(self)?;
@@ -476,14 +476,8 @@ impl MemoryGraph {
         Ok(())
     }
 
-    /// Recovers the graph from WAL entries only (not from checkpoint).
-    pub fn recover_from_wal(self: &Arc<Self>) -> StorageResult<()> {
-        let entries = self.persistence.read_wal_entries()?;
-        self.apply_wal_entries(entries)
-    }
-
     /// Applies a list of WAL entries to the graph
-    pub fn apply_wal_entries(self: &Arc<Self>, entries: Vec<RedoEntry>) -> StorageResult<()> {
+    fn apply_wal_entries(self: &Arc<Self>, entries: Vec<RedoEntry>) -> StorageResult<()> {
         let mut txn: Option<Arc<MemTransaction>> = None;
         for entry in entries {
             self.persistence.set_next_lsn(entry.lsn + 1);
@@ -557,7 +551,7 @@ impl MemoryGraph {
     /// 4. Reset the WAL counter
     ///
     /// Returns the checkpoint LSN.
-    pub fn create_checkpoint(self: &Arc<Self>) -> StorageResult<u64> {
+    fn create_checkpoint(self: &Arc<Self>) -> StorageResult<u64> {
         use super::checkpoint::GraphCheckpoint;
 
         // Acquire checkpoint lock to prevent concurrent modifications
