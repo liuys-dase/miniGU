@@ -283,6 +283,9 @@ impl MemTransaction {
                     entry
                 })
                 .collect::<Vec<_>>();
+
+            let wal_count = redo_entries.len();
+
             for entry in redo_entries {
                 self.graph.persistence.append_wal(&entry)?;
             }
@@ -296,6 +299,14 @@ impl MemTransaction {
             };
             self.graph.persistence.append_wal(&wal_entry)?;
             self.graph.persistence.flush_wal()?;
+
+            // Step 6: Increment WAL counter by actual number of WAL entries written
+            // This includes all redo entries + 1 commit entry
+            // (BeginTransaction is not written in this path)
+            for _ in 0..(wal_count + 1) {
+                self.graph.increment_wal_counter();
+            }
+            self.graph.check_auto_checkpoint()?;
         }
 
         // Step 5: Clean up transaction state and update the `latest_commit_ts`.
@@ -304,10 +315,6 @@ impl MemTransaction {
             .latest_commit_ts
             .store(commit_ts.raw(), Ordering::SeqCst);
         self.graph.txn_manager.finish_transaction(self)?;
-
-        // Step 6: Increment WAL counter and check if auto checkpoint should be created
-        self.graph.increment_wal_counter();
-        self.graph.check_auto_checkpoint()?;
 
         // Mark the transaction as handled
         self.is_handled.store(true, Ordering::Release);

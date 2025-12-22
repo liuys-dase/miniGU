@@ -112,8 +112,9 @@ impl GraphCheckpoint {
     /// - System time is earlier than UNIX_EPOCH (highly unlikely)
     /// - Lock poisoning occurs on internal vertex/edge RwLocks (only if previous panic occurred)
     pub fn new(graph: &Arc<MemoryGraph>) -> Self {
-        // Get current LSN
-        let lsn = graph.persistence.next_lsn();
+        // Get current LSN (not next_lsn - we don't want to consume an LSN for checkpoint)
+        // The checkpoint represents the state "up to and including" the current LSN
+        let lsn = graph.persistence.current_lsn();
 
         // Create metadata
         let metadata = CheckpointMetadata {

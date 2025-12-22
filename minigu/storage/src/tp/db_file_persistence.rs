@@ -73,6 +73,16 @@ impl DbFilePersistence {
     /// Creates a new database file at the given path.
     /// Returns an error if the file already exists.
     pub fn create<P: AsRef<std::path::Path>>(path: P) -> StorageResult<Self> {
+        let path_ref = path.as_ref();
+
+        // Check if file already exists
+        if path_ref.exists() {
+            return Err(StorageError::Wal(WalError::Io(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!("Database file already exists: {:?}", path_ref),
+            ))));
+        }
+
         let config = SingleFileConfig::new(path).with_create_if_missing(true);
         let manager = SingleFileManager::open(config).map_err(convert_error)?;
         Ok(Self::new(manager))

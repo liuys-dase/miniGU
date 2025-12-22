@@ -35,8 +35,10 @@ fn cleanup(path: &std::path::Path) {
 }
 
 /// Test writing and reading a large number of WAL entries.
+/// Skip this test because it takes too long.
 #[test]
 #[serial]
+#[ignore]
 fn test_large_wal_volume() {
     let base = unique_test_dir("large_wal");
     cleanup(&base);

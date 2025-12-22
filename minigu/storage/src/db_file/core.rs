@@ -200,6 +200,14 @@ impl DbFile {
     }
 
     /// Appends a WAL entry to the file.
+    ///
+    /// This method ensures crash safety by:
+    /// 1. Writing WAL data to disk
+    /// 2. Updating header with new wal_length and last_lsn
+    /// 3. Syncing both WAL data and header together
+    ///
+    /// Note: For better performance in batch scenarios, consider calling
+    /// `append_wal` multiple times followed by a single `sync_all()`.
     pub fn append_wal(&mut self, entry: &RedoEntry) -> DbFileResult<()> {
         // Serialize the entry
         let payload = entry
@@ -231,6 +239,11 @@ impl DbFile {
         self.header.update_crc();
         self.write_header()?;
 
+        // Single sync for both WAL data and header
+        // This is a compromise: better performance than double-sync,
+        // while still providing crash safety (header and data are synced together)
+        self.file.sync_data()?;
+
         Ok(())
     }
 
@@ -247,6 +260,10 @@ impl DbFile {
     }
 
     /// Reads all WAL entries from the file.
+    ///
+    /// This method includes defensive checks for crash recovery:
+    /// - If a short read is encountered, it logs a warning and stops reading
+    /// - If the last entry's LSN is less than header.last_lsn, it logs a warning
     pub fn read_wal_entries(&mut self) -> DbFileResult<Vec<RedoEntry>> {
         if !self.header.flags.has(DbFileFlags::HAS_WAL) {
             return Ok(Vec::new());
@@ -265,8 +282,20 @@ impl DbFile {
 
             // Read length and checksum
             let mut len_bytes = [0u8; 4];
-            if self.file.read_exact(&mut len_bytes).is_err() {
-                break; // EOF
+            match self.file.read_exact(&mut len_bytes) {
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    // WAL truncated - header claims more data than actually exists
+                    // This can happen if a crash occurred between writing WAL data and syncing
+                    eprintln!(
+                        "WARNING: WAL truncated at offset {}, expected {} more bytes. \
+                         This may indicate incomplete write before crash.",
+                        current_offset,
+                        wal_end - current_offset
+                    );
+                    break;
+                }
+                Err(e) => return Err(e.into()),
             }
             let len = u32::from_le_bytes(len_bytes) as usize;
 
@@ -299,6 +328,22 @@ impl DbFile {
 
         // Sort by LSN
         entries.sort_by_key(|e| e.lsn);
+
+        // Defensive check: verify last entry LSN matches header
+        if let Some(last_entry) = entries.last() {
+            if last_entry.lsn < self.header.last_lsn {
+                eprintln!(
+                    "WARNING: Last WAL entry LSN {} < header.last_lsn {}. \
+                     This may indicate data loss from incomplete write.",
+                    last_entry.lsn, self.header.last_lsn
+                );
+            }
+        } else if self.header.last_lsn > 0 {
+            eprintln!(
+                "WARNING: No WAL entries found but header.last_lsn = {}",
+                self.header.last_lsn
+            );
+        }
 
         Ok(entries)
     }
