@@ -42,6 +42,20 @@ impl MemoryGraphTypeCatalog {
     }
 
     // ============== Transactional write APIs ==============
+
+    /// Adds a new label with the given name within a transaction.
+    ///
+    /// # Label ID Allocation
+    ///
+    /// Label IDs are allocated immediately when this method is called, **before** the transaction
+    /// commits. If the transaction aborts, the allocated ID will be lost, creating gaps in the
+    /// ID sequence. This is a known design trade-off that matches the behavior of mainstream
+    /// databases (e.g., PostgreSQL's SERIAL type).
+    ///
+    /// **Rationale**: Deferring ID allocation until commit would require complex coordination
+    /// between multiple concurrent transactions and could lead to commit-time failures due to
+    /// ID exhaustion. The current approach prioritizes simplicity and commit reliability over
+    /// ID sequence continuity.
     #[inline]
     pub fn add_label_txn(
         &self,

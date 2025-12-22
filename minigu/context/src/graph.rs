@@ -3,8 +3,8 @@ use std::fmt::{self, Debug};
 use std::sync::Arc;
 
 use minigu_catalog::memory::graph_type::MemoryGraphTypeCatalog;
+use minigu_catalog::memory::txn_manager;
 use minigu_catalog::provider::{GraphProvider, GraphTypeRef};
-use minigu_catalog::txn::CatalogTxnManager;
 use minigu_common::IsolationLevel;
 use minigu_common::types::{LabelId, VertexIdArray};
 use minigu_storage::error::StorageResult;
@@ -23,7 +23,7 @@ pub struct GraphContainer {
 
 impl GraphContainer {
     pub fn new(graph_type: Arc<MemoryGraphTypeCatalog>, graph_storage: GraphStorage) -> Self {
-        let catalog_txn_mgr = CatalogTxnManager::new();
+        let catalog_txn_mgr = Arc::clone(txn_manager());
         let graph = match &graph_storage {
             GraphStorage::Memory(mem) => Arc::clone(mem),
         };

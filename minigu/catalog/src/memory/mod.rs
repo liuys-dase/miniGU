@@ -8,7 +8,7 @@ use crate::txn::CatalogTxnManager;
 
 /// Global catalog transaction manager used for auto-commit compatibility paths.
 /// TODO: Remove the global singleton and use api with `_txn` suffixes only.
-pub(crate) fn txn_manager() -> &'static std::sync::Arc<CatalogTxnManager> {
+pub fn txn_manager() -> &'static std::sync::Arc<CatalogTxnManager> {
     use std::sync::OnceLock;
 
     static MANAGER: OnceLock<std::sync::Arc<CatalogTxnManager>> = OnceLock::new();
