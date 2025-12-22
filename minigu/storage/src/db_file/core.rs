@@ -203,11 +203,15 @@ impl DbFile {
     ///
     /// This method ensures crash safety by:
     /// 1. Writing WAL data to disk
-    /// 2. Updating header with new wal_length and last_lsn
-    /// 3. Syncing both WAL data and header together
+    /// 2. **Syncing WAL data first (fsync #1)**
+    /// 3. Updating header with new wal_length and last_lsn
+    /// 4. **Syncing header (fsync #2)**
     ///
-    /// Note: For better performance in batch scenarios, consider calling
-    /// `append_wal` multiple times followed by a single `sync_all()`.
+    /// This double-sync approach guarantees that the header will NEVER point to
+    /// WAL data that hasn't been durably written, even if the OS reorders page flushes.
+    ///
+    /// Performance note: This adds 2 fsync calls per WAL entry. For better performance
+    /// in batch scenarios, consider implementing a batch WAL API in the future.
     pub fn append_wal(&mut self, entry: &RedoEntry) -> DbFileResult<()> {
         // Serialize the entry
         let payload = entry
@@ -231,6 +235,11 @@ impl DbFile {
         self.file.write_all(&crc.to_le_bytes())?;
         self.file.write_all(&payload)?;
 
+        // CRITICAL: Sync WAL data BEFORE updating header
+        // This ensures that if we crash after updating the header,
+        // the WAL data it points to is guaranteed to be on disk
+        self.file.sync_data()?;
+
         // Update header
         self.header.wal_length += entry_size as u64;
         self.header.flags.set(DbFileFlags::HAS_WAL);
@@ -239,9 +248,7 @@ impl DbFile {
         self.header.update_crc();
         self.write_header()?;
 
-        // Single sync for both WAL data and header
-        // This is a compromise: better performance than double-sync,
-        // while still providing crash safety (header and data are synced together)
+        // Sync header to ensure it's durable
         self.file.sync_data()?;
 
         Ok(())

@@ -301,9 +301,12 @@ impl MemTransaction {
             self.graph.persistence.flush_wal()?;
 
             // Step 6: Increment WAL counter by actual number of WAL entries written
-            // This includes all redo entries + 1 commit entry
-            // (BeginTransaction is not written in this path)
-            for _ in 0..(wal_count + 1) {
+            // This includes:
+            // - BeginTransaction (written at transaction start, not counted there)
+            // - All redo entries (deltas)
+            // - CommitTransaction (just written above)
+            // Total = 1 (begin) + wal_count (deltas) + 1 (commit)
+            for _ in 0..(wal_count + 2) {
                 self.graph.increment_wal_counter();
             }
             self.graph.check_auto_checkpoint()?;

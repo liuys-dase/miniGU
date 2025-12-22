@@ -206,8 +206,10 @@ impl GraphCheckpoint {
     /// A fully reconstructed [`Arc<MemoryGraph>`] containing the state at the time of checkpoint
     /// creation.
     pub fn restore(&self, graph: &Arc<MemoryGraph>) -> StorageResult<()> {
-        // Set the LSN to the checkpoint's LSN
-        graph.persistence.set_next_lsn(self.metadata.lsn);
+        // Set the next LSN to checkpoint LSN + 1
+        // The checkpoint represents state "up to and including" checkpoint.lsn,
+        // so the next available LSN is checkpoint.lsn + 1
+        graph.persistence.set_next_lsn(self.metadata.lsn + 1);
 
         // Set the latest commit timestamp
         graph.txn_manager.latest_commit_ts.store(
