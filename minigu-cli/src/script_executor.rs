@@ -1,6 +1,7 @@
 use clap::Parser;
 use miette::{IntoDiagnostic, Result};
-use minigu::database::{Database, DatabaseConfig};
+use minigu::database::Database;
+use minigu_common::config::DatabaseConfig;
 
 #[derive(Debug, Parser, Clone)]
 pub struct ScriptExecutor {}

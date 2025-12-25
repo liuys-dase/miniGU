@@ -22,8 +22,6 @@ use crate::executor::vector_index_scan::VectorIndexScanBuilder;
 use crate::executor::{BoxedExecutor, Executor, IntoExecutor};
 use crate::source::VertexSource;
 
-const DEFAULT_CHUNK_SIZE: usize = 2048;
-
 pub struct ExecutorBuilder {
     session: SessionContext,
 }
@@ -63,9 +61,9 @@ impl ExecutorBuilder {
                     .downcast_arc::<GraphContainer>()
                     .expect("failed to downcast to GraphContainer");
 
-                // TODO:Should add GlobalConfig to determine the batch_size in vertex_source;
+                // Use batch_size from config (handled inside vertex_source)
                 let batches = container
-                    .vertex_source(&Some(node_scan.labels.clone()), 1024)
+                    .vertex_source(&Some(node_scan.labels.clone()))
                     .expect("failed to create vertex source");
                 let source = batches.map(|arr: Arc<VertexIdArray>| Ok(arr));
                 Box::new(source.scan_vertex())
@@ -219,10 +217,8 @@ impl ExecutorBuilder {
                         SortSpec::new(key, s.ordering, s.null_ordering)
                     })
                     .collect();
-                Box::new(
-                    self.build_executor(&children[0])
-                        .sort(specs, DEFAULT_CHUNK_SIZE),
-                )
+                let chunk_size = self.session.config().execution.sort_chunk_size;
+                Box::new(self.build_executor(&children[0]).sort(specs, chunk_size))
             }
             PlanNode::PhysicalLimit(limit) => {
                 assert_eq!(children.len(), 1);

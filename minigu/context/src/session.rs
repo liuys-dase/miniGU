@@ -34,6 +34,10 @@ impl SessionContext {
         &self.database
     }
 
+    pub fn config(&self) -> &Arc<minigu_common::config::DatabaseConfig> {
+        self.database.config()
+    }
+
     pub fn set_current_schema(&mut self, schema: SchemaRef) -> SessionResult<()> {
         match schema {
             SchemaRef::Absolute(schema_path) => {

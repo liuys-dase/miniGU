@@ -6,14 +6,14 @@
 // It can be used for backup, recovery, or state transfer purposes.
 
 use std::collections::HashMap;
-use std::env;
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crc32fast::Hasher;
+use minigu_common::config::WalConfig;
 use minigu_common::types::{EdgeId, VertexId};
 use minigu_transaction::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -23,16 +23,10 @@ use super::memory_graph::{AdjacencyContainer, MemoryGraph, VersionedEdge, Versio
 use crate::common::model::edge::{Edge, Neighbor};
 use crate::common::model::vertex::Vertex;
 use crate::common::wal::StorageWal;
-use crate::common::wal::graph_wal::WalManagerConfig;
 use crate::error::{CheckpointError, StorageError, StorageResult};
 
 // @TODO: Consider making this configurable via
 // CheckpointManagerConfig instead of a hardcoded constant.
-const DEFAULT_CHECKPOINT_PREFIX: &str = "checkpoint";
-const MAX_CHECKPOINTS: usize = 5;
-const AUTO_CHECKPOINT_INTERVAL_SECS: u64 = 30;
-const DEFAULT_CHECKPOINT_TIMEOUT_SECS: u64 = 30;
-const DEFAULT_CHECKPOINT_DIR_NAME: &str = ".checkpoint";
 
 /// Represents a checkpoint of a MemoryGraph at a specific point in time.
 ///
@@ -303,10 +297,10 @@ impl GraphCheckpoint {
     /// creation.
     pub fn restore(
         &self,
-        checkpoint_config: CheckpointManagerConfig,
-        wal_config: WalManagerConfig,
+        checkpoint_config: minigu_common::config::CheckpointConfig,
+        wal_config: WalConfig,
     ) -> StorageResult<Arc<MemoryGraph>> {
-        let graph = MemoryGraph::with_config_fresh(checkpoint_config, wal_config);
+        let graph = MemoryGraph::with_config_fresh(checkpoint_config, wal_config)?;
 
         // Set the LSN to the checkpoint's LSN
         graph.wal_manager.set_next_lsn(self.metadata.lsn);
@@ -387,42 +381,6 @@ pub struct CheckpointEntry {
     pub created_at: u64,
 }
 
-/// Configuration for the checkpoint manager
-#[derive(Debug, Clone)]
-pub struct CheckpointManagerConfig {
-    /// Directory where checkpoints are stored
-    pub checkpoint_dir: PathBuf,
-
-    /// Maximum number of checkpoints to keep (0 means unlimited)
-    pub max_checkpoints: usize,
-
-    /// Automatic checkpoint interval in seconds (0 means disabled)
-    pub auto_checkpoint_interval_secs: u64,
-
-    /// Prefix for checkpoint filenames
-    pub checkpoint_prefix: String,
-
-    /// Timeout for waiting for active transactions to complete (in seconds)
-    pub transaction_timeout_secs: u64,
-}
-
-fn default_checkpoint_dir() -> PathBuf {
-    let dir = env::current_dir().unwrap();
-    dir.join(DEFAULT_CHECKPOINT_DIR_NAME)
-}
-
-impl Default for CheckpointManagerConfig {
-    fn default() -> Self {
-        Self {
-            checkpoint_dir: default_checkpoint_dir(),
-            max_checkpoints: MAX_CHECKPOINTS,
-            auto_checkpoint_interval_secs: AUTO_CHECKPOINT_INTERVAL_SECS,
-            checkpoint_prefix: DEFAULT_CHECKPOINT_PREFIX.to_string(),
-            transaction_timeout_secs: DEFAULT_CHECKPOINT_TIMEOUT_SECS,
-        }
-    }
-}
-
 /// Manages checkpoint creation, storage, and recovery for a [`MemoryGraph`].
 ///
 /// The `CheckpointManager` is responsible for handling persistent snapshots of the graph
@@ -438,10 +396,10 @@ impl Default for CheckpointManagerConfig {
 /// - Integrates with WAL (Write-Ahead Log) for consistent recovery.
 pub struct CheckpointManager {
     /// Configuration for the checkpoint manager
-    config: CheckpointManagerConfig,
+    config: minigu_common::config::CheckpointConfig,
 
-    /// Reference to the graph being checkpointed
-    graph: Arc<MemoryGraph>,
+    /// Weak reference to the graph being checkpointed to avoid reference cycles
+    graph: Weak<MemoryGraph>,
 
     /// Map of checkpoint ID to checkpoint entry
     checkpoints: HashMap<String, CheckpointEntry>,
@@ -455,15 +413,15 @@ pub struct CheckpointManager {
 }
 
 impl CheckpointManager {
-    /// Creates a new checkpoint manager for the given graph
-    pub fn new(graph: Arc<MemoryGraph>, config: CheckpointManagerConfig) -> StorageResult<Self> {
+    /// Creates a new checkpoint manager
+    pub fn new(config: minigu_common::config::CheckpointConfig) -> StorageResult<Self> {
         // Create checkpoint directory if it doesn't exist
         fs::create_dir_all(&config.checkpoint_dir)
             .map_err(|e| StorageError::Checkpoint(CheckpointError::Io(e)))?;
 
         let mut manager = Self {
             config,
-            graph,
+            graph: Weak::new(),
             checkpoints: HashMap::new(),
             last_auto_checkpoint: None,
             checkpoint_lock: RwLock::new(()),
@@ -473,6 +431,11 @@ impl CheckpointManager {
         manager.load_existing_checkpoints()?;
 
         Ok(manager)
+    }
+
+    /// Sets the graph reference
+    pub fn set_graph(&mut self, graph: Weak<MemoryGraph>) {
+        self.graph = graph;
     }
 
     /// Loads existing checkpoints from the checkpoint directory
@@ -545,16 +508,20 @@ impl CheckpointManager {
             // Acquire the checkpoint lock
             let _lock = self.checkpoint_lock.write().unwrap();
 
+            let graph = self.graph.upgrade().ok_or_else(|| {
+                StorageError::Checkpoint(CheckpointError::Io(std::io::Error::other(
+                    "Graph has been dropped",
+                )))
+            })?;
+
             // Wait for active transactions to complete
-            self.wait_for_transaction_quiescence()?;
+            self.wait_for_transaction_quiescence(&graph)?;
 
             // Create a new checkpoint
-            checkpoint = GraphCheckpoint::new(&self.graph);
+            checkpoint = GraphCheckpoint::new(&graph);
 
             // Truncate the WAL, keeping only entries after the checkpoint's LSN
-            self.graph
-                .wal_manager
-                .truncate_until(checkpoint.metadata.lsn)?;
+            graph.wal_manager.truncate_until(checkpoint.metadata.lsn)?;
         }
 
         // Generate a unique ID for the checkpoint
@@ -590,11 +557,11 @@ impl CheckpointManager {
         Ok(id)
     }
 
-    fn wait_for_transaction_quiescence(&self) -> StorageResult<()> {
+    fn wait_for_transaction_quiescence(&self, graph: &Arc<MemoryGraph>) -> StorageResult<()> {
         // Wait for active transactions to complete
         let start_time = std::time::Instant::now();
         let timeout = std::time::Duration::from_secs(self.config.transaction_timeout_secs);
-        while !self.graph.txn_manager.active_txns.is_empty() {
+        while !graph.txn_manager.active_txns.is_empty() {
             if start_time.elapsed() > timeout {
                 return Err(StorageError::Checkpoint(CheckpointError::Timeout));
             }
@@ -628,8 +595,8 @@ impl CheckpointManager {
     pub fn restore_from_checkpoint(
         &self,
         id: &str,
-        checkpoint_config: CheckpointManagerConfig,
-        wal_config: WalManagerConfig,
+        checkpoint_config: minigu_common::config::CheckpointConfig,
+        wal_config: WalConfig,
     ) -> StorageResult<Arc<MemoryGraph>> {
         let checkpoint = self.load_checkpoint(id)?;
 
@@ -717,8 +684,8 @@ impl MemoryGraph {
     /// A fully recovered [`Arc<MemoryGraph>`] containing the most recent state reconstructed
     /// from persisted checkpoints and logs.
     pub fn recover_from_checkpoint_and_wal(
-        checkpoint_config: CheckpointManagerConfig,
-        wal_config: WalManagerConfig,
+        checkpoint_config: minigu_common::config::CheckpointConfig,
+        wal_config: WalConfig,
     ) -> StorageResult<Arc<Self>> {
         // Create checkpoint directory if it doesn't exist
         fs::create_dir_all(&checkpoint_config.checkpoint_dir)
@@ -729,7 +696,7 @@ impl MemoryGraph {
 
         // If no checkpoint found, create a new empty graph
         if checkpoint_path.is_none() {
-            let graph = Self::with_config_fresh(checkpoint_config.clone(), wal_config.clone());
+            let graph = Self::with_config_fresh(checkpoint_config.clone(), wal_config.clone())?;
             graph.recover_from_wal()?;
             return Ok(graph);
         }
@@ -757,7 +724,7 @@ impl MemoryGraph {
 
     /// Finds the most recent checkpoint in the checkpoint directory
     fn find_most_recent_checkpoint(
-        config: &CheckpointManagerConfig,
+        config: &minigu_common::config::CheckpointConfig,
     ) -> StorageResult<Option<PathBuf>> {
         let entries = match fs::read_dir(&config.checkpoint_dir) {
             Ok(entries) => entries,
@@ -1020,7 +987,9 @@ mod tests {
         );
 
         // Create a checkpoint manager
-        let mut manager = CheckpointManager::new(graph.clone(), checkpoint_config.clone()).unwrap();
+        // Create a checkpoint manager
+        let mut manager = CheckpointManager::new(checkpoint_config.clone()).unwrap();
+        manager.set_graph(Arc::downgrade(&graph));
 
         // Create 5 checkpoints
         let mut checkpoint_ids = Vec::new();
