@@ -92,12 +92,6 @@ impl GraphCheckpoint {
     /// - All vertices and edges (current version only)
     /// - The full adjacency list (both outgoing and incoming edges)
     ///
-    /// It does **not** include historical versions of vertices or edges—only the
-    /// Creates a new checkpoint snapshot of the current graph state.
-    ///
-    /// This checkpoint can be persisted using
-    /// `PersistenceProvider::write_checkpoint` or the checkpoint manager.
-    ///
     /// # Arguments
     ///
     /// * `graph` - A reference-counted pointer to the in-memory [`MemoryGraph`] to be checkpointed.
