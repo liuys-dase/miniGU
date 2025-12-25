@@ -5,6 +5,7 @@ use minigu_catalog::memory::MemoryCatalog;
 use minigu_catalog::memory::directory::MemoryDirectoryCatalog;
 use minigu_catalog::memory::schema::MemorySchemaCatalog;
 use minigu_catalog::provider::{CatalogProvider, DirectoryOrSchema, SchemaRef};
+pub use minigu_common::config::DatabaseConfig;
 use minigu_common::constants::DEFAULT_SCHEMA_NAME;
 use minigu_context::database::DatabaseContext;
 use rayon::ThreadPoolBuilder;
@@ -12,17 +13,6 @@ use rayon::ThreadPoolBuilder;
 use crate::error::Result;
 use crate::procedures::build_predefined_procedures;
 use crate::session::Session;
-
-#[derive(Debug, Clone)]
-pub struct DatabaseConfig {
-    pub num_threads: usize,
-}
-
-impl Default for DatabaseConfig {
-    fn default() -> Self {
-        Self { num_threads: 1 }
-    }
-}
 
 pub struct Database {
     context: Arc<DatabaseContext>,
@@ -39,7 +29,8 @@ impl Database {
         let runtime = ThreadPoolBuilder::new()
             .num_threads(config.num_threads)
             .build()?;
-        let context = Arc::new(DatabaseContext::new(catalog, runtime));
+        let config_arc = Arc::new(config.clone());
+        let context = Arc::new(DatabaseContext::new(catalog, runtime, config_arc));
         Ok(Self {
             context,
             default_schema,

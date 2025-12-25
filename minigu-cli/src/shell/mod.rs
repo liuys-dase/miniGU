@@ -10,7 +10,8 @@ use command::build_command;
 use context::ShellContext;
 use editor::build_editor;
 use miette::Result;
-use minigu::database::{Database, DatabaseConfig};
+use minigu::config::DatabaseConfig;
+use minigu::database::Database;
 use output::OutputMode;
 
 /// Start local interactive shell.

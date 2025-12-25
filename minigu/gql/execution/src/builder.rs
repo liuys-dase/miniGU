@@ -63,9 +63,10 @@ impl ExecutorBuilder {
                     .downcast_arc::<GraphContainer>()
                     .expect("failed to downcast to GraphContainer");
 
-                // TODO:Should add GlobalConfig to determine the batch_size in vertex_source;
+                // Use batch_size from config
+                let batch_size = self.session.config().execution.vertex_scan_batch_size;
                 let batches = container
-                    .vertex_source(&Some(node_scan.labels.clone()), 1024)
+                    .vertex_source(&Some(node_scan.labels.clone()), batch_size)
                     .expect("failed to create vertex source");
                 let source = batches.map(|arr: Arc<VertexIdArray>| Ok(arr));
                 Box::new(source.scan_vertex())

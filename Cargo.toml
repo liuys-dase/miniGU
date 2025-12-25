@@ -44,6 +44,7 @@ minigu = { path = "minigu/core", version = "0.1.0" }
 minigu-catalog = { path = "minigu/catalog", version = "0.1.0" }
 minigu-common = { path = "minigu/common", version = "0.1.0" }
 minigu-context = { path = "minigu/context", version = "0.1.0" }
+minigu-core = { path = "minigu/core", version = "0.1.0" }
 minigu-execution = { path = "minigu/gql/execution", version = "0.1.0" }
 minigu-planner = { path = "minigu/gql/planner", version = "0.1.0" }
 minigu-storage = { path = "minigu/storage", version = "0.1.0" }

@@ -9,3 +9,5 @@ pub mod result;
 pub mod session;
 
 pub use minigu_common as common;
+// Re-export config from common for convenience
+pub use minigu_common::config;

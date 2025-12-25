@@ -1,5 +1,6 @@
 #![feature(impl_trait_in_assoc_type)]
 
+pub mod config;
 pub mod constants;
 pub mod data_chunk;
 pub mod data_type;

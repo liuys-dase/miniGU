@@ -9,7 +9,8 @@ use gql_parser::parse_gql;
 use insta::internals::SettingsBindDropGuard;
 use insta::{Settings, assert_snapshot, assert_yaml_snapshot};
 use minigu::common::data_chunk::display::{TableBuilder, TableOptions};
-use minigu::database::{Database, DatabaseConfig};
+use minigu::config::DatabaseConfig;
+use minigu::database::Database;
 use minigu::result::QueryResult;
 use pastey::paste;
 

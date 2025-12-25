@@ -80,7 +80,8 @@ mod tests {
         let root = Arc::new(MemorySchemaCatalog::new(None));
         let catalog = MemoryCatalog::new(DirectoryOrSchema::Schema(root));
         let runtime = ThreadPoolBuilder::new().build().unwrap();
-        let database = Arc::new(DatabaseContext::new(catalog, runtime));
+        let config = Arc::new(minigu_common::config::DatabaseConfig::default());
+        let database = Arc::new(DatabaseContext::new(catalog, runtime, config));
         let context = SessionContext::new(database);
         let procedure = Arc::new(build_test_procedure());
         let procedure_call = ProcedureCallBuilder::new(procedure, context, vec![]);

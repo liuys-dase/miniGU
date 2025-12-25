@@ -125,7 +125,8 @@ impl ExpandSource for GraphContainer {
             }
         }
 
-        // TODO:Should add GlobalConfig to determine the batch_size;
+        // Use default batch_size from ExecutionConfig::default().expand_batch_size (64)
+        // TODO: Pass config through GraphContainer to make this configurable
         Some(GraphExpandIter {
             neighbors,
             offset: 0,
