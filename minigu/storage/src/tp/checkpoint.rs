@@ -96,7 +96,7 @@ impl GraphCheckpoint {
     /// Creates a new checkpoint snapshot of the current graph state.
     ///
     /// This checkpoint can be persisted using
-    /// `PersistenceProvider::write_checkpoint`.phCheckpoint::restore`] or the checkpoint manager.
+    /// `PersistenceProvider::write_checkpoint` or the checkpoint manager.
     ///
     /// # Arguments
     ///
