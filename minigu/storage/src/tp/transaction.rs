@@ -300,7 +300,7 @@ impl MemTransaction {
             self.graph.persistence.append_wal(&wal_entry)?;
             self.graph.persistence.flush_wal()?;
 
-            // Step 6: Increment WAL counter by actual number of WAL entries written
+            // Step 5: Increment WAL counter by actual number of WAL entries written
             // This includes:
             // - BeginTransaction (written at transaction start, not counted there)
             // - All redo entries (deltas)
@@ -312,7 +312,7 @@ impl MemTransaction {
             self.graph.check_auto_checkpoint()?;
         }
 
-        // Step 5: Clean up transaction state and update the `latest_commit_ts`.
+        // Step 6: Clean up transaction state and update the `latest_commit_ts`.
         self.graph
             .txn_manager
             .latest_commit_ts
