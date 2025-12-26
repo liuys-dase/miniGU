@@ -1,4 +1,3 @@
-use std::env;
 // graph_wal.rs
 // Minimal standalone Write‑Ahead Log (WAL) implementation for an **in‑memory graph database**.
 //
@@ -33,7 +32,6 @@ use crate::common::DeltaOp;
 use crate::error::{StorageError, StorageResult, WalError};
 
 const HEADER_SIZE: usize = 8; // 4 bytes length + 4 bytes crc32
-const DEFAULT_WAL_DIR_NAME: &str = ".wal";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RedoEntry {
@@ -317,24 +315,6 @@ impl GraphWal {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct WalManagerConfig {
-    pub wal_path: PathBuf,
-}
-
-fn default_wal_path() -> PathBuf {
-    let dir = env::current_dir().unwrap();
-    dir.join(DEFAULT_WAL_DIR_NAME)
-}
-
-impl Default for WalManagerConfig {
-    fn default() -> Self {
-        Self {
-            wal_path: default_wal_path(),
-        }
-    }
-}
-
 pub struct WalManager {
     pub(super) wal: Arc<RwLock<GraphWal>>,
     pub(super) next_lsn: AtomicU64,
@@ -342,7 +322,7 @@ pub struct WalManager {
 }
 
 impl WalManager {
-    pub fn new(config: WalManagerConfig) -> Self {
+    pub fn new(config: minigu_common::config::WalConfig) -> Self {
         let path = config.wal_path;
         Self {
             wal: Arc::new(RwLock::new(GraphWal::open(&path).unwrap())),

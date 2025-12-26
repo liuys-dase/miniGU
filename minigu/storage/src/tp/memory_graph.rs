@@ -7,7 +7,7 @@ use minigu_common::types::{EdgeId, VectorIndexKey, VertexId};
 use minigu_common::value::{ScalarValue, VectorValue};
 use minigu_transaction::{IsolationLevel, Timestamp, Transaction};
 
-use super::checkpoint::{CheckpointManager, CheckpointManagerConfig};
+use super::checkpoint::CheckpointManager;
 use super::transaction::{MemTransaction, UndoEntry, UndoPtr};
 use super::txn_manager::MemTxnManager;
 use super::vector_index::filter::create_filter_mask;
@@ -16,7 +16,7 @@ use super::vector_index::{InMemANNAdapter, VectorIndex};
 use crate::common::model::edge::{Edge, Neighbor};
 use crate::common::model::vertex::Vertex;
 use crate::common::wal::StorageWal;
-use crate::common::wal::graph_wal::{Operation, RedoEntry, WalManager, WalManagerConfig};
+use crate::common::wal::graph_wal::{Operation, RedoEntry, WalManager};
 use crate::common::{DeltaOp, SetPropsOp};
 use crate::error::{
     EdgeNotFoundError, StorageError, StorageResult, TransactionError, VectorIndexError,
@@ -389,8 +389,8 @@ impl MemoryGraph {
     ///
     /// A reference-counted [`MemoryGraph`] containing the recovered graph state.
     pub fn with_config_recovered(
-        checkpoint_config: CheckpointManagerConfig,
-        wal_config: WalManagerConfig,
+        checkpoint_config: minigu_common::config::CheckpointConfig,
+        wal_config: minigu_common::config::WalConfig,
     ) -> Arc<Self> {
         // Recover from checkpoint and WAL
         Self::recover_from_checkpoint_and_wal(checkpoint_config, wal_config).unwrap()
@@ -406,8 +406,8 @@ impl MemoryGraph {
     ///
     /// A new reference-counted [`MemoryGraph`] with no historical state.
     pub fn with_config_fresh(
-        checkpoint_config: CheckpointManagerConfig,
-        wal_config: WalManagerConfig,
+        checkpoint_config: minigu_common::config::CheckpointConfig,
+        wal_config: minigu_common::config::WalConfig,
     ) -> Arc<Self> {
         let graph = Arc::new(Self {
             vertices: DashMap::new(),
@@ -1261,12 +1261,12 @@ pub mod tests {
         )
     }
 
-    pub fn mock_checkpoint_config() -> CheckpointManagerConfig {
+    pub fn mock_checkpoint_config() -> minigu_common::config::CheckpointConfig {
         let temp_dir = temp_dir::TempDir::with_prefix("test_checkpoint_").unwrap();
         let dir = temp_dir.path().to_owned();
         // TODO: Pass the temp dir to the caller so that it can be cleaned up.
         temp_dir.leak();
-        CheckpointManagerConfig {
+        minigu_common::config::CheckpointConfig {
             checkpoint_dir: dir,
             max_checkpoints: 3,
             auto_checkpoint_interval_secs: 0, // Disable auto checkpoints for testing
@@ -1275,7 +1275,7 @@ pub mod tests {
         }
     }
 
-    pub fn mock_wal_config() -> WalManagerConfig {
+    pub fn mock_wal_config() -> minigu_common::config::WalConfig {
         let temp_file = temp_file::TempFileBuilder::new()
             .prefix("test_wal_")
             .suffix(".log")
@@ -1284,7 +1284,7 @@ pub mod tests {
         let path = temp_file.path().to_owned();
         // TODO: Pass the temp file to the caller so that it can be cleaned up.
         temp_file.leak();
-        WalManagerConfig { wal_path: path }
+        minigu_common::config::WalConfig { wal_path: path }
     }
 
     pub struct Cleaner {
@@ -1294,8 +1294,8 @@ pub mod tests {
 
     impl Cleaner {
         pub fn new(
-            checkpoint_config: &CheckpointManagerConfig,
-            wal_config: &WalManagerConfig,
+            checkpoint_config: &minigu_common::config::CheckpointConfig,
+            wal_config: &minigu_common::config::WalConfig,
         ) -> Self {
             Self {
                 wal_path: wal_config.wal_path.clone(),
@@ -1327,8 +1327,8 @@ pub mod tests {
 
     // Create a graph with 4 vertices and 4 edges
     pub fn mock_graph_with_config(
-        checkpoint_config: CheckpointManagerConfig,
-        wal_config: WalManagerConfig,
+        checkpoint_config: minigu_common::config::CheckpointConfig,
+        wal_config: minigu_common::config::WalConfig,
     ) -> (Arc<MemoryGraph>, Cleaner) {
         let cleaner = Cleaner::new(&checkpoint_config, &wal_config);
         let graph = MemoryGraph::with_config_recovered(mock_checkpoint_config(), mock_wal_config());

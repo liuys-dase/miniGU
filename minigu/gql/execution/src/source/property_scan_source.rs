@@ -178,13 +178,12 @@ mod tests {
 
     use arrow::array::{BooleanArray, Float32Array, Float64Array, Int32Array, Int64Array};
     use minigu_catalog::memory::graph_type::MemoryGraphTypeCatalog;
+    use minigu_common::config::{CheckpointConfig, WalConfig};
     use minigu_common::types::{LabelId, PropertyId, VertexId, VertexIdArray};
     use minigu_common::value::ScalarValue;
     use minigu_context::graph::{GraphContainer, GraphStorage};
-    use minigu_storage::common::graph_wal::WalManagerConfig;
     use minigu_storage::common::{PropertyRecord, Vertex};
     use minigu_storage::tp::MemoryGraph;
-    use minigu_storage::tp::checkpoint::CheckpointManagerConfig;
     use minigu_transaction::{IsolationLevel, Transaction};
 
     use super::*;
@@ -198,7 +197,7 @@ mod tests {
     }
 
     impl TestCleaner {
-        fn new(checkpoint_config: &CheckpointManagerConfig, wal_config: &WalManagerConfig) -> Self {
+        fn new(checkpoint_config: &CheckpointConfig, wal_config: &WalConfig) -> Self {
             Self {
                 wal_path: wal_config.wal_path.clone(),
                 checkpoint_dir: checkpoint_config.checkpoint_dir.clone(),
@@ -213,12 +212,12 @@ mod tests {
         }
     }
 
-    fn create_test_configs() -> (CheckpointManagerConfig, WalManagerConfig, TestCleaner) {
+    fn create_test_configs() -> (CheckpointConfig, WalConfig, TestCleaner) {
         let checkpoint_config = {
             let temp_dir = temp_dir::TempDir::with_prefix("test_checkpoint_").unwrap();
             let dir = temp_dir.path().to_owned();
             temp_dir.leak();
-            CheckpointManagerConfig {
+            CheckpointConfig {
                 checkpoint_dir: dir,
                 max_checkpoints: 3,
                 auto_checkpoint_interval_secs: 0,
@@ -235,7 +234,7 @@ mod tests {
                 .unwrap();
             let path = temp_file.path().to_owned();
             temp_file.leak();
-            WalManagerConfig { wal_path: path }
+            WalConfig { wal_path: path }
         };
 
         let cleaner = TestCleaner::new(&checkpoint_config, &wal_config);

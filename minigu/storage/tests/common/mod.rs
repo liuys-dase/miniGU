@@ -1,14 +1,13 @@
 use std::fs;
 use std::sync::Arc;
 
+use minigu_common::config::{CheckpointConfig, WalConfig};
 use minigu_common::types::{EdgeId, LabelId, VertexId};
 use minigu_common::value::ScalarValue;
 use minigu_storage::model::edge::Edge;
 use minigu_storage::model::properties::PropertyRecord;
 use minigu_storage::model::vertex::Vertex;
 use minigu_storage::tp::MemoryGraph;
-use minigu_storage::tp::checkpoint::CheckpointManagerConfig;
-use minigu_storage::wal::graph_wal::WalManagerConfig;
 use minigu_transaction::{GraphTxnManager, IsolationLevel, Transaction};
 
 pub const PERSON_LABEL_ID: LabelId = LabelId::new(1).unwrap();
@@ -21,7 +20,7 @@ pub struct TestCleaner {
 }
 
 impl TestCleaner {
-    pub fn new(checkpoint_config: &CheckpointManagerConfig, wal_config: &WalManagerConfig) -> Self {
+    pub fn new(checkpoint_config: &CheckpointConfig, wal_config: &WalConfig) -> Self {
         Self {
             wal_path: wal_config.wal_path.clone(),
             checkpoint_dir: checkpoint_config.checkpoint_dir.clone(),
@@ -36,14 +35,14 @@ impl Drop for TestCleaner {
     }
 }
 
-pub fn create_test_checkpoint_config() -> CheckpointManagerConfig {
+pub fn create_test_checkpoint_config() -> CheckpointConfig {
     let dir = std::env::temp_dir().join(format!(
         "test_isolation_checkpoint_{}_{}",
         chrono::Utc::now().timestamp(),
         rand::random::<u32>()
     ));
     std::fs::create_dir_all(&dir).unwrap();
-    CheckpointManagerConfig {
+    CheckpointConfig {
         checkpoint_dir: dir,
         max_checkpoints: 3,
         auto_checkpoint_interval_secs: 0,
@@ -52,14 +51,14 @@ pub fn create_test_checkpoint_config() -> CheckpointManagerConfig {
     }
 }
 
-pub fn create_test_wal_config() -> WalManagerConfig {
+pub fn create_test_wal_config() -> WalConfig {
     let file_name = format!(
         "test_isolation_wal_{}_{}.log",
         chrono::Utc::now().timestamp(),
         rand::random::<u32>()
     );
     let path = std::env::temp_dir().join(file_name);
-    WalManagerConfig { wal_path: path }
+    WalConfig { wal_path: path }
 }
 
 pub fn create_empty_graph() -> (Arc<MemoryGraph>, TestCleaner) {

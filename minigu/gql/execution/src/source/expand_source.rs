@@ -163,8 +163,7 @@ mod tests {
         use std::fs;
         use std::time::{SystemTime, UNIX_EPOCH};
 
-        use minigu_storage::tp::checkpoint::CheckpointManagerConfig;
-        use minigu_storage::wal::graph_wal::WalManagerConfig;
+        use minigu_common::config::{CheckpointConfig, WalConfig};
 
         // Create temporary directories for checkpoint and WAL
         let timestamp = SystemTime::now()
@@ -178,7 +177,7 @@ mod tests {
 
         let wal_file = std::env::temp_dir().join(format!("test_expand_wal_{}.log", timestamp));
 
-        let checkpoint_config = CheckpointManagerConfig {
+        let checkpoint_config = CheckpointConfig {
             checkpoint_dir,
             max_checkpoints: 3,
             auto_checkpoint_interval_secs: 0,
@@ -186,7 +185,7 @@ mod tests {
             transaction_timeout_secs: 10,
         };
 
-        let wal_config = WalManagerConfig { wal_path: wal_file };
+        let wal_config = WalConfig { wal_path: wal_file };
 
         let graph = MemoryGraph::with_config_fresh(checkpoint_config, wal_config);
         let mut graph_type = MemoryGraphTypeCatalog::new();
