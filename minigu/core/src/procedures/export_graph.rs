@@ -678,7 +678,8 @@ mod tests {
 
         {
             let manifest_path = export_dir1.join(manifest_rel_path);
-            let (graph, graph_type) = import_internal(manifest_path).unwrap();
+            let config = Arc::new(minigu_common::config::DatabaseConfig::default());
+            let (graph, graph_type) = import_internal(manifest_path, config).unwrap();
 
             export(
                 graph,

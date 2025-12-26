@@ -129,16 +129,14 @@ pub fn import<P: AsRef<Path>>(
     manifest_path: P,
 ) -> Result<()> {
     let graph_name = graph_name.into();
+    let db_config = context.config().clone();
 
     let schema = context
         .current_schema
         .ok_or_else(|| anyhow::anyhow!("current schema not set"))?;
-    let (graph, graph_type) = import_internal(manifest_path)?;
-    let container = GraphContainer::new(
-        Arc::clone(&graph_type),
-        GraphStorage::Memory(Arc::clone(&graph)),
-    );
-
+    let (graph, graph_type) = import_internal(manifest_path, db_config.clone())?;
+    let config = Arc::new(db_config.execution.clone());
+    let container = GraphContainer::new(graph_type, GraphStorage::Memory(graph), config);
     if !schema.add_graph(graph_name.clone(), Arc::new(container)) {
         return Err(anyhow::anyhow!("graph {graph_name} already exists").into());
     }
@@ -148,13 +146,17 @@ pub fn import<P: AsRef<Path>>(
 
 pub(crate) fn import_internal<P: AsRef<Path>>(
     manifest_path: P,
+    config: Arc<minigu_common::config::DatabaseConfig>,
 ) -> Result<(Arc<MemoryGraph>, Arc<MemoryGraphTypeCatalog>)> {
     // Graph type
     let manifest = build_manifest(&manifest_path)?;
     let graph_type = get_graph_type_from_manifest(&manifest)?;
 
     // Graph
-    let graph = MemoryGraph::with_config_fresh(Default::default(), Default::default());
+    let graph = MemoryGraph::with_config_fresh(
+        config.storage.checkpoint.clone(),
+        config.storage.wal.clone(),
+    );
     let txn = graph
         .txn_manager()
         .begin_transaction(IsolationLevel::Serializable)?;

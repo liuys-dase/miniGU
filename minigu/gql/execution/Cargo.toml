@@ -22,5 +22,8 @@ temp-dir = { workspace = true }
 temp-file = { workspace = true }
 thiserror = { workspace = true }
 
+[dev-dependencies]
+minigu-test = { workspace = true }
+
 [lints]
 workspace = true

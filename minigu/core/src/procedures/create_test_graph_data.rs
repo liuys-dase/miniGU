@@ -44,7 +44,11 @@ pub fn build_procedure() -> Procedure {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("current schema not set"))?;
 
-        let graph = MemoryGraph::with_config_fresh(Default::default(), Default::default());
+        let db_config = context.config();
+        let graph = MemoryGraph::with_config_fresh(
+            db_config.storage.checkpoint.clone(),
+            db_config.storage.wal.clone(),
+        );
         let mut graph_type = MemoryGraphTypeCatalog::new();
 
         // Add labels
@@ -126,9 +130,11 @@ pub fn build_procedure() -> Procedure {
         graph_type.add_edge_type(friend_label_set, friend);
         graph_type.add_edge_type(works_at_label_set, works_at);
         graph_type.add_edge_type(located_in_label_set, located_in);
+        let config = Arc::new(db_config.execution.clone());
         let container = Arc::new(GraphContainer::new(
             Arc::new(graph_type),
-            GraphStorage::Memory(graph.clone()),
+            GraphStorage::Memory(graph),
+            config,
         ));
 
         if !schema.add_graph(graph_name.clone(), container.clone()) {

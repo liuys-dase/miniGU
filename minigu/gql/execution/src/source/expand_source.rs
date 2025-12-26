@@ -125,12 +125,12 @@ impl ExpandSource for GraphContainer {
             }
         }
 
-        // Use default batch_size from ExecutionConfig::default().expand_batch_size (64)
-        // TODO: Pass config through GraphContainer to make this configurable
+        // Use configured batch_size
+        let batch_size = self.execution_config().expand_batch_size;
         Some(GraphExpandIter {
             neighbors,
             offset: 0,
-            batch_size: 64,
+            batch_size,
             _graph_storage: match self.graph_storage() {
                 GraphStorage::Memory(m) => GraphStorage::Memory(Arc::clone(m)),
             },
@@ -149,6 +149,7 @@ mod tests {
         MemoryEdgeTypeCatalog, MemoryGraphTypeCatalog, MemoryVertexTypeCatalog,
     };
     use minigu_catalog::property::Property;
+    use minigu_catalog::provider::GraphTypeProvider;
     use minigu_common::data_type::LogicalType;
     use minigu_common::types::LabelId;
     use minigu_common::value::ScalarValue;
@@ -159,33 +160,33 @@ mod tests {
 
     use super::*;
 
-    fn create_test_graph() -> GraphContainer {
-        use std::fs;
-        use std::time::{SystemTime, UNIX_EPOCH};
+    struct TestCleaner {
+        #[allow(dead_code)]
+        config: minigu_test::config::TestConfig,
+    }
 
-        use minigu_common::config::{CheckpointConfig, WalConfig};
+    fn create_test_configs() -> (
+        Arc<TestCleaner>,
+        minigu_common::config::CheckpointConfig,
+        minigu_common::config::WalConfig,
+    ) {
+        let test_config = minigu_test::config::gen_test_config();
 
-        // Create temporary directories for checkpoint and WAL
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
+        let checkpoint = test_config.config.storage.checkpoint.clone();
+        let wal = test_config.config.storage.wal.clone();
 
-        let checkpoint_dir =
-            std::env::temp_dir().join(format!("test_expand_checkpoint_{}", timestamp));
-        fs::create_dir_all(&checkpoint_dir).unwrap();
+        (
+            Arc::new(TestCleaner {
+                config: test_config,
+            }),
+            checkpoint,
+            wal,
+        )
+    }
 
-        let wal_file = std::env::temp_dir().join(format!("test_expand_wal_{}.log", timestamp));
-
-        let checkpoint_config = CheckpointConfig {
-            checkpoint_dir,
-            max_checkpoints: 3,
-            auto_checkpoint_interval_secs: 0,
-            checkpoint_prefix: "test_expand".to_string(),
-            transaction_timeout_secs: 10,
-        };
-
-        let wal_config = WalConfig { wal_path: wal_file };
+    fn create_test_graph() -> (GraphContainer, Arc<TestCleaner>) {
+        // Use the new helper to get configs
+        let (cleaner, checkpoint_config, wal_config) = create_test_configs();
 
         let graph = MemoryGraph::with_config_fresh(checkpoint_config, wal_config);
         let mut graph_type = MemoryGraphTypeCatalog::new();
@@ -203,6 +204,7 @@ mod tests {
                 Property::new("age".to_string(), LogicalType::Int8, false),
             ],
         ));
+        graph_type.add_vertex_type(person_label_set, person.clone());
 
         // Create edge type
         let friend_label_set: LabelSet = vec![friend_label_id].into_iter().collect();
@@ -216,11 +218,12 @@ mod tests {
                 false,
             )],
         ));
-
-        graph_type.add_vertex_type(person_label_set, person);
         graph_type.add_edge_type(friend_label_set, friend);
 
-        GraphContainer::new(Arc::new(graph_type), GraphStorage::Memory(graph))
+        let config = Arc::new(minigu_common::config::ExecutionConfig::default());
+        let container =
+            GraphContainer::new(Arc::new(graph_type), GraphStorage::Memory(graph), config);
+        (container, cleaner)
     }
 
     fn setup_test_data(container: &GraphContainer) {
@@ -317,7 +320,7 @@ mod tests {
 
     #[test]
     fn test_expand_from_nonexistent_vertex() {
-        let container = create_test_graph();
+        let (container, _cleaner) = create_test_graph();
         setup_test_data(&container);
 
         // Try to expand from a non-existent vertex
@@ -330,7 +333,7 @@ mod tests {
 
     #[test]
     fn test_expand_from_vertex_with_no_neighbors() {
-        let container = create_test_graph();
+        let (container, _cleaner) = create_test_graph();
         setup_test_data(&container);
 
         // Vertex 4 has no outgoing edges
@@ -344,7 +347,7 @@ mod tests {
 
     #[test]
     fn test_expand_from_vertex_with_neighbors() {
-        let container = create_test_graph();
+        let (container, _cleaner) = create_test_graph();
         setup_test_data(&container);
 
         // Vertex 1 has neighbors: 2, 3
@@ -377,7 +380,7 @@ mod tests {
 
     #[test]
     fn test_expand_from_vertex_with_single_neighbor() {
-        let container = create_test_graph();
+        let (container, _cleaner) = create_test_graph();
         setup_test_data(&container);
 
         // Vertex 2 has one neighbor: 3
@@ -406,44 +409,43 @@ mod tests {
 
     #[test]
     fn test_expand_batching() {
-        let container = create_test_graph();
-        setup_test_data(&container);
+        let (container, _cleaner) = create_test_graph();
 
-        // Create a vertex with many neighbors to test batching
-        let mem = match container.graph_storage() {
+        let mem_storage = match container.graph_storage() {
             GraphStorage::Memory(m) => Arc::clone(m),
         };
-
-        let txn = mem
+        let txn = mem_storage
             .txn_manager()
             .begin_transaction(IsolationLevel::Serializable)
             .unwrap();
 
+        let person_label_id = container
+            .graph_type()
+            .get_label_id("PERSON")
+            .unwrap()
+            .unwrap();
+        let friend_label_id = container
+            .graph_type()
+            .get_label_id("FRIEND")
+            .unwrap()
+            .unwrap();
+
         // Create vertex 5
-        let person_label_id = LabelId::new(1).unwrap();
         let v5 = Vertex::new(
             5,
             person_label_id,
-            PropertyRecord::new(vec![
-                ScalarValue::String(Some("Eve".to_string())),
-                ScalarValue::Int8(Some(27)),
-            ]),
+            PropertyRecord::new(vec![ScalarValue::Int32(Some(5))]),
         );
-        mem.create_vertex(&txn, v5).unwrap();
+        mem_storage.create_vertex(&txn, v5).unwrap();
 
-        // Create 100 edges from vertex 5 to vertices 1-100
-        // (We'll create vertices 6-100 first)
-        let friend_label_id = LabelId::new(1).unwrap();
+        // Create 95 neighbors (vertex 6 to 100) and edges
         for i in 6..=100 {
             let v = Vertex::new(
                 i,
                 person_label_id,
-                PropertyRecord::new(vec![
-                    ScalarValue::String(Some(format!("Person{}", i))),
-                    ScalarValue::Int8(Some(20)),
-                ]),
+                PropertyRecord::new(vec![ScalarValue::Int32(Some(i as i32))]),
             );
-            mem.create_vertex(&txn, v).unwrap();
+            mem_storage.create_vertex(&txn, v).unwrap();
 
             let edge = Edge::new(
                 i,
@@ -452,7 +454,7 @@ mod tests {
                 friend_label_id,
                 PropertyRecord::new(vec![ScalarValue::Int32(Some(1))]),
             );
-            mem.create_edge(&txn, edge).unwrap();
+            mem_storage.create_edge(&txn, edge).unwrap();
         }
 
         txn.commit().unwrap();

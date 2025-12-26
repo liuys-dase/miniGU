@@ -1,13 +1,12 @@
-use std::fs;
 use std::sync::Arc;
 
-use minigu_common::config::{CheckpointConfig, WalConfig};
 use minigu_common::types::{EdgeId, LabelId, VertexId};
 use minigu_common::value::ScalarValue;
 use minigu_storage::model::edge::Edge;
 use minigu_storage::model::properties::PropertyRecord;
 use minigu_storage::model::vertex::Vertex;
 use minigu_storage::tp::MemoryGraph;
+use minigu_test::config::{TestConfig, gen_test_config};
 use minigu_transaction::{GraphTxnManager, IsolationLevel, Transaction};
 
 pub const PERSON_LABEL_ID: LabelId = LabelId::new(1).unwrap();
@@ -15,57 +14,24 @@ pub const FRIEND_LABEL_ID: LabelId = LabelId::new(1).unwrap();
 pub const FOLLOW_LABEL_ID: LabelId = LabelId::new(2).unwrap();
 
 pub struct TestCleaner {
-    wal_path: std::path::PathBuf,
-    checkpoint_dir: std::path::PathBuf,
+    // Hold TestConfig to prevent temp dirs from being dropped
+    #[allow(dead_code)]
+    config: TestConfig,
 }
 
 impl TestCleaner {
-    pub fn new(checkpoint_config: &CheckpointConfig, wal_config: &WalConfig) -> Self {
-        Self {
-            wal_path: wal_config.wal_path.clone(),
-            checkpoint_dir: checkpoint_config.checkpoint_dir.clone(),
-        }
+    pub fn new(config: TestConfig) -> Self {
+        Self { config }
     }
-}
-
-impl Drop for TestCleaner {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.wal_path);
-        let _ = fs::remove_dir_all(&self.checkpoint_dir);
-    }
-}
-
-pub fn create_test_checkpoint_config() -> CheckpointConfig {
-    let dir = std::env::temp_dir().join(format!(
-        "test_isolation_checkpoint_{}_{}",
-        chrono::Utc::now().timestamp(),
-        rand::random::<u32>()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    CheckpointConfig {
-        checkpoint_dir: dir,
-        max_checkpoints: 3,
-        auto_checkpoint_interval_secs: 0,
-        checkpoint_prefix: "test_isolation".to_string(),
-        transaction_timeout_secs: 10,
-    }
-}
-
-pub fn create_test_wal_config() -> WalConfig {
-    let file_name = format!(
-        "test_isolation_wal_{}_{}.log",
-        chrono::Utc::now().timestamp(),
-        rand::random::<u32>()
-    );
-    let path = std::env::temp_dir().join(file_name);
-    WalConfig { wal_path: path }
 }
 
 pub fn create_empty_graph() -> (Arc<MemoryGraph>, TestCleaner) {
-    let checkpoint_config = create_test_checkpoint_config();
-    let wal_config = create_test_wal_config();
-    let cleaner = TestCleaner::new(&checkpoint_config, &wal_config);
+    let test_config = gen_test_config();
+    let checkpoint_config = test_config.config.storage.checkpoint.clone();
+    let wal_config = test_config.config.storage.wal.clone();
+
     let graph = MemoryGraph::with_config_fresh(checkpoint_config, wal_config);
+    let cleaner = TestCleaner::new(test_config);
     (graph, cleaner)
 }
 

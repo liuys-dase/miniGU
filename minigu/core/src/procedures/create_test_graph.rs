@@ -19,12 +19,18 @@ pub fn build_procedure() -> Procedure {
             .expect("arg must be a string")
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("graph name cannot be null"))?;
+        let db_config = context.config().clone();
         let schema = context
             .current_schema
             .ok_or_else(|| anyhow::anyhow!("current schema not set"))?;
-        let graph = MemoryGraph::new();
+        let graph = MemoryGraph::with_config_fresh(
+            db_config.storage.checkpoint.clone(),
+            db_config.storage.wal.clone(),
+        );
         let mut graph_type = MemoryGraphTypeCatalog::new();
-        let container = GraphContainer::new(Arc::new(graph_type), GraphStorage::Memory(graph));
+        let config = Arc::new(db_config.execution.clone());
+        let container =
+            GraphContainer::new(Arc::new(graph_type), GraphStorage::Memory(graph), config);
         if !schema.add_graph(graph_name.clone(), Arc::new(container)) {
             return Err(anyhow::anyhow!("graph {graph_name} already exists").into());
         }

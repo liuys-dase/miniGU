@@ -173,12 +173,10 @@ impl VertexPropertySource for GraphContainer {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
     use std::sync::Arc;
 
     use arrow::array::{BooleanArray, Float32Array, Float64Array, Int32Array, Int64Array};
     use minigu_catalog::memory::graph_type::MemoryGraphTypeCatalog;
-    use minigu_common::config::{CheckpointConfig, WalConfig};
     use minigu_common::types::{LabelId, PropertyId, VertexId, VertexIdArray};
     use minigu_common::value::ScalarValue;
     use minigu_context::graph::{GraphContainer, GraphStorage};
@@ -192,60 +190,39 @@ mod tests {
     const PERSON_LABEL_ID: LabelId = LabelId::new(1).unwrap();
 
     struct TestCleaner {
-        wal_path: std::path::PathBuf,
-        checkpoint_dir: std::path::PathBuf,
-    }
-
-    impl TestCleaner {
-        fn new(checkpoint_config: &CheckpointConfig, wal_config: &WalConfig) -> Self {
-            Self {
-                wal_path: wal_config.wal_path.clone(),
-                checkpoint_dir: checkpoint_config.checkpoint_dir.clone(),
-            }
-        }
+        // Hold TestConfig
+        #[allow(dead_code)]
+        config: minigu_test::config::TestConfig,
     }
 
     impl Drop for TestCleaner {
         fn drop(&mut self) {
-            let _ = fs::remove_file(&self.wal_path);
-            let _ = fs::remove_dir_all(&self.checkpoint_dir);
+            // The TestConfig's Drop implementation handles cleanup of paths
+            // No explicit cleanup needed here.
         }
     }
 
-    fn create_test_configs() -> (CheckpointConfig, WalConfig, TestCleaner) {
-        let checkpoint_config = {
-            let temp_dir = temp_dir::TempDir::with_prefix("test_checkpoint_").unwrap();
-            let dir = temp_dir.path().to_owned();
-            temp_dir.leak();
-            CheckpointConfig {
-                checkpoint_dir: dir,
-                max_checkpoints: 3,
-                auto_checkpoint_interval_secs: 0,
-                checkpoint_prefix: "test_checkpoint".to_string(),
-                transaction_timeout_secs: 10,
-            }
-        };
-
-        let wal_config = {
-            let temp_file = temp_file::TempFileBuilder::new()
-                .prefix("test_wal_")
-                .suffix(".log")
-                .build()
-                .unwrap();
-            let path = temp_file.path().to_owned();
-            temp_file.leak();
-            WalConfig { wal_path: path }
-        };
-
-        let cleaner = TestCleaner::new(&checkpoint_config, &wal_config);
-        (checkpoint_config, wal_config, cleaner)
+    fn create_test_configs() -> (
+        minigu_common::config::CheckpointConfig,
+        minigu_common::config::WalConfig,
+        TestCleaner,
+    ) {
+        let test_config = minigu_test::config::gen_test_config();
+        (
+            test_config.config.storage.checkpoint.clone(),
+            test_config.config.storage.wal.clone(),
+            TestCleaner {
+                config: test_config,
+            },
+        )
     }
 
     fn create_test_graph_container() -> (GraphContainer, TestCleaner) {
         let (checkpoint_config, wal_config, cleaner) = create_test_configs();
         let graph = MemoryGraph::with_config_fresh(checkpoint_config, wal_config);
         let graph_type = Arc::new(MemoryGraphTypeCatalog::new());
-        let container = GraphContainer::new(graph_type, GraphStorage::Memory(graph));
+        let config = Arc::new(minigu_common::config::ExecutionConfig::default());
+        let container = GraphContainer::new(graph_type, GraphStorage::Memory(graph), config);
         (container, cleaner)
     }
 

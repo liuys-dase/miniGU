@@ -17,13 +17,19 @@ pub enum GraphStorage {
 pub struct GraphContainer {
     graph_type: Arc<MemoryGraphTypeCatalog>,
     graph_storage: GraphStorage,
+    config: Arc<minigu_common::config::ExecutionConfig>,
 }
 
 impl GraphContainer {
-    pub fn new(graph_type: Arc<MemoryGraphTypeCatalog>, graph_storage: GraphStorage) -> Self {
+    pub fn new(
+        graph_type: Arc<MemoryGraphTypeCatalog>,
+        graph_storage: GraphStorage,
+        config: Arc<minigu_common::config::ExecutionConfig>,
+    ) -> Self {
         Self {
             graph_type,
             graph_storage,
+            config,
         }
     }
 
@@ -35,6 +41,11 @@ impl GraphContainer {
     #[inline]
     pub fn graph_type(&self) -> Arc<MemoryGraphTypeCatalog> {
         self.graph_type.clone()
+    }
+
+    #[inline]
+    pub fn execution_config(&self) -> &Arc<minigu_common::config::ExecutionConfig> {
+        &self.config
     }
 }
 
