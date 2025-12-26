@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
+use minigu_common::config::test_utils::{TestConfig, gen_test_config};
 use minigu_common::types::{EdgeId, LabelId, VertexId};
 use minigu_common::value::ScalarValue;
 use minigu_storage::model::edge::Edge;
 use minigu_storage::model::properties::PropertyRecord;
 use minigu_storage::model::vertex::Vertex;
 use minigu_storage::tp::MemoryGraph;
-use minigu_test::config::{TestConfig, gen_test_config};
 use minigu_transaction::{GraphTxnManager, IsolationLevel, Transaction};
 
 pub const PERSON_LABEL_ID: LabelId = LabelId::new(1).unwrap();

@@ -162,7 +162,7 @@ mod tests {
 
     struct TestCleaner {
         #[allow(dead_code)]
-        config: minigu_test::config::TestConfig,
+        config: minigu_common::config::test_utils::TestConfig,
     }
 
     fn create_test_configs() -> (
@@ -170,7 +170,7 @@ mod tests {
         minigu_common::config::CheckpointConfig,
         minigu_common::config::WalConfig,
     ) {
-        let test_config = minigu_test::config::gen_test_config();
+        let test_config = minigu_common::config::test_utils::gen_test_config();
 
         let checkpoint = test_config.config.storage.checkpoint.clone();
         let wal = test_config.config.storage.wal.clone();

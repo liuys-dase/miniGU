@@ -109,3 +109,48 @@ impl Default for ExecutionConfig {
         }
     }
 }
+
+#[cfg(feature = "test-utils")]
+pub mod test_utils {
+    use tempfile::TempDir;
+
+    use super::*;
+
+    pub struct TestConfig {
+        pub config: DatabaseConfig,
+        pub _temp_dirs: Vec<TempDir>, // Keep TempDirs alive
+    }
+
+    pub fn gen_test_config() -> TestConfig {
+        let wal_dir = TempDir::new().expect("failed to create temp wal dir");
+        let checkpoint_dir = TempDir::new().expect("failed to create temp checkpoint dir");
+
+        let wal_config = WalConfig {
+            wal_path: wal_dir.path().join("wal.log"),
+        };
+
+        let checkpoint_config = CheckpointConfig {
+            checkpoint_dir: checkpoint_dir.path().to_path_buf(),
+            max_checkpoints: 5,
+            auto_checkpoint_interval_secs: 30,
+            checkpoint_prefix: "checkpoint".to_string(),
+            transaction_timeout_secs: 30,
+        };
+
+        let storage_config = StorageConfig {
+            wal: wal_config,
+            checkpoint: checkpoint_config,
+        };
+
+        let config = DatabaseConfig {
+            num_threads: 1,
+            storage: storage_config,
+            execution: ExecutionConfig::default(),
+        };
+
+        TestConfig {
+            config,
+            _temp_dirs: vec![wal_dir, checkpoint_dir],
+        }
+    }
+}

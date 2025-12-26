@@ -1493,6 +1493,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tabled",
+ "tempfile",
  "thiserror",
 ]
 
