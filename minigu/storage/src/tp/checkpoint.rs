@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crc32fast::Hasher;
@@ -398,8 +398,8 @@ pub struct CheckpointManager {
     /// Configuration for the checkpoint manager
     config: minigu_common::config::CheckpointConfig,
 
-    /// Reference to the graph being checkpointed
-    graph: Arc<MemoryGraph>,
+    /// Weak reference to the graph being checkpointed to avoid reference cycles
+    graph: Weak<MemoryGraph>,
 
     /// Map of checkpoint ID to checkpoint entry
     checkpoints: HashMap<String, CheckpointEntry>,
@@ -415,7 +415,7 @@ pub struct CheckpointManager {
 impl CheckpointManager {
     /// Creates a new checkpoint manager for the given graph
     pub fn new(
-        graph: Arc<MemoryGraph>,
+        graph: Weak<MemoryGraph>, // Change to Weak
         config: minigu_common::config::CheckpointConfig,
     ) -> StorageResult<Self> {
         // Create checkpoint directory if it doesn't exist
@@ -506,16 +506,20 @@ impl CheckpointManager {
             // Acquire the checkpoint lock
             let _lock = self.checkpoint_lock.write().unwrap();
 
+            let graph = self.graph.upgrade().ok_or_else(|| {
+                StorageError::Checkpoint(CheckpointError::Io(std::io::Error::other(
+                    "Graph has been dropped",
+                )))
+            })?;
+
             // Wait for active transactions to complete
-            self.wait_for_transaction_quiescence()?;
+            self.wait_for_transaction_quiescence(&graph)?;
 
             // Create a new checkpoint
-            checkpoint = GraphCheckpoint::new(&self.graph);
+            checkpoint = GraphCheckpoint::new(&graph);
 
             // Truncate the WAL, keeping only entries after the checkpoint's LSN
-            self.graph
-                .wal_manager
-                .truncate_until(checkpoint.metadata.lsn)?;
+            graph.wal_manager.truncate_until(checkpoint.metadata.lsn)?;
         }
 
         // Generate a unique ID for the checkpoint
@@ -551,11 +555,11 @@ impl CheckpointManager {
         Ok(id)
     }
 
-    fn wait_for_transaction_quiescence(&self) -> StorageResult<()> {
+    fn wait_for_transaction_quiescence(&self, graph: &Arc<MemoryGraph>) -> StorageResult<()> {
         // Wait for active transactions to complete
         let start_time = std::time::Instant::now();
         let timeout = std::time::Duration::from_secs(self.config.transaction_timeout_secs);
-        while !self.graph.txn_manager.active_txns.is_empty() {
+        while !graph.txn_manager.active_txns.is_empty() {
             if start_time.elapsed() > timeout {
                 return Err(StorageError::Checkpoint(CheckpointError::Timeout));
             }
@@ -981,7 +985,8 @@ mod tests {
         );
 
         // Create a checkpoint manager
-        let mut manager = CheckpointManager::new(graph.clone(), checkpoint_config.clone()).unwrap();
+        let mut manager =
+            CheckpointManager::new(Arc::downgrade(&graph), checkpoint_config.clone()).unwrap();
 
         // Create 5 checkpoints
         let mut checkpoint_ids = Vec::new();

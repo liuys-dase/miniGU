@@ -78,7 +78,6 @@ impl GraphContainer {
     pub fn vertex_source(
         &self,
         label_ids: &Option<Vec<Vec<LabelId>>>,
-        batch_size: usize,
     ) -> StorageResult<Box<dyn Iterator<Item = Arc<VertexIdArray>> + Send + 'static>> {
         let mem = match self.graph_storage() {
             GraphStorage::Memory(m) => Arc::clone(m),
@@ -87,6 +86,7 @@ impl GraphContainer {
             .txn_manager()
             .begin_transaction(IsolationLevel::Serializable)?;
         let mut ids: Vec<u64> = Vec::new();
+        let batch_size = self.config.vertex_scan_batch_size;
         {
             let it = mem.iter_vertices(&txn)?;
             for v in it {

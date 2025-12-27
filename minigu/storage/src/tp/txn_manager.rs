@@ -140,6 +140,11 @@ impl MemTxnManager {
         self.graph = Arc::downgrade(graph);
     }
 
+    /// Set the graph reference using a Weak pointer
+    pub fn set_graph_weak(&mut self, graph: Weak<MemoryGraph>) {
+        self.graph = graph;
+    }
+
     /// Begin a new transaction with specified parameters
     pub fn begin_transaction_at(
         &self,

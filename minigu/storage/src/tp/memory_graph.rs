@@ -409,27 +409,23 @@ impl MemoryGraph {
         checkpoint_config: minigu_common::config::CheckpointConfig,
         wal_config: minigu_common::config::WalConfig,
     ) -> Arc<Self> {
-        let graph = Arc::new(Self {
-            vertices: DashMap::new(),
-            edges: DashMap::new(),
-            adjacency_list: DashMap::new(),
-            txn_manager: MemTxnManager::new(),
-            wal_manager: WalManager::new(wal_config),
-            checkpoint_manager: None,
-            vector_indices: DashMap::new(),
-        });
+        Arc::new_cyclic(|weak_graph| {
+            let mut txn_manager = MemTxnManager::new();
+            txn_manager.set_graph_weak(weak_graph.clone());
 
-        // Initialize the checkpoint manager
-        let checkpoint_manager = CheckpointManager::new(graph.clone(), checkpoint_config).unwrap();
+            let checkpoint_manager =
+                CheckpointManager::new(weak_graph.clone(), checkpoint_config).ok();
 
-        unsafe {
-            let graph_ptr = Arc::as_ptr(&graph) as *mut MemoryGraph;
-            (*graph_ptr).checkpoint_manager = Some(checkpoint_manager);
-            // Set the graph reference in the transaction manager
-            (*graph_ptr).txn_manager.graph = Arc::downgrade(&graph);
-        }
-
-        graph
+            Self {
+                vertices: DashMap::new(),
+                edges: DashMap::new(),
+                adjacency_list: DashMap::new(),
+                txn_manager,
+                wal_manager: WalManager::new(wal_config),
+                checkpoint_manager,
+                vector_indices: DashMap::new(),
+            }
+        })
     }
 
     /// Recovers the graph from WAL entries
