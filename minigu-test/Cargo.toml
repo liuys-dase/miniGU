@@ -18,6 +18,7 @@ glob = { workspace = true }
 gql-parser = { workspace = true, features = ["std", "serde"] }
 libtest-mimic = { workspace = true }
 minigu = { workspace = true }
+minigu-common = { workspace = true }
 sqllogictest = { workspace = true }
 
 [dev-dependencies]

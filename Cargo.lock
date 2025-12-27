@@ -1475,6 +1475,7 @@ dependencies = [
  "lru",
  "miette",
  "minigu",
+ "minigu-common",
  "rustyline",
  "strum",
 ]
@@ -1586,6 +1587,7 @@ dependencies = [
  "insta",
  "libtest-mimic",
  "minigu",
+ "minigu-common",
  "pastey",
  "sqllogictest",
 ]
