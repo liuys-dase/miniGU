@@ -300,7 +300,7 @@ impl GraphCheckpoint {
         checkpoint_config: minigu_common::config::CheckpointConfig,
         wal_config: WalConfig,
     ) -> StorageResult<Arc<MemoryGraph>> {
-        let graph = MemoryGraph::with_config_fresh(checkpoint_config, wal_config);
+        let graph = MemoryGraph::with_config_fresh(checkpoint_config, wal_config)?;
 
         // Set the LSN to the checkpoint's LSN
         graph.wal_manager.set_next_lsn(self.metadata.lsn);
@@ -413,18 +413,15 @@ pub struct CheckpointManager {
 }
 
 impl CheckpointManager {
-    /// Creates a new checkpoint manager for the given graph
-    pub fn new(
-        graph: Weak<MemoryGraph>, // Change to Weak
-        config: minigu_common::config::CheckpointConfig,
-    ) -> StorageResult<Self> {
+    /// Creates a new checkpoint manager
+    pub fn new(config: minigu_common::config::CheckpointConfig) -> StorageResult<Self> {
         // Create checkpoint directory if it doesn't exist
         fs::create_dir_all(&config.checkpoint_dir)
             .map_err(|e| StorageError::Checkpoint(CheckpointError::Io(e)))?;
 
         let mut manager = Self {
             config,
-            graph,
+            graph: Weak::new(),
             checkpoints: HashMap::new(),
             last_auto_checkpoint: None,
             checkpoint_lock: RwLock::new(()),
@@ -434,6 +431,11 @@ impl CheckpointManager {
         manager.load_existing_checkpoints()?;
 
         Ok(manager)
+    }
+
+    /// Sets the graph reference
+    pub fn set_graph(&mut self, graph: Weak<MemoryGraph>) {
+        self.graph = graph;
     }
 
     /// Loads existing checkpoints from the checkpoint directory
@@ -694,7 +696,7 @@ impl MemoryGraph {
 
         // If no checkpoint found, create a new empty graph
         if checkpoint_path.is_none() {
-            let graph = Self::with_config_fresh(checkpoint_config.clone(), wal_config.clone());
+            let graph = Self::with_config_fresh(checkpoint_config.clone(), wal_config.clone())?;
             graph.recover_from_wal()?;
             return Ok(graph);
         }
@@ -985,8 +987,9 @@ mod tests {
         );
 
         // Create a checkpoint manager
-        let mut manager =
-            CheckpointManager::new(Arc::downgrade(&graph), checkpoint_config.clone()).unwrap();
+        // Create a checkpoint manager
+        let mut manager = CheckpointManager::new(checkpoint_config.clone()).unwrap();
+        manager.set_graph(Arc::downgrade(&graph));
 
         // Create 5 checkpoints
         let mut checkpoint_ids = Vec::new();

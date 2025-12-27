@@ -449,7 +449,8 @@ mod tests {
     }
 
     fn mock_graph() -> Arc<MemoryGraph> {
-        let graph = MemoryGraph::with_config_fresh(mock_checkpoint_config(), mock_wal_config());
+        let graph =
+            MemoryGraph::with_config_fresh(mock_checkpoint_config(), mock_wal_config()).unwrap();
 
         let txn = graph
             .txn_manager()

@@ -188,7 +188,7 @@ mod tests {
         // Use the new helper to get configs
         let (cleaner, checkpoint_config, wal_config) = create_test_configs();
 
-        let graph = MemoryGraph::with_config_fresh(checkpoint_config, wal_config);
+        let graph = MemoryGraph::with_config_fresh(checkpoint_config, wal_config).unwrap();
         let mut graph_type = MemoryGraphTypeCatalog::new();
 
         // Add labels

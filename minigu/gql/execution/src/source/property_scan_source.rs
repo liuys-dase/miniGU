@@ -219,7 +219,8 @@ mod tests {
 
     fn create_test_graph_container() -> (GraphContainer, TestCleaner) {
         let (checkpoint_config, wal_config, cleaner) = create_test_configs();
-        let graph = MemoryGraph::with_config_fresh(checkpoint_config, wal_config);
+        let graph_res = MemoryGraph::with_config_fresh(checkpoint_config, wal_config);
+        let graph: Arc<MemoryGraph> = graph_res.unwrap();
         let graph_type = Arc::new(MemoryGraphTypeCatalog::new());
         let config = Arc::new(minigu_common::config::ExecutionConfig::default());
         let container = GraphContainer::new(graph_type, GraphStorage::Memory(graph), config);

@@ -30,7 +30,7 @@ pub fn create_empty_graph() -> (Arc<MemoryGraph>, TestCleaner) {
     let checkpoint_config = test_config.config.storage.checkpoint.clone();
     let wal_config = test_config.config.storage.wal.clone();
 
-    let graph = MemoryGraph::with_config_fresh(checkpoint_config, wal_config);
+    let graph = MemoryGraph::with_config_fresh(checkpoint_config, wal_config).unwrap();
     let cleaner = TestCleaner::new(test_config);
     (graph, cleaner)
 }

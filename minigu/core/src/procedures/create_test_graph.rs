@@ -26,7 +26,7 @@ pub fn build_procedure() -> Procedure {
         let graph = MemoryGraph::with_config_fresh(
             db_config.storage.checkpoint.clone(),
             db_config.storage.wal.clone(),
-        );
+        )?;
         let mut graph_type = MemoryGraphTypeCatalog::new();
         let config = Arc::new(db_config.execution.clone());
         let container =

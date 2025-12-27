@@ -408,13 +408,14 @@ impl MemoryGraph {
     pub fn with_config_fresh(
         checkpoint_config: minigu_common::config::CheckpointConfig,
         wal_config: minigu_common::config::WalConfig,
-    ) -> Arc<Self> {
-        Arc::new_cyclic(|weak_graph| {
+    ) -> StorageResult<Arc<Self>> {
+        let mut checkpoint_manager = CheckpointManager::new(checkpoint_config)?;
+
+        Ok(Arc::new_cyclic(|weak_graph| {
             let mut txn_manager = MemTxnManager::new();
             txn_manager.set_graph_weak(weak_graph.clone());
 
-            let checkpoint_manager =
-                CheckpointManager::new(weak_graph.clone(), checkpoint_config).ok();
+            checkpoint_manager.set_graph(weak_graph.clone());
 
             Self {
                 vertices: DashMap::new(),
@@ -422,10 +423,10 @@ impl MemoryGraph {
                 adjacency_list: DashMap::new(),
                 txn_manager,
                 wal_manager: WalManager::new(wal_config),
-                checkpoint_manager,
+                checkpoint_manager: Some(checkpoint_manager),
                 vector_indices: DashMap::new(),
             }
-        })
+        }))
     }
 
     /// Recovers the graph from WAL entries
@@ -1317,7 +1318,7 @@ pub mod tests {
         let checkpoint_config = mock_checkpoint_config();
         let wal_config = mock_wal_config();
         let cleaner = Cleaner::new(&checkpoint_config, &wal_config);
-        let graph = MemoryGraph::with_config_fresh(checkpoint_config, wal_config);
+        let graph = MemoryGraph::with_config_fresh(checkpoint_config, wal_config).unwrap();
         (graph, cleaner)
     }
 
@@ -2258,7 +2259,8 @@ pub mod tests {
         let checkpoint_config = mock_checkpoint_config();
         let wal_config = mock_wal_config();
         let _cleaner = Cleaner::new(&checkpoint_config, &wal_config);
-        let graph = MemoryGraph::with_config_fresh(checkpoint_config.clone(), wal_config.clone());
+        let graph =
+            MemoryGraph::with_config_fresh(checkpoint_config.clone(), wal_config.clone()).unwrap();
 
         // Create and commit a transaction with a vertex
         let txn1 = graph
@@ -2301,7 +2303,7 @@ pub mod tests {
 
         // Create a new graph instance without recovery
         let new_graph =
-            MemoryGraph::with_config_fresh(checkpoint_config.clone(), wal_config.clone());
+            MemoryGraph::with_config_fresh(checkpoint_config.clone(), wal_config.clone()).unwrap();
 
         // Recover the graph from WAL
         assert!(new_graph.recover_from_wal().is_ok());
@@ -2324,7 +2326,8 @@ pub mod tests {
         let checkpoint_config = mock_checkpoint_config();
         let wal_config = mock_wal_config();
         let _cleaner = Cleaner::new(&checkpoint_config, &wal_config);
-        let graph = MemoryGraph::with_config_fresh(checkpoint_config.clone(), wal_config.clone());
+        let graph =
+            MemoryGraph::with_config_fresh(checkpoint_config.clone(), wal_config.clone()).unwrap();
 
         // Create initial data (before checkpoint)
         let txn1 = graph

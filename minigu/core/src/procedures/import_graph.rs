@@ -156,7 +156,7 @@ pub(crate) fn import_internal<P: AsRef<Path>>(
     let graph = MemoryGraph::with_config_fresh(
         config.storage.checkpoint.clone(),
         config.storage.wal.clone(),
-    );
+    )?;
     let txn = graph
         .txn_manager()
         .begin_transaction(IsolationLevel::Serializable)?;
