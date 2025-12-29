@@ -738,6 +738,13 @@ impl MemoryGraph {
         Ok(Box::new(txn.iter_adjacency(vid)))
     }
 
+    /// Returns a reference to the underlying persistence provider.
+    ///
+    /// # Stability
+    ///
+    /// This method is primarily intended for tests, diagnostics, and advanced use cases
+    /// that require direct access to the low-level persistence layer. It is **not**
+    /// considered a stable part of the high-level public API and may change without notice.
     #[doc(hidden)]
     pub fn persistence(&self) -> &Arc<dyn PersistenceProvider> {
         &self.persistence
