@@ -21,6 +21,7 @@ pub fn build_procedure() -> Procedure {
             .ok_or_else(|| anyhow::anyhow!("graph name cannot be null"))?;
         let schema = context
             .current_schema
+            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("current schema not set"))?;
         let graph = MemoryGraph::in_memory();
         let mut graph_type = MemoryGraphTypeCatalog::new();

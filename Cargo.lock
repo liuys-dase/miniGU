@@ -1467,6 +1467,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "gql-parser",
+ "insta",
  "insta-cmd",
  "itertools 0.14.0",
  "lru",
@@ -1474,6 +1475,7 @@ dependencies = [
  "minigu",
  "rustyline",
  "strum",
+ "tempfile",
 ]
 
 [[package]]
@@ -1579,6 +1581,7 @@ dependencies = [
  "minigu",
  "pastey",
  "sqllogictest",
+ "tempfile",
 ]
 
 [[package]]

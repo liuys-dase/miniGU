@@ -35,7 +35,7 @@
 //!   schema mismatch, duplicate graph name, etc.) are surfaced via `Result`.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -45,7 +45,7 @@ use minigu_catalog::memory::graph_type::{
     MemoryEdgeTypeCatalog, MemoryGraphTypeCatalog, MemoryVertexTypeCatalog,
 };
 use minigu_catalog::property::Property;
-use minigu_catalog::provider::GraphTypeProvider;
+use minigu_catalog::provider::{GraphTypeProvider, SchemaProvider};
 use minigu_common::data_type::{DataSchema, LogicalType};
 use minigu_common::error::not_implemented;
 use minigu_common::types::VertexId;
@@ -129,11 +129,19 @@ pub fn import<P: AsRef<Path>>(
     manifest_path: P,
 ) -> Result<()> {
     let graph_name = graph_name.into();
-
     let schema = context
         .current_schema
+        .as_ref()
         .ok_or_else(|| anyhow::anyhow!("current schema not set"))?;
-    let (graph, graph_type) = import_internal(manifest_path)?;
+
+    if schema.get_graph(&graph_name)?.is_some() {
+        return Err(anyhow::anyhow!("graph {graph_name} already exists").into());
+    }
+
+    let ckpt_dir = context.database().config().checkpoint_dir.as_path();
+    let wal_path = context.database().config().wal_path.as_path();
+    let (graph, graph_type) = import_internal(ckpt_dir, wal_path, manifest_path.as_ref())?;
+
     let container = GraphContainer::new(
         Arc::clone(&graph_type),
         GraphStorage::Memory(Arc::clone(&graph)),
@@ -147,6 +155,8 @@ pub fn import<P: AsRef<Path>>(
 }
 
 pub(crate) fn import_internal<P: AsRef<Path>>(
+    ckpt_dir: P,
+    wal_path: P,
     manifest_path: P,
 ) -> Result<(Arc<MemoryGraph>, Arc<MemoryGraphTypeCatalog>)> {
     // Graph type
