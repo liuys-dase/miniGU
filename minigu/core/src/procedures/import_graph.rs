@@ -138,9 +138,8 @@ pub fn import<P: AsRef<Path>>(
         return Err(anyhow::anyhow!("graph {graph_name} already exists").into());
     }
 
-    let ckpt_dir = context.database().config().checkpoint_dir.as_path();
-    let wal_path = context.database().config().wal_path.as_path();
-    let (graph, graph_type) = import_internal(ckpt_dir, wal_path, manifest_path.as_ref())?;
+    let db_path = context.database().config().db_path.clone();
+    let (graph, graph_type) = import_internal(manifest_path.as_ref(), db_path)?;
 
     let container = GraphContainer::new(
         Arc::clone(&graph_type),
@@ -155,16 +154,19 @@ pub fn import<P: AsRef<Path>>(
 }
 
 pub(crate) fn import_internal<P: AsRef<Path>>(
-    ckpt_dir: P,
-    wal_path: P,
     manifest_path: P,
+    db_path: Option<PathBuf>,
 ) -> Result<(Arc<MemoryGraph>, Arc<MemoryGraphTypeCatalog>)> {
     // Graph type
     let manifest = build_manifest(&manifest_path)?;
     let graph_type = get_graph_type_from_manifest(&manifest)?;
 
     // Graph
-    let graph = MemoryGraph::in_memory();
+    let graph = if let Some(path) = db_path {
+        MemoryGraph::with_db_file(path).map_err(anyhow::Error::from)?
+    } else {
+        MemoryGraph::in_memory()
+    };
     let txn = graph
         .txn_manager()
         .begin_transaction(IsolationLevel::Serializable)?;

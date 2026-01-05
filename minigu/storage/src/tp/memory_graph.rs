@@ -557,6 +557,13 @@ impl MemoryGraph {
         // Acquire checkpoint lock to prevent concurrent modifications
         let _lock = self.checkpoint_lock.write().unwrap();
 
+        // Wait for all active transactions to finish.
+        // Since we hold the checkpoint write lock, no new transactions can start (they need read
+        // lock). We only wait for existing transactions to drain.
+        while !self.txn_manager.active_txns.is_empty() {
+            std::thread::yield_now();
+        }
+
         // Create checkpoint
         let checkpoint = GraphCheckpoint::new(self);
         let checkpoint_lsn = checkpoint.metadata.lsn;

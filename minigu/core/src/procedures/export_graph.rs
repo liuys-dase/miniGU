@@ -657,12 +657,7 @@ mod tests {
 
         {
             let manifest_path = export_dir1.join(manifest_rel_path);
-            let (graph, graph_type) = import_internal(
-                temp_dir.path().join(".checkpoint"),
-                temp_dir.path().join(".wal"),
-                manifest_path,
-            )
-            .unwrap();
+            let (graph, graph_type) = import_internal(manifest_path, None).unwrap();
 
             export(
                 graph,

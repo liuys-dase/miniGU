@@ -309,7 +309,6 @@ impl MemTransaction {
             for _ in 0..(wal_count + 2) {
                 self.graph.increment_wal_counter();
             }
-            self.graph.check_auto_checkpoint()?;
         }
 
         // Step 6: Clean up transaction state and update the `latest_commit_ts`.
@@ -318,6 +317,13 @@ impl MemTransaction {
             .latest_commit_ts
             .store(commit_ts.raw(), Ordering::SeqCst);
         self.graph.txn_manager.finish_transaction(self)?;
+
+        // Step 7: Check auto checkpoint (after transaction is finished)
+        // We only check for checkpoint if we actually wrote to WAL (and thus incremented the
+        // counter)
+        if !skip_wal {
+            self.graph.check_auto_checkpoint()?;
+        }
 
         // Mark the transaction as handled
         self.is_handled.store(true, Ordering::Release);
