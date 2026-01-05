@@ -44,12 +44,7 @@ pub fn build_procedure() -> Procedure {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("current schema not set"))?;
 
-        let db_path = context.database().config().db_path.clone();
-        let graph = if let Some(path) = db_path {
-            MemoryGraph::with_db_file(path).map_err(anyhow::Error::from)?
-        } else {
-            MemoryGraph::in_memory()
-        };
+        let graph = MemoryGraph::in_memory();
         let mut graph_type = MemoryGraphTypeCatalog::new();
 
         // Add labels
