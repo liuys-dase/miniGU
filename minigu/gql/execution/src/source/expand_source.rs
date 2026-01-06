@@ -190,7 +190,9 @@ mod tests {
         let mut graph_type = MemoryGraphTypeCatalog::new();
 
         // Add labels
+        #[allow(deprecated)]
         let person_label_id = graph_type.add_label("PERSON".to_string()).unwrap();
+        #[allow(deprecated)]
         let friend_label_id = graph_type.add_label("FRIEND".to_string()).unwrap();
 
         // Create vertex type
@@ -216,7 +218,9 @@ mod tests {
             )],
         ));
 
+        #[allow(deprecated)]
         graph_type.add_vertex_type(person_label_set, person);
+        #[allow(deprecated)]
         graph_type.add_edge_type(friend_label_set, friend);
 
         GraphContainer::new(Arc::new(graph_type), GraphStorage::Memory(graph))

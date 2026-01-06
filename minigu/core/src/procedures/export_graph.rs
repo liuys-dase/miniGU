@@ -546,8 +546,11 @@ mod tests {
 
     fn mock_graph_type() -> MemoryGraphTypeCatalog {
         let mut graph_type = MemoryGraphTypeCatalog::new();
+        #[allow(deprecated)]
         let person_id = graph_type.add_label("person".to_string()).unwrap();
+        #[allow(deprecated)]
         let friend_id = graph_type.add_label("friend".to_string()).unwrap();
+        #[allow(deprecated)]
         let follow_id = graph_type.add_label("follow".to_string()).unwrap();
 
         let person_label_set = LabelSet::from_iter([person_id]);
@@ -562,7 +565,9 @@ mod tests {
             ],
         ));
 
+        #[allow(deprecated)]
         graph_type.add_vertex_type(person_label_set, vertex_type.clone());
+        #[allow(deprecated)]
         graph_type.add_edge_type(
             friend_label_set.clone(),
             Arc::new(MemoryEdgeTypeCatalog::new(
@@ -576,6 +581,7 @@ mod tests {
                 )],
             )),
         );
+        #[allow(deprecated)]
         graph_type.add_edge_type(
             follow_label_set.clone(),
             Arc::new(MemoryEdgeTypeCatalog::new(
