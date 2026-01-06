@@ -167,6 +167,11 @@ impl TransactionIdGenerator {
     }
 
     /// Update the counter if the given transaction ID is greater than the current value
+    ///
+    /// CRITICAL: When starting a transaction with a specific ID (e.g., during WAL replay
+    /// or follower replication), we MUST advance the global generator.
+    /// This ensures that subsequent calls to `next()` (for new transactions) will
+    /// allocate strictly higher IDs, preventing ID collisions.
     pub fn update_if_greater(&self, txn_id: Timestamp) -> Result<(), TimestampError> {
         if !txn_id.is_txn_id() {
             return Err(TimestampError::WrongDomainTxnId(txn_id.raw()));
