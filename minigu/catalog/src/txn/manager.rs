@@ -86,6 +86,7 @@ impl CatalogTxnManager {
         Ok(txn)
     }
 
+    /// TODO: implement garbage collection for catalog transactions
     pub fn garbage_collect(&self) -> Result<(), CatalogTxnError> {
         Ok(())
     }

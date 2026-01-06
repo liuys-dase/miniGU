@@ -50,7 +50,14 @@ impl MemoryDirectoryCatalog {
         Ok(())
     }
 
+    /// **Legacy API**: Automatically wraps the operation in a standalone transaction.
+    ///
+    /// This method is deprecated because it does not compose with external transactions.
+    /// Use [`add_child_txn`](Self::add_child_txn) instead for transactional correctness.
     #[inline]
+    #[deprecated(
+        note = "Use the `_txn` variant for transactional contexts. This method uses an internal auto-commit transaction."
+    )]
     pub fn add_child(&self, name: String, child: DirectoryOrSchema) -> bool {
         let txn = match txn_manager().begin_transaction(IsolationLevel::Serializable) {
             Ok(txn) => txn,
@@ -66,7 +73,14 @@ impl MemoryDirectoryCatalog {
         }
     }
 
+    /// **Legacy API**: Automatically wraps the operation in a standalone transaction.
+    ///
+    /// This method is deprecated because it does not compose with external transactions.
+    /// Use [`remove_child_txn`](Self::remove_child_txn) instead for transactional correctness.
     #[inline]
+    #[deprecated(
+        note = "Use the `_txn` variant for transactional contexts. This method uses an internal auto-commit transaction."
+    )]
     pub fn remove_child(&self, name: &str) -> bool {
         let txn = match txn_manager().begin_transaction(IsolationLevel::Serializable) {
             Ok(txn) => txn,

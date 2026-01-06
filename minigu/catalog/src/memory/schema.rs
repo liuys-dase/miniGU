@@ -130,7 +130,14 @@ impl MemorySchemaCatalog {
         Ok(())
     }
 
+    /// **Legacy API**: Automatically wraps the operation in a standalone transaction.
+    ///
+    /// This method is deprecated because it does not compose with external transactions.
+    /// Use [`add_graph_txn`](Self::add_graph_txn) instead for transactional correctness.
     #[inline]
+    #[deprecated(
+        note = "Use the `_txn` variant for transactional contexts. This method uses an internal auto-commit transaction."
+    )]
     pub fn add_graph(&self, name: String, graph: GraphRef) -> bool {
         let txn = match txn_manager().begin_transaction(IsolationLevel::Serializable) {
             Ok(txn) => txn,
@@ -146,7 +153,14 @@ impl MemorySchemaCatalog {
         }
     }
 
+    /// **Legacy API**: Automatically wraps the operation in a standalone transaction.
+    ///
+    /// This method is deprecated because it does not compose with external transactions.
+    /// Use [`remove_graph_txn`](Self::remove_graph_txn) instead for transactional correctness.
     #[inline]
+    #[deprecated(
+        note = "Use the `_txn` variant for transactional contexts. This method uses an internal auto-commit transaction."
+    )]
     pub fn remove_graph(&self, name: &str) -> bool {
         let txn = match txn_manager().begin_transaction(IsolationLevel::Serializable) {
             Ok(txn) => txn,
@@ -162,7 +176,14 @@ impl MemorySchemaCatalog {
         }
     }
 
+    /// **Legacy API**: Automatically wraps the operation in a standalone transaction.
+    ///
+    /// This method is deprecated because it does not compose with external transactions.
+    /// Use [`add_graph_type_txn`](Self::add_graph_type_txn) instead for transactional correctness.
     #[inline]
+    #[deprecated(
+        note = "Use the `_txn` variant for transactional contexts. This method uses an internal auto-commit transaction."
+    )]
     pub fn add_graph_type(&self, name: String, graph_type: Arc<MemoryGraphTypeCatalog>) -> bool {
         let txn = match txn_manager().begin_transaction(IsolationLevel::Serializable) {
             Ok(txn) => txn,
@@ -178,7 +199,15 @@ impl MemorySchemaCatalog {
         }
     }
 
+    /// **Legacy API**: Automatically wraps the operation in a standalone transaction.
+    ///
+    /// This method is deprecated because it does not compose with external transactions.
+    /// Use [`remove_graph_type_txn`](Self::remove_graph_type_txn) instead for transactional
+    /// correctness.
     #[inline]
+    #[deprecated(
+        note = "Use the `_txn` variant for transactional contexts. This method uses an internal auto-commit transaction."
+    )]
     pub fn remove_graph_type(&self, name: &str) -> bool {
         let txn = match txn_manager().begin_transaction(IsolationLevel::Serializable) {
             Ok(txn) => txn,
@@ -194,7 +223,14 @@ impl MemorySchemaCatalog {
         }
     }
 
+    /// **Legacy API**: Automatically wraps the operation in a standalone transaction.
+    ///
+    /// This method is deprecated because it does not compose with external transactions.
+    /// Use [`add_procedure_txn`](Self::add_procedure_txn) instead for transactional correctness.
     #[inline]
+    #[deprecated(
+        note = "Use the `_txn` variant for transactional contexts. This method uses an internal auto-commit transaction."
+    )]
     pub fn add_procedure(&self, name: String, procedure: ProcedureRef) -> bool {
         let txn = match txn_manager().begin_transaction(IsolationLevel::Serializable) {
             Ok(txn) => txn,
@@ -210,7 +246,15 @@ impl MemorySchemaCatalog {
         }
     }
 
+    /// **Legacy API**: Automatically wraps the operation in a standalone transaction.
+    ///
+    /// This method is deprecated because it does not compose with external transactions.
+    /// Use [`remove_procedure_txn`](Self::remove_procedure_txn) instead for transactional
+    /// correctness.
     #[inline]
+    #[deprecated(
+        note = "Use the `_txn` variant for transactional contexts. This method uses an internal auto-commit transaction."
+    )]
     pub fn remove_procedure(&self, name: &str) -> bool {
         let txn = match txn_manager().begin_transaction(IsolationLevel::Serializable) {
             Ok(txn) => txn,

@@ -268,7 +268,14 @@ impl MemoryGraphTypeCatalog {
     }
 
     // ============== Compatibility wrappers (auto-commit) ==============
+    /// **Legacy API**: Automatically wraps the operation in a standalone transaction.
+    ///
+    /// This method is deprecated because it does not compose with external transactions.
+    /// Use [`add_label_txn`](Self::add_label_txn) instead for transactional correctness.
     #[inline]
+    #[deprecated(
+        note = "Use the `_txn` variant for transactional contexts. This method uses an internal auto-commit transaction."
+    )]
     pub fn add_label(&mut self, name: String) -> Option<LabelId> {
         let txn = txn_manager()
             .begin_transaction(IsolationLevel::Serializable)
@@ -289,7 +296,14 @@ impl MemoryGraphTypeCatalog {
         }
     }
 
+    /// **Legacy API**: Automatically wraps the operation in a standalone transaction.
+    ///
+    /// This method is deprecated because it does not compose with external transactions.
+    /// Use [`remove_label_txn`](Self::remove_label_txn) instead for transactional correctness.
     #[inline]
+    #[deprecated(
+        note = "Use the `_txn` variant for transactional contexts. This method uses an internal auto-commit transaction."
+    )]
     pub fn remove_label(&mut self, name: &str) -> bool {
         let txn = match txn_manager().begin_transaction(IsolationLevel::Serializable) {
             Ok(txn) => txn,
@@ -305,7 +319,15 @@ impl MemoryGraphTypeCatalog {
         }
     }
 
+    /// **Legacy API**: Automatically wraps the operation in a standalone transaction.
+    ///
+    /// This method is deprecated because it does not compose with external transactions.
+    /// Use [`add_vertex_type_txn`](Self::add_vertex_type_txn) instead for transactional
+    /// correctness.
     #[inline]
+    #[deprecated(
+        note = "Use the `_txn` variant for transactional contexts. This method uses an internal auto-commit transaction."
+    )]
     pub fn add_vertex_type(
         &mut self,
         label_set: LabelSet,
@@ -325,7 +347,15 @@ impl MemoryGraphTypeCatalog {
         }
     }
 
+    /// **Legacy API**: Automatically wraps the operation in a standalone transaction.
+    ///
+    /// This method is deprecated because it does not compose with external transactions.
+    /// Use [`remove_vertex_type_txn`](Self::remove_vertex_type_txn) instead for transactional
+    /// correctness.
     #[inline]
+    #[deprecated(
+        note = "Use the `_txn` variant for transactional contexts. This method uses an internal auto-commit transaction."
+    )]
     pub fn remove_vertex_type(&mut self, label_set: &LabelSet) -> bool {
         let txn = match txn_manager().begin_transaction(IsolationLevel::Serializable) {
             Ok(txn) => txn,
@@ -341,7 +371,14 @@ impl MemoryGraphTypeCatalog {
         }
     }
 
+    /// **Legacy API**: Automatically wraps the operation in a standalone transaction.
+    ///
+    /// This method is deprecated because it does not compose with external transactions.
+    /// Use [`add_edge_type_txn`](Self::add_edge_type_txn) instead for transactional correctness.
     #[inline]
+    #[deprecated(
+        note = "Use the `_txn` variant for transactional contexts. This method uses an internal auto-commit transaction."
+    )]
     pub fn add_edge_type(
         &mut self,
         label_set: LabelSet,
@@ -361,7 +398,15 @@ impl MemoryGraphTypeCatalog {
         }
     }
 
+    /// **Legacy API**: Automatically wraps the operation in a standalone transaction.
+    ///
+    /// This method is deprecated because it does not compose with external transactions.
+    /// Use [`remove_edge_type_txn`](Self::remove_edge_type_txn) instead for transactional
+    /// correctness.
     #[inline]
+    #[deprecated(
+        note = "Use the `_txn` variant for transactional contexts. This method uses an internal auto-commit transaction."
+    )]
     pub fn remove_edge_type(&mut self, label_set: &LabelSet) -> bool {
         let txn = match txn_manager().begin_transaction(IsolationLevel::Serializable) {
             Ok(txn) => txn,
