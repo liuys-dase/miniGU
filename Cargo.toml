@@ -79,7 +79,7 @@ libtest-mimic = "0.8.1"
 logos = { version = "0.15.0", default-features = false, features = [
     "export_derive",
 ] }
-lru = "0.16.0"
+lru = "0.16.3"
 macro_rules_attribute = "0.2.2"
 miette = { version = "7.6.0" }
 num-traits = "0.2.15"
