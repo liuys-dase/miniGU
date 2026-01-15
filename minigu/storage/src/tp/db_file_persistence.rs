@@ -194,4 +194,61 @@ mod tests {
 
         cleanup(&base);
     }
+    #[test]
+    #[serial]
+    fn test_db_file_persistence_concurrent() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let base = test_dir();
+        cleanup(&base);
+        fs::create_dir_all(&base).unwrap();
+
+        let db_path = base.join("test_concurrent.minigu");
+        let persistence = Arc::new(DbFilePersistence::open(&db_path).unwrap());
+
+        let num_threads = 4;
+        let ops_per_thread = 50;
+        let barrier = Arc::new(Barrier::new(num_threads));
+
+        let mut handles = vec![];
+
+        for t_id in 0..num_threads {
+            let persistence = persistence.clone();
+            let barrier = barrier.clone();
+            handles.push(thread::spawn(move || {
+                barrier.wait();
+                for i in 0..ops_per_thread {
+                    let entry = RedoEntry {
+                        lsn: persistence.next_lsn(), // concurrent atomic LSN generation
+                        txn_id: Timestamp::with_ts(1000 + (t_id as u64) * 1000 + i),
+                        iso_level: IsolationLevel::Serializable,
+                        op: Operation::Delta(DeltaOp::DelVertex(i)),
+                    };
+                    persistence.append_wal(&entry).unwrap(); // concurrent write
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        persistence.sync_all().unwrap();
+
+        // Reopen and verify total count
+        {
+            let persistence = DbFilePersistence::open(&db_path).unwrap();
+            let entries = persistence.read_wal_entries().unwrap();
+            assert_eq!(entries.len(), num_threads * ops_per_thread as usize);
+
+            // Verify LSN uniqueness (optional but good sanity check)
+            let mut lsns: Vec<u64> = entries.iter().map(|e| e.lsn).collect();
+            lsns.sort_unstable();
+            lsns.dedup();
+            assert_eq!(lsns.len(), num_threads * ops_per_thread as usize);
+        }
+
+        cleanup(&base);
+    }
 }
