@@ -474,7 +474,7 @@ mod tests {
 
     #[test]
     fn test_watermark_tracking() {
-        let (graph, _cleaner) = memory_graph::tests::mock_empty_graph();
+        let graph = memory_graph::tests::mock_empty_graph();
         let _base_commit_ts = graph.txn_manager.latest_commit_ts.load(Ordering::Acquire);
 
         // Start txn0

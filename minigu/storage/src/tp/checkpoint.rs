@@ -275,7 +275,7 @@ mod tests {
     #[test]
     fn test_checkpoint_creation() {
         // Create a graph with mock data
-        let (graph, _cleaner) = memory_graph::tests::mock_graph();
+        let graph = memory_graph::tests::mock_graph();
 
         // Create checkpoint
         let checkpoint = GraphCheckpoint::new(&graph);
@@ -302,13 +302,13 @@ mod tests {
     #[test]
     fn test_checkpoint_restore() {
         // Create a graph with mock data
-        let (original_graph, _cleaner) = memory_graph::tests::mock_graph();
+        let original_graph = memory_graph::tests::mock_graph();
 
         // Create checkpoint
         let checkpoint = GraphCheckpoint::new(&original_graph);
 
         // Create a new empty graph to restore into
-        let (restored_graph, _) = memory_graph::tests::mock_empty_graph();
+        let restored_graph = memory_graph::tests::mock_empty_graph();
 
         // Restore graph from checkpoint
         checkpoint.restore(&restored_graph).unwrap();

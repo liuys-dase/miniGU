@@ -1378,12 +1378,11 @@ pub mod tests {
     }
 
     // Simplified test helpers using in-memory persistence
-    pub fn mock_empty_graph() -> (Arc<MemoryGraph>, ()) {
-        let graph = MemoryGraph::in_memory();
-        (graph, ())
+    pub fn mock_empty_graph() -> Arc<MemoryGraph> {
+        MemoryGraph::in_memory()
     }
 
-    pub fn mock_graph() -> (Arc<MemoryGraph>, ()) {
+    pub fn mock_graph() -> Arc<MemoryGraph> {
         let graph = MemoryGraph::in_memory();
 
         let txn = graph
@@ -1474,7 +1473,7 @@ pub mod tests {
         graph.create_edge(&txn, follow2).unwrap();
 
         txn.commit().unwrap();
-        (graph, ())
+        graph
     }
 
     fn create_vertex_eve() -> Vertex {
@@ -1674,7 +1673,7 @@ pub mod tests {
 
     #[test]
     fn test_basic_commit_flow() {
-        let (graph, _cleaner) = mock_graph();
+        let graph = mock_graph();
         let txn1 = graph
             .txn_manager()
             .begin_transaction(IsolationLevel::Serializable)
@@ -1695,7 +1694,7 @@ pub mod tests {
 
     #[test]
     fn test_mvcc_version_chain() {
-        let (graph, _cleaner) = mock_graph();
+        let graph = mock_graph();
 
         let txn1 = graph
             .txn_manager()
@@ -1728,7 +1727,7 @@ pub mod tests {
 
     #[test]
     fn test_delete_with_tombstone() {
-        let (graph, _cleaner) = mock_graph();
+        let graph = mock_graph();
 
         let txn1 = graph
             .txn_manager()
@@ -1754,7 +1753,7 @@ pub mod tests {
 
     #[test]
     fn test_adjacency_versioning() {
-        let (graph, _cleaner) = mock_graph();
+        let graph = mock_graph();
 
         let txn1 = graph
             .txn_manager()
@@ -1842,7 +1841,7 @@ pub mod tests {
 
     #[test]
     fn test_rollback_consistency() {
-        let (graph, _cleaner) = mock_graph();
+        let graph = mock_graph();
 
         let txn = graph
             .txn_manager()
@@ -1860,7 +1859,7 @@ pub mod tests {
 
     #[test]
     fn test_property_update_flow() {
-        let (graph, _cleaner) = mock_graph();
+        let graph = mock_graph();
 
         let txn1 = graph
             .txn_manager()
@@ -1889,7 +1888,7 @@ pub mod tests {
 
     #[test]
     fn test_vertex_iterator() {
-        let (graph, _cleaner) = mock_graph();
+        let graph = mock_graph();
 
         let txn1 = graph
             .txn_manager()
@@ -1938,7 +1937,7 @@ pub mod tests {
 
     #[test]
     fn test_edge_iterator() {
-        let (graph, _cleaner) = mock_graph();
+        let graph = mock_graph();
 
         let txn1 = graph
             .txn_manager()
@@ -1994,7 +1993,7 @@ pub mod tests {
 
     #[test]
     fn test_adj_iterator() {
-        let (graph, _cleaner) = mock_graph();
+        let graph = mock_graph();
 
         let txn1 = graph
             .txn_manager()
@@ -2025,7 +2024,7 @@ pub mod tests {
 
     #[test]
     fn test_garbage_collection_after_delete_edge() {
-        let (graph, _cleaner) = mock_graph();
+        let graph = mock_graph();
 
         let vid1: VertexId = 1;
         let vid2: VertexId = 2;
@@ -2112,7 +2111,7 @@ pub mod tests {
 
     #[test]
     fn test_garbage_collection_after_delete_vertex() {
-        let (graph, _cleaner) = mock_graph();
+        let graph = mock_graph();
 
         let vid1 = 1;
         let euid1 = Neighbor::new(FRIEND, 1, 1);
@@ -2220,7 +2219,7 @@ pub mod tests {
 
     #[test]
     fn test_delete_vertex_with_edges() {
-        let (graph, _cleaner) = mock_graph();
+        let graph = mock_graph();
 
         let vid: u64 = 1;
 
@@ -2286,7 +2285,7 @@ pub mod tests {
 
     #[test]
     fn test_delete_edge_with_vertex_conflict() {
-        let (graph, _cleaner) = mock_graph();
+        let graph = mock_graph();
 
         let vid: VertexId = 1;
         let txn1 = graph
@@ -2311,7 +2310,7 @@ pub mod tests {
 
     #[test]
     fn test_vector_index_build_and_verify() -> StorageResult<()> {
-        let (graph, _cleaner) = mock_empty_graph();
+        let graph = mock_empty_graph();
         let txn = graph
             .txn_manager()
             .begin_transaction(IsolationLevel::Serializable)
@@ -2369,7 +2368,7 @@ pub mod tests {
 
     #[test]
     fn test_vector_search_accuracy() -> StorageResult<()> {
-        let (graph, _cleaner) = mock_empty_graph();
+        let graph = mock_empty_graph();
         let txn = graph
             .txn_manager()
             .begin_transaction(IsolationLevel::Serializable)
@@ -2463,7 +2462,7 @@ pub mod tests {
 
     #[test]
     fn test_vector_error_index_not_found() -> StorageResult<()> {
-        let (graph, _cleaner) = mock_empty_graph();
+        let graph = mock_empty_graph();
         let txn = graph
             .txn_manager()
             .begin_transaction(IsolationLevel::Serializable)
@@ -2494,7 +2493,7 @@ pub mod tests {
 
     #[test]
     fn test_vector_error_empty_dataset() -> StorageResult<()> {
-        let (graph, _cleaner) = mock_empty_graph();
+        let graph = mock_empty_graph();
         let txn = graph
             .txn_manager()
             .begin_transaction(IsolationLevel::Serializable)
@@ -2516,7 +2515,7 @@ pub mod tests {
 
     #[test]
     fn test_vector_error_dimension_mismatch() -> StorageResult<()> {
-        let (graph, _cleaner) = mock_empty_graph();
+        let graph = mock_empty_graph();
         let txn = graph
             .txn_manager()
             .begin_transaction(IsolationLevel::Serializable)
@@ -2556,7 +2555,7 @@ pub mod tests {
 
     #[test]
     fn test_vertex_id_mapping_correctness() -> StorageResult<()> {
-        let (graph, _cleaner) = mock_empty_graph();
+        let graph = mock_empty_graph();
         let txn = graph
             .txn_manager()
             .begin_transaction(IsolationLevel::Serializable)
@@ -2603,7 +2602,7 @@ pub mod tests {
 
     #[test]
     fn test_vector_small_scale_dataset() -> StorageResult<()> {
-        let (graph, _cleaner) = mock_empty_graph();
+        let graph = mock_empty_graph();
         let txn = graph
             .txn_manager()
             .begin_transaction(IsolationLevel::Serializable)
@@ -2649,7 +2648,7 @@ pub mod tests {
 
     #[test]
     fn test_vector_transaction_isolation() -> StorageResult<()> {
-        let (graph, _cleaner) = mock_empty_graph();
+        let graph = mock_empty_graph();
 
         // Transaction 1: Build index with small-scale data
         let txn1 = graph
@@ -2690,7 +2689,7 @@ pub mod tests {
 
     #[test]
     fn test_vector_multiple_indices_per_graph() -> StorageResult<()> {
-        let (graph, _cleaner) = mock_empty_graph();
+        let graph = mock_empty_graph();
         let txn = graph
             .txn_manager()
             .begin_transaction(IsolationLevel::Serializable)
@@ -2763,7 +2762,7 @@ pub mod tests {
 
     #[test]
     fn test_vector_insert_basic() -> StorageResult<()> {
-        let (graph, _cleaner) = mock_empty_graph();
+        let graph = mock_empty_graph();
         let txn = graph
             .txn_manager()
             .begin_transaction(IsolationLevel::Serializable)
@@ -2913,7 +2912,7 @@ pub mod tests {
 
     #[test]
     fn test_vector_insert_multiple() -> StorageResult<()> {
-        let (graph, _cleaner) = mock_empty_graph();
+        let graph = mock_empty_graph();
         let txn = graph
             .txn_manager()
             .begin_transaction(IsolationLevel::Serializable)
@@ -2975,7 +2974,7 @@ pub mod tests {
 
     #[test]
     fn test_vector_insert_empty_list() -> StorageResult<()> {
-        let (graph, _cleaner) = mock_empty_graph();
+        let graph = mock_empty_graph();
         let txn = graph
             .txn_manager()
             .begin_transaction(IsolationLevel::Serializable)
@@ -3017,7 +3016,7 @@ pub mod tests {
 
     #[test]
     fn test_vector_insert_index_not_found() -> StorageResult<()> {
-        let (graph, _cleaner) = mock_empty_graph();
+        let graph = mock_empty_graph();
         let txn = graph
             .txn_manager()
             .begin_transaction(IsolationLevel::Serializable)
@@ -3045,7 +3044,7 @@ pub mod tests {
 
     #[test]
     fn test_vector_delete_basic() -> StorageResult<()> {
-        let (graph, _cleaner) = mock_empty_graph();
+        let graph = mock_empty_graph();
         let txn = graph
             .txn_manager()
             .begin_transaction(IsolationLevel::Serializable)
@@ -3103,7 +3102,7 @@ pub mod tests {
 
     #[test]
     fn test_vector_delete_multiple() -> StorageResult<()> {
-        let (graph, _cleaner) = mock_empty_graph();
+        let graph = mock_empty_graph();
         let txn = graph
             .txn_manager()
             .begin_transaction(IsolationLevel::Serializable)
@@ -3167,7 +3166,7 @@ pub mod tests {
 
     #[test]
     fn test_vector_delete_empty_list() -> StorageResult<()> {
-        let (graph, _cleaner) = mock_empty_graph();
+        let graph = mock_empty_graph();
         let txn = graph
             .txn_manager()
             .begin_transaction(IsolationLevel::Serializable)
@@ -3208,7 +3207,7 @@ pub mod tests {
 
     #[test]
     fn test_vector_delete_index_not_found() -> StorageResult<()> {
-        let (graph, _cleaner) = mock_empty_graph();
+        let graph = mock_empty_graph();
         let txn = graph
             .txn_manager()
             .begin_transaction(IsolationLevel::Serializable)
@@ -3232,7 +3231,7 @@ pub mod tests {
 
     #[test]
     fn test_vector_delete_nonexistent_node() -> StorageResult<()> {
-        let (graph, _cleaner) = mock_empty_graph();
+        let graph = mock_empty_graph();
         let txn = graph
             .txn_manager()
             .begin_transaction(IsolationLevel::Serializable)
@@ -3268,7 +3267,7 @@ pub mod tests {
 
     #[test]
     fn test_vector_insert_delete_combined() -> StorageResult<()> {
-        let (graph, _cleaner) = mock_empty_graph();
+        let graph = mock_empty_graph();
         let txn = graph
             .txn_manager()
             .begin_transaction(IsolationLevel::Serializable)
@@ -3357,7 +3356,7 @@ pub mod tests {
 
     #[test]
     fn test_vector_operations_mixed() -> StorageResult<()> {
-        let (graph, _cleaner) = mock_empty_graph();
+        let graph = mock_empty_graph();
         let txn = graph
             .txn_manager()
             .begin_transaction(IsolationLevel::Serializable)
@@ -3427,7 +3426,7 @@ pub mod tests {
 
     #[test]
     fn test_adaptive_filter_brute_force_search() -> StorageResult<()> {
-        let (graph, _cleaner) = mock_empty_graph();
+        let graph = mock_empty_graph();
         let txn = graph
             .txn_manager()
             .begin_transaction(IsolationLevel::Serializable)
@@ -3489,7 +3488,7 @@ pub mod tests {
 
     #[test]
     fn test_adaptive_filter_post_filter_search() -> StorageResult<()> {
-        let (graph, _cleaner) = mock_empty_graph();
+        let graph = mock_empty_graph();
         let txn = graph
             .txn_manager()
             .begin_transaction(IsolationLevel::Serializable)
@@ -3571,7 +3570,7 @@ pub mod tests {
 
     #[test]
     fn test_adaptive_filter_pre_filter_search() -> StorageResult<()> {
-        let (graph, _cleaner) = mock_empty_graph();
+        let graph = mock_empty_graph();
         let txn = graph
             .txn_manager()
             .begin_transaction(IsolationLevel::Serializable)
@@ -3653,7 +3652,7 @@ pub mod tests {
 
     #[test]
     fn test_filter_search_boundary_cases() -> StorageResult<()> {
-        let (graph, _cleaner) = mock_empty_graph();
+        let graph = mock_empty_graph();
         let txn = graph
             .txn_manager()
             .begin_transaction(IsolationLevel::Serializable)
@@ -3740,7 +3739,7 @@ pub mod tests {
 
     #[test]
     fn test_pre_filter_search_in_cluster() -> StorageResult<()> {
-        let (graph, _cleaner) = mock_empty_graph();
+        let graph = mock_empty_graph();
         let txn = graph
             .txn_manager()
             .begin_transaction(IsolationLevel::Serializable)
@@ -3821,7 +3820,7 @@ pub mod tests {
 
     #[test]
     fn test_brute_force_search_accuracy() -> StorageResult<()> {
-        let (graph, _cleaner) = mock_empty_graph();
+        let graph = mock_empty_graph();
         let txn = graph
             .txn_manager()
             .begin_transaction(IsolationLevel::Serializable)
