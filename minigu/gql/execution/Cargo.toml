@@ -17,8 +17,6 @@ minigu-planner = { workspace = true }
 minigu-storage = { workspace = true }
 ordered-float = { workspace = true }
 rayon = { workspace = true }
-temp-dir = { workspace = true }
-temp-file = { workspace = true }
 thiserror = { workspace = true }
 
 [lints]

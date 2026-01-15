@@ -391,7 +391,7 @@ mod tests {
         let txn_id = Timestamp::with_ts(Timestamp::TXN_ID_START + 123);
         let start_ts = Timestamp::with_ts(10);
 
-        let (graph, _cleaner) = memory_graph::tests::mock_empty_graph();
+        let graph = memory_graph::tests::mock_empty_graph();
         let mem_txn = graph
             .txn_manager()
             .begin_transaction_at(
@@ -417,7 +417,7 @@ mod tests {
 
     #[test]
     fn test_commit_success_graph_and_catalog_both_visible_and_same_commit_ts() {
-        let (graph, _cleaner) = memory_graph::tests::mock_empty_graph();
+        let graph = memory_graph::tests::mock_empty_graph();
         let (mgr, graph_type, _catalog_mgr) = create_txn_mgr(Arc::clone(&graph));
 
         let mut txn = mgr
@@ -474,7 +474,7 @@ mod tests {
 
     #[test]
     fn test_catalog_prepare_fails_graph_not_committed() {
-        let (graph, _cleaner) = memory_graph::tests::mock_empty_graph();
+        let graph = memory_graph::tests::mock_empty_graph();
         let (mgr, graph_type, catalog_mgr) = create_txn_mgr(Arc::clone(&graph));
 
         let mut txn = mgr
@@ -519,7 +519,7 @@ mod tests {
 
     #[test]
     fn test_graph_commit_fails_catalog_is_aborted() {
-        let (graph, _cleaner) = memory_graph::tests::mock_empty_graph();
+        let graph = memory_graph::tests::mock_empty_graph();
         let (mgr, graph_type, catalog_mgr) = create_txn_mgr(Arc::clone(&graph));
 
         // Base committed vertex so that read-set validation can conflict later.
@@ -577,7 +577,7 @@ mod tests {
 
     #[test]
     fn test_abort_is_global_and_idempotent() {
-        let (graph, _cleaner) = memory_graph::tests::mock_empty_graph();
+        let graph = memory_graph::tests::mock_empty_graph();
         let (mgr, graph_type, catalog_mgr) = create_txn_mgr(Arc::clone(&graph));
 
         let mut txn = mgr
@@ -613,7 +613,7 @@ mod tests {
 
     #[test]
     fn test_drop_is_implicit_abort() {
-        let (graph, _cleaner) = memory_graph::tests::mock_empty_graph();
+        let graph = memory_graph::tests::mock_empty_graph();
         let (mgr, graph_type, catalog_mgr) = create_txn_mgr(Arc::clone(&graph));
 
         {
@@ -647,7 +647,7 @@ mod tests {
 
     #[test]
     fn test_finished_txn_cannot_commit_again() {
-        let (graph, _cleaner) = memory_graph::tests::mock_empty_graph();
+        let graph = memory_graph::tests::mock_empty_graph();
         let (mgr, _graph_type, _catalog_mgr) = create_txn_mgr(Arc::clone(&graph));
 
         let mut txn = mgr
@@ -664,7 +664,7 @@ mod tests {
 
     #[test]
     fn test_graph_only_transaction_commit_and_abort() {
-        let (graph, _cleaner) = memory_graph::tests::mock_empty_graph();
+        let graph = memory_graph::tests::mock_empty_graph();
 
         // graph-only transaction
         let mem_txn = graph
@@ -692,7 +692,7 @@ mod tests {
 
     #[test]
     fn test_commit_ts_global_consistency() {
-        let (graph, _cleaner) = memory_graph::tests::mock_empty_graph();
+        let graph = memory_graph::tests::mock_empty_graph();
         let (mgr, graph_type, _catalog_mgr) = create_txn_mgr(Arc::clone(&graph));
 
         let mut txn = mgr

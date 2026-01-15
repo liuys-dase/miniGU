@@ -54,13 +54,10 @@ use minigu_common::value::ScalarValue;
 use minigu_context::graph::{GraphContainer, GraphStorage};
 use minigu_context::procedure::Procedure;
 use minigu_context::session::SessionContext;
-use minigu_storage::common::wal::graph_wal::WalManagerConfig;
 use minigu_storage::common::{Edge, PropertyRecord, Vertex};
 use minigu_storage::tp::MemoryGraph;
-use minigu_storage::tp::checkpoint::CheckpointManagerConfig;
 
 use super::common::{EdgeSpec, FileSpec, Manifest, RecordType, Result, VertexSpec};
-use crate::procedures::common::{create_ckpt_config, create_wal_config};
 
 // ============================================================================
 // Import-specific implementation
@@ -141,9 +138,7 @@ pub fn import<P: AsRef<Path>>(
         return Err(anyhow::anyhow!("graph {graph_name} already exists").into());
     }
 
-    let ckpt_dir = context.database().config().checkpoint_dir.as_path();
-    let wal_path = context.database().config().wal_path.as_path();
-    let (graph, graph_type) = import_internal(ckpt_dir, wal_path, manifest_path.as_ref())?;
+    let (graph, graph_type) = import_internal(manifest_path.as_ref())?;
 
     let container = GraphContainer::new(
         Arc::clone(&graph_type),
@@ -160,8 +155,6 @@ pub fn import<P: AsRef<Path>>(
 }
 
 pub(crate) fn import_internal<P: AsRef<Path>>(
-    ckpt_dir: P,
-    wal_path: P,
     manifest_path: P,
 ) -> Result<(Arc<MemoryGraph>, Arc<MemoryGraphTypeCatalog>)> {
     // Graph type
@@ -169,8 +162,7 @@ pub(crate) fn import_internal<P: AsRef<Path>>(
     let graph_type = get_graph_type_from_manifest(&manifest)?;
 
     // Graph
-    let graph =
-        MemoryGraph::with_config_fresh(create_ckpt_config(ckpt_dir), create_wal_config(wal_path));
+    let graph = MemoryGraph::in_memory();
     let txn = graph
         .txn_manager()
         .begin_transaction(IsolationLevel::Serializable)?;

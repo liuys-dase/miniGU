@@ -164,7 +164,7 @@ mod tests {
 
     #[test]
     fn test_graph_container_new_invariants() {
-        let (graph, _cleaner) = memory_graph::tests::mock_empty_graph();
+        let graph = memory_graph::tests::mock_empty_graph();
         let graph_type = Arc::new(MemoryGraphTypeCatalog::new());
         let container = GraphContainer::new(
             Arc::clone(&graph_type),
@@ -180,7 +180,7 @@ mod tests {
 
     #[test]
     fn test_begin_transaction_creates_global_transaction() {
-        let (graph, _cleaner) = memory_graph::tests::mock_empty_graph();
+        let graph = memory_graph::tests::mock_empty_graph();
         let graph_type = Arc::new(MemoryGraphTypeCatalog::new());
         let container = GraphContainer::new(
             Arc::clone(&graph_type),
@@ -198,7 +198,7 @@ mod tests {
 
     #[test]
     fn test_graph_provider_graph_type_consistency() {
-        let (graph, _cleaner) = memory_graph::tests::mock_empty_graph();
+        let graph = memory_graph::tests::mock_empty_graph();
         let graph_type = Arc::new(MemoryGraphTypeCatalog::new());
         let container = GraphContainer::new(
             Arc::clone(&graph_type),
@@ -230,7 +230,7 @@ mod tests {
 
     #[test]
     fn test_as_any_downcast_ref_graph_container() {
-        let (graph, _cleaner) = memory_graph::tests::mock_empty_graph();
+        let graph = memory_graph::tests::mock_empty_graph();
         let graph_type = Arc::new(MemoryGraphTypeCatalog::new());
         let container = GraphContainer::new(graph_type, GraphStorage::Memory(graph));
 
@@ -241,7 +241,7 @@ mod tests {
 
     #[test]
     fn test_global_commit_makes_graph_and_catalog_visible() {
-        let (graph, _cleaner) = memory_graph::tests::mock_empty_graph();
+        let graph = memory_graph::tests::mock_empty_graph();
         let graph_type = Arc::new(MemoryGraphTypeCatalog::new());
         let container = GraphContainer::new(
             Arc::clone(&graph_type),
@@ -283,7 +283,7 @@ mod tests {
 
     #[test]
     fn test_global_abort_makes_graph_and_catalog_invisible_and_idempotent() {
-        let (graph, _cleaner) = memory_graph::tests::mock_empty_graph();
+        let graph = memory_graph::tests::mock_empty_graph();
         let graph_type = Arc::new(MemoryGraphTypeCatalog::new());
         let container = GraphContainer::new(
             Arc::clone(&graph_type),
@@ -323,7 +323,7 @@ mod tests {
 
     #[test]
     fn test_drop_is_implicit_abort_container_level() {
-        let (graph, _cleaner) = memory_graph::tests::mock_empty_graph();
+        let graph = memory_graph::tests::mock_empty_graph();
         let graph_type = Arc::new(MemoryGraphTypeCatalog::new());
         let container = GraphContainer::new(
             Arc::clone(&graph_type),
