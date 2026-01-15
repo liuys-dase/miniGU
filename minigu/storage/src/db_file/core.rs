@@ -20,7 +20,32 @@ const RECORD_HEADER_SIZE: usize = 8;
 
 /// A single database file containing checkpoint and WAL regions.
 ///
-/// This struct manages all I/O operations for the unified database file format,
+/// # Physical Layout
+///
+/// The file is structured as follows:
+///
+/// ```text
+/// +----------------+--------------------------+-----------------------+
+/// |  Header (256B) |  Checkpoint Region (Var) |    WAL Region (Var)   |
+/// +----------------+--------------------------+-----------------------+
+/// |                |                          |                       |
+/// 0               256            header.wal_offset          EOF (FileSize)
+/// ```
+///
+/// - **Header**: Fixed 256 bytes containing metadata and region offsets.
+/// - **Checkpoint Region**: Stores the periodic snapshot of the graph.
+///   - Located at `header.checkpoint_offset`.
+///   - Size given by `header.checkpoint_length`.
+/// - **WAL Region**: Stores Write-Ahead Log entries appended since the last checkpoint.
+///   - Located at `header.wal_offset` (immediately follows checkpoint).
+///   - Size given by `header.wal_length`.
+///
+/// When a new checkpoint is written:
+/// 1. The old checkpoint is overwritten.
+/// 2. `wal_offset` is updated to point after the new checkpoint.
+/// 3. The effective WAL length is reset to 0 (truncation).
+///
+/// This struct manages all I/O operations for this unified database file format,
 /// including:
 /// - Creating new database files
 /// - Opening existing database files

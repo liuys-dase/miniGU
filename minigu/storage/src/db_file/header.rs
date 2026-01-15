@@ -64,6 +64,23 @@ impl DbFileFlags {
 ///
 /// This structure is stored at the beginning of the database file and contains
 /// all metadata needed to locate and validate the checkpoint and WAL regions.
+///
+/// # Header Layout (Fixed 256 Bytes)
+///
+/// | Offset | Size | Type | Field | Description |
+/// |--------|------|------|-------|-------------|
+/// | 0 | 8 | `[u8; 8]` | `magic` | Magic bytes "MINIGU\0\0" |
+/// | 8 | 4 | `u32` | `version` | File format version (current: 1) |
+/// | 12 | 4 | `u32` | `header_size` | Total header size (256 bytes) |
+/// | 16 | 4 | `u32` | `flags` | Feature flags (bitmask) |
+/// | 20 | 8 | `u64` | `checkpoint_offset` | Offset to start of checkpoint region |
+/// | 28 | 8 | `u64` | `checkpoint_length` | Length of valid checkpoint data |
+/// | 36 | 8 | `u64` | `wal_offset` | Offset to start of WAL region |
+/// | 44 | 8 | `u64` | `wal_length` | Length of valid WAL data |
+/// | 52 | 8 | `u64` | `last_lsn` | Max LSN contained in the file |
+/// | 60 | 8 | `u64` | `last_commit_ts` | Timestamp of last committed txn |
+/// | 68 | 4 | `u32` | `header_crc` | CRC32 of fields 0..68 |
+/// | 72 | 184 | `[u8]` | - | Padding (zero-filled) |
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DbFileHeader {
     /// Magic number (must be "MINIGU\0\0").
