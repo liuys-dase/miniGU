@@ -6,6 +6,7 @@ const DEFAULT_CHECKPOINT_PREFIX: &str = "checkpoint";
 const MAX_CHECKPOINTS: usize = 5;
 const AUTO_CHECKPOINT_INTERVAL_SECS: u64 = 30;
 const DEFAULT_CHECKPOINT_TIMEOUT_SECS: u64 = 30;
+const DEFAULT_WAL_THRESHOLD: usize = 1000;
 
 /// Global database configuration
 #[derive(Debug, Clone)]
@@ -57,6 +58,9 @@ pub struct CheckpointConfig {
     pub auto_checkpoint_interval_secs: u64,
     pub checkpoint_prefix: String,
     pub transaction_timeout_secs: u64,
+    /// Number of WAL entries before triggering auto checkpoint.
+    /// 0 means disabled.
+    pub wal_threshold: usize,
 }
 
 fn default_checkpoint_dir() -> PathBuf {
@@ -72,6 +76,7 @@ impl Default for CheckpointConfig {
             auto_checkpoint_interval_secs: AUTO_CHECKPOINT_INTERVAL_SECS,
             checkpoint_prefix: DEFAULT_CHECKPOINT_PREFIX.to_string(),
             transaction_timeout_secs: DEFAULT_CHECKPOINT_TIMEOUT_SECS,
+            wal_threshold: DEFAULT_WAL_THRESHOLD,
         }
     }
 }
@@ -119,6 +124,7 @@ pub mod test_utils {
             auto_checkpoint_interval_secs: 30,
             checkpoint_prefix: "checkpoint".to_string(),
             transaction_timeout_secs: 30,
+            wal_threshold: 1000,
         };
 
         let storage_config = StorageConfig {

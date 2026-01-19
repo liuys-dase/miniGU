@@ -164,7 +164,7 @@ pub(crate) fn import_internal<P: AsRef<Path>>(
     let graph_type = get_graph_type_from_manifest(&manifest)?;
 
     // Graph
-    let graph = MemoryGraph::in_memory();
+    let graph = MemoryGraph::in_memory_with_config(config.storage.checkpoint.clone());
     let txn = graph
         .txn_manager()
         .begin_transaction(IsolationLevel::Serializable)?;

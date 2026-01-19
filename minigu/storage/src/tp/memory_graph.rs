@@ -5,6 +5,7 @@ use std::sync::{Arc, RwLock, Weak};
 use arrow::array::BooleanArray;
 use crossbeam_skiplist::SkipSet;
 use dashmap::DashMap;
+use minigu_common::config::CheckpointConfig;
 use minigu_common::types::{EdgeId, VectorIndexKey, VertexId};
 use minigu_common::value::{ScalarValue, VectorValue};
 use minigu_transaction::{IsolationLevel, Timestamp, Transaction};
@@ -348,21 +349,7 @@ impl AdjacencyContainer {
     }
 }
 
-/// Configuration for automatic checkpointing.
-#[derive(Debug, Clone)]
-pub struct CheckpointConfig {
-    /// Number of WAL entries before triggering auto checkpoint.
-    /// 0 means disabled.
-    pub wal_threshold: usize,
-}
-
-impl Default for CheckpointConfig {
-    fn default() -> Self {
-        Self {
-            wal_threshold: 1000, // Default: checkpoint every 1000 WAL entries
-        }
-    }
-}
+// CheckpointConfig is now imported from minigu_common
 
 pub struct MemoryGraph {
     // ---- Versioned data storage ----
@@ -401,6 +388,12 @@ impl MemoryGraph {
     pub fn in_memory() -> Arc<Self> {
         let persistence = Arc::new(InMemoryPersistence::new());
         Self::with_persistence(persistence)
+    }
+
+    /// Creates a new in-memory [`MemoryGraph`] instance with custom configuration.
+    pub fn in_memory_with_config(config: CheckpointConfig) -> Arc<Self> {
+        let persistence = Arc::new(InMemoryPersistence::new());
+        Self::with_persistence_and_config(persistence, config)
     }
 
     /// Creates a new [`MemoryGraph`] backed by a single database file.
