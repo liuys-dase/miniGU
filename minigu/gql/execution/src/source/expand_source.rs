@@ -160,35 +160,8 @@ mod tests {
 
     use super::*;
 
-    struct TestCleaner {
-        #[allow(dead_code)]
-        config: minigu_common::config::test_utils::TestConfig,
-    }
-
-    fn create_test_configs() -> (
-        Arc<TestCleaner>,
-        minigu_common::config::CheckpointConfig,
-        minigu_common::config::WalConfig,
-    ) {
-        let test_config = minigu_common::config::test_utils::gen_test_config();
-
-        let checkpoint = test_config.config.storage.checkpoint.clone();
-        let wal = test_config.config.storage.wal.clone();
-
-        (
-            Arc::new(TestCleaner {
-                config: test_config,
-            }),
-            checkpoint,
-            wal,
-        )
-    }
-
-    fn create_test_graph() -> (GraphContainer, Arc<TestCleaner>) {
-        // Use the new helper to get configs
-        let (cleaner, checkpoint_config, wal_config) = create_test_configs();
-
-        let graph = MemoryGraph::with_config_fresh(checkpoint_config, wal_config).unwrap();
+    fn create_test_graph() -> GraphContainer {
+        let graph = MemoryGraph::in_memory();
         let mut graph_type = MemoryGraphTypeCatalog::new();
 
         // Add labels
@@ -221,9 +194,8 @@ mod tests {
         graph_type.add_edge_type(friend_label_set, friend);
 
         let config = Arc::new(minigu_common::config::ExecutionConfig::default());
-        let container =
-            GraphContainer::new(Arc::new(graph_type), GraphStorage::Memory(graph), config);
-        (container, cleaner)
+
+        GraphContainer::new(Arc::new(graph_type), GraphStorage::Memory(graph), config)
     }
 
     fn setup_test_data(container: &GraphContainer) {
@@ -320,7 +292,7 @@ mod tests {
 
     #[test]
     fn test_expand_from_nonexistent_vertex() {
-        let (container, _cleaner) = create_test_graph();
+        let container = create_test_graph();
         setup_test_data(&container);
 
         // Try to expand from a non-existent vertex
@@ -333,7 +305,7 @@ mod tests {
 
     #[test]
     fn test_expand_from_vertex_with_no_neighbors() {
-        let (container, _cleaner) = create_test_graph();
+        let container = create_test_graph();
         setup_test_data(&container);
 
         // Vertex 4 has no outgoing edges
@@ -347,7 +319,7 @@ mod tests {
 
     #[test]
     fn test_expand_from_vertex_with_neighbors() {
-        let (container, _cleaner) = create_test_graph();
+        let container = create_test_graph();
         setup_test_data(&container);
 
         // Vertex 1 has neighbors: 2, 3
@@ -380,7 +352,7 @@ mod tests {
 
     #[test]
     fn test_expand_from_vertex_with_single_neighbor() {
-        let (container, _cleaner) = create_test_graph();
+        let container = create_test_graph();
         setup_test_data(&container);
 
         // Vertex 2 has one neighbor: 3
@@ -409,7 +381,7 @@ mod tests {
 
     #[test]
     fn test_expand_batching() {
-        let (container, _cleaner) = create_test_graph();
+        let container = create_test_graph();
 
         let mem_storage = match container.graph_storage() {
             GraphStorage::Memory(m) => Arc::clone(m),

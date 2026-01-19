@@ -189,42 +189,14 @@ mod tests {
 
     const PERSON_LABEL_ID: LabelId = LabelId::new(1).unwrap();
 
-    struct TestCleaner {
-        // Hold TestConfig
-        #[allow(dead_code)]
-        config: minigu_common::config::test_utils::TestConfig,
-    }
-
-    impl Drop for TestCleaner {
-        fn drop(&mut self) {
-            // The TestConfig's Drop implementation handles cleanup of paths
-            // No explicit cleanup needed here.
-        }
-    }
-
-    fn create_test_configs() -> (
-        minigu_common::config::CheckpointConfig,
-        minigu_common::config::WalConfig,
-        TestCleaner,
-    ) {
-        let test_config = minigu_common::config::test_utils::gen_test_config();
-        (
-            test_config.config.storage.checkpoint.clone(),
-            test_config.config.storage.wal.clone(),
-            TestCleaner {
-                config: test_config,
-            },
-        )
-    }
-
-    fn create_test_graph_container() -> (GraphContainer, TestCleaner) {
-        let (checkpoint_config, wal_config, cleaner) = create_test_configs();
-        let graph_res = MemoryGraph::with_config_fresh(checkpoint_config, wal_config);
-        let graph: Arc<MemoryGraph> = graph_res.unwrap();
+    fn create_test_graph_container() -> GraphContainer {
+        let graph = MemoryGraph::in_memory();
         let graph_type = Arc::new(MemoryGraphTypeCatalog::new());
-        let config = Arc::new(minigu_common::config::ExecutionConfig::default());
-        let container = GraphContainer::new(graph_type, GraphStorage::Memory(graph), config);
-        (container, cleaner)
+        GraphContainer::new(
+            graph_type,
+            GraphStorage::Memory(graph),
+            Arc::new(minigu_common::config::ExecutionConfig::default()),
+        )
     }
 
     fn create_test_vertices_with_properties(container: &GraphContainer) {
@@ -283,7 +255,7 @@ mod tests {
 
     #[test]
     fn test_scan_int32_properties() {
-        let (container, _cleaner) = create_test_graph_container();
+        let container = create_test_graph_container();
         create_test_vertices_with_properties(&container);
 
         let vertices = VertexIdArray::from_iter_values([0u64, 1u64, 2u64].iter().copied());
@@ -301,7 +273,7 @@ mod tests {
 
     #[test]
     fn test_scan_int64_properties() {
-        let (container, _cleaner) = create_test_graph_container();
+        let container = create_test_graph_container();
         create_test_vertices_with_properties(&container);
         let vertices = VertexIdArray::from_iter_values([0u64, 1u64, 2u64].iter().copied());
         let property_list = vec![PropertyId::from(1u32)];
@@ -318,7 +290,7 @@ mod tests {
 
     #[test]
     fn test_scan_float32_properties() {
-        let (container, _cleaner) = create_test_graph_container();
+        let container = create_test_graph_container();
         create_test_vertices_with_properties(&container);
         let vertices = VertexIdArray::from_iter_values([0u64, 1u64, 2u64].iter().copied());
         let property_list = vec![PropertyId::from(2u32)];
@@ -335,7 +307,7 @@ mod tests {
 
     #[test]
     fn test_scan_float64_properties() {
-        let (container, _cleaner) = create_test_graph_container();
+        let container = create_test_graph_container();
         create_test_vertices_with_properties(&container);
         let vertices = VertexIdArray::from_iter_values([0u64, 1u64, 2u64].iter().copied());
         let property_list = vec![PropertyId::from(3u32)];
@@ -352,7 +324,7 @@ mod tests {
 
     #[test]
     fn test_scan_boolean_properties() {
-        let (container, _cleaner) = create_test_graph_container();
+        let container = create_test_graph_container();
         create_test_vertices_with_properties(&container);
         let vertices = VertexIdArray::from_iter_values([0u64, 1u64, 2u64].iter().copied());
         let property_list = vec![PropertyId::from(4u32)];
@@ -369,7 +341,7 @@ mod tests {
 
     #[test]
     fn test_scan_multiple_properties() {
-        let (container, _cleaner) = create_test_graph_container();
+        let container = create_test_graph_container();
         create_test_vertices_with_properties(&container);
         let vertices = VertexIdArray::from_iter_values([0u64, 1u64].iter().copied());
         let property_list = vec![
@@ -398,7 +370,7 @@ mod tests {
 
     #[test]
     fn test_scan_with_null_values() {
-        let (container, _cleaner) = create_test_graph_container();
+        let container = create_test_graph_container();
         create_test_vertices_with_properties(&container);
         let vertices = VertexIdArray::from_iter_values([0u64, 2u64].iter().copied());
         let property_list = vec![PropertyId::from(0u32)];
@@ -414,7 +386,7 @@ mod tests {
 
     #[test]
     fn test_scan_single_vertex() {
-        let (container, _cleaner) = create_test_graph_container();
+        let container = create_test_graph_container();
         create_test_vertices_with_properties(&container);
         let vertices = VertexIdArray::from_iter_values([1u64].iter().copied());
         let property_list = vec![PropertyId::from(0u32), PropertyId::from(1u32)];
@@ -433,7 +405,7 @@ mod tests {
 
     #[test]
     fn test_scan_empty_vertex_list() {
-        let (container, _cleaner) = create_test_graph_container();
+        let container = create_test_graph_container();
         create_test_vertices_with_properties(&container);
         let vertices = VertexIdArray::from_iter_values(std::iter::empty::<u64>());
         let property_list = vec![PropertyId::from(0u32)];

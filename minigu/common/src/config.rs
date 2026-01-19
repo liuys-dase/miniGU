@@ -19,6 +19,8 @@ pub struct DatabaseConfig {
 
     /// Execution layer configuration
     pub execution: ExecutionConfig,
+
+    pub db_path: Option<PathBuf>,
 }
 
 impl Default for DatabaseConfig {
@@ -27,6 +29,7 @@ impl Default for DatabaseConfig {
             num_threads: 1,
             storage: StorageConfig::default(),
             execution: ExecutionConfig::default(),
+            db_path: None,
         }
     }
 }
@@ -146,6 +149,7 @@ pub mod test_utils {
             num_threads: 1,
             storage: storage_config,
             execution: ExecutionConfig::default(),
+            db_path: None,
         };
 
         TestConfig {

@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use minigu_common::config::test_utils::{TestConfig, gen_test_config};
 use minigu_common::types::{EdgeId, LabelId, VertexId};
 use minigu_common::value::ScalarValue;
 use minigu_storage::model::edge::Edge;
@@ -13,31 +12,13 @@ pub const PERSON_LABEL_ID: LabelId = LabelId::new(1).unwrap();
 pub const FRIEND_LABEL_ID: LabelId = LabelId::new(1).unwrap();
 pub const FOLLOW_LABEL_ID: LabelId = LabelId::new(2).unwrap();
 
-pub struct TestCleaner {
-    // Hold TestConfig to prevent temp dirs from being dropped
-    #[allow(dead_code)]
-    config: TestConfig,
-}
-
-impl TestCleaner {
-    pub fn new(config: TestConfig) -> Self {
-        Self { config }
-    }
-}
-
-pub fn create_empty_graph() -> (Arc<MemoryGraph>, TestCleaner) {
-    let test_config = gen_test_config();
-    let checkpoint_config = test_config.config.storage.checkpoint.clone();
-    let wal_config = test_config.config.storage.wal.clone();
-
-    let graph = MemoryGraph::with_config_fresh(checkpoint_config, wal_config).unwrap();
-    let cleaner = TestCleaner::new(test_config);
-    (graph, cleaner)
+pub fn create_empty_graph() -> Arc<MemoryGraph> {
+    MemoryGraph::in_memory()
 }
 
 #[allow(dead_code)]
-pub fn create_test_graph() -> (Arc<MemoryGraph>, TestCleaner) {
-    let (graph, cleaner) = create_empty_graph();
+pub fn create_test_graph() -> Arc<MemoryGraph> {
+    let graph = create_empty_graph();
 
     // Initialize some test data
     let txn = graph
@@ -77,7 +58,7 @@ pub fn create_test_graph() -> (Arc<MemoryGraph>, TestCleaner) {
     graph.create_edge(&txn, friend_edge).unwrap();
     txn.commit().unwrap();
 
-    (graph, cleaner)
+    graph
 }
 
 #[allow(dead_code)]

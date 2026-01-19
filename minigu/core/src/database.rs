@@ -1,4 +1,5 @@
-use std::path::Path;
+use std::env;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use minigu_catalog::memory::MemoryCatalog;
@@ -20,11 +21,11 @@ pub struct Database {
 }
 
 impl Database {
-    pub fn open<P: AsRef<Path>>(_path: P, _config: &DatabaseConfig) -> Result<Self> {
+    pub fn open<P: AsRef<Path>>(_path: P, _config: DatabaseConfig) -> Result<Self> {
         todo!("on-disk database is not implemented yet")
     }
 
-    pub fn open_in_memory(config: &DatabaseConfig) -> Result<Self> {
+    pub fn open_in_memory(config: DatabaseConfig) -> Result<Self> {
         let (catalog, default_schema) = init_memory_catalog()?;
         let runtime = ThreadPoolBuilder::new()
             .num_threads(config.num_threads)

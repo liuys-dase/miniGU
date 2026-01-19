@@ -427,30 +427,8 @@ mod tests {
         )
     }
 
-    fn mock_checkpoint_config() -> CheckpointConfig {
-        let dir = tempfile::tempdir().unwrap();
-        let checkpoint_dir = dir.as_ref().join(format!(
-            "checkpoint_{}",
-            chrono::Utc::now().format("%Y%m%d%H%M")
-        ));
-
-        CheckpointConfig {
-            checkpoint_dir,
-            ..Default::default()
-        }
-    }
-
-    fn mock_wal_config() -> WalConfig {
-        let dir = tempfile::tempdir().unwrap();
-        let filename = format!("wal_{}.log", chrono::Utc::now().format("%Y%m%d%H%M"));
-        let wal_path = dir.as_ref().join(filename);
-
-        WalConfig { wal_path }
-    }
-
     fn mock_graph() -> Arc<MemoryGraph> {
-        let graph =
-            MemoryGraph::with_config_fresh(mock_checkpoint_config(), mock_wal_config()).unwrap();
+        let graph = MemoryGraph::in_memory();
 
         let txn = graph
             .txn_manager()
@@ -656,6 +634,7 @@ mod tests {
 
     #[test]
     fn test_export_and_import() {
+        let temp_dir = tempfile::tempdir().unwrap();
         let export_dir1 = tempfile::tempdir().unwrap();
         let export_dir2 = tempfile::tempdir().unwrap();
 

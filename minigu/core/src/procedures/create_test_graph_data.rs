@@ -45,10 +45,7 @@ pub fn build_procedure() -> Procedure {
             .ok_or_else(|| anyhow::anyhow!("current schema not set"))?;
 
         let db_config = context.config();
-        let graph = MemoryGraph::with_config_fresh(
-            db_config.storage.checkpoint.clone(),
-            db_config.storage.wal.clone(),
-        )?;
+        let graph = MemoryGraph::in_memory();
         let mut graph_type = MemoryGraphTypeCatalog::new();
 
         // Add labels
