@@ -391,7 +391,7 @@ mod tests {
     use minigu_catalog::memory::graph_type::{
         MemoryEdgeTypeCatalog, MemoryGraphTypeCatalog, MemoryVertexTypeCatalog,
     };
-    use minigu_common::config::{CheckpointConfig, WalConfig};
+    use minigu_common::config::CheckpointConfig;
     use minigu_common::data_type::LogicalType;
     use minigu_common::types::{EdgeId, VertexId};
     use minigu_common::value::ScalarValue;

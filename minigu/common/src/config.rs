@@ -1,7 +1,6 @@
 use std::env;
 use std::path::PathBuf;
 
-const DEFAULT_WAL_DIR_NAME: &str = ".wal";
 const DEFAULT_CHECKPOINT_DIR_NAME: &str = ".checkpoint";
 const DEFAULT_CHECKPOINT_PREFIX: &str = "checkpoint";
 const MAX_CHECKPOINTS: usize = 5;
@@ -19,8 +18,6 @@ pub struct DatabaseConfig {
 
     /// Execution layer configuration
     pub execution: ExecutionConfig,
-
-    pub db_path: Option<PathBuf>,
 }
 
 impl Default for DatabaseConfig {
@@ -29,7 +26,6 @@ impl Default for DatabaseConfig {
             num_threads: 1,
             storage: StorageConfig::default(),
             execution: ExecutionConfig::default(),
-            db_path: None,
         }
     }
 }
@@ -37,28 +33,18 @@ impl Default for DatabaseConfig {
 /// Storage layer configuration
 #[derive(Debug, Clone, Default)]
 pub struct StorageConfig {
-    /// WAL configuration
-    pub wal: WalConfig,
+    // Path of `.minigu` file
+    pub db_path: Option<PathBuf>,
 
     /// Checkpoint configuration
     pub checkpoint: CheckpointConfig,
 }
 
-/// WAL configuration
-#[derive(Debug, Clone)]
-pub struct WalConfig {
-    pub wal_path: PathBuf,
-}
-
-fn default_wal_path() -> PathBuf {
-    let dir = env::current_dir().unwrap();
-    dir.join(DEFAULT_WAL_DIR_NAME)
-}
-
-impl Default for WalConfig {
+impl StorageConfig {
     fn default() -> Self {
         Self {
-            wal_path: default_wal_path(),
+            db_path: None,
+            checkpoint: CheckpointConfig::default(),
         }
     }
 }
@@ -125,12 +111,7 @@ pub mod test_utils {
     }
 
     pub fn gen_test_config() -> TestConfig {
-        let wal_dir = TempDir::new().expect("failed to create temp wal dir");
         let checkpoint_dir = TempDir::new().expect("failed to create temp checkpoint dir");
-
-        let wal_config = WalConfig {
-            wal_path: wal_dir.path().join("wal.log"),
-        };
 
         let checkpoint_config = CheckpointConfig {
             checkpoint_dir: checkpoint_dir.path().to_path_buf(),
@@ -141,7 +122,7 @@ pub mod test_utils {
         };
 
         let storage_config = StorageConfig {
-            wal: wal_config,
+            db_path: None,
             checkpoint: checkpoint_config,
         };
 
@@ -149,12 +130,11 @@ pub mod test_utils {
             num_threads: 1,
             storage: storage_config,
             execution: ExecutionConfig::default(),
-            db_path: None,
         };
 
         TestConfig {
             config,
-            _temp_dirs: vec![wal_dir, checkpoint_dir],
+            _temp_dirs: vec![checkpoint_dir],
         }
     }
 }

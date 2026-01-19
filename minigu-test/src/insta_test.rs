@@ -45,7 +45,7 @@ use minigu::common::data_chunk::display::{TableBuilder, TableOptions};
 use minigu::database::Database;
 use minigu::result::QueryResult;
 use minigu::session::Session;
-use minigu_common::config::DatabaseConfig;
+use minigu_common::config::{DatabaseConfig, StorageConfig};
 use pastey::paste;
 use tempfile::{TempDir, tempdir};
 
@@ -119,7 +119,10 @@ fn setup_database() -> SessionDropGuard {
 
     let config = DatabaseConfig {
         // Ensure checkpoint/WAL writes are test-scoped (no repo pollution, no cross-test clashes).
-        db_path: Some(temp_dir_path.join(".minigu")),
+        storage: StorageConfig {
+            db_path: Some(temp_dir_path.join(".minigu")),
+            ..Default::default()
+        },
         ..Default::default()
     };
     let database = Database::open_in_memory(config).unwrap();
