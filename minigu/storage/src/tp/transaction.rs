@@ -14,7 +14,6 @@ pub use minigu_transaction::{IsolationLevel, Timestamp};
 use super::memory_graph::{AdjacencyContainer, MemoryGraph, VersionedEdge, VersionedVertex};
 use crate::common::model::edge::{Edge, Neighbor};
 use crate::common::model::vertex::Vertex;
-use crate::common::wal::StorageWal;
 use crate::common::wal::graph_wal::{Operation, RedoEntry};
 use crate::common::{DeltaOp, SetPropsOp};
 use crate::error::{
@@ -491,20 +490,15 @@ impl MemTransaction {
         // Write `Operation::AbortTransaction` to WAL,
         // unless the function is called when recovering from WAL
         if !skip_wal {
-            let lsn = self.graph.wal_manager.next_lsn();
+            let lsn = self.graph.persistence.next_lsn();
             let wal_entry = RedoEntry {
                 lsn,
                 txn_id: self.txn_id(),
                 iso_level: self.isolation_level,
                 op: Operation::AbortTransaction,
             };
-            self.graph
-                .wal_manager
-                .wal()
-                .write()
-                .unwrap()
-                .append(&wal_entry)?;
-            self.graph.wal_manager.wal().write().unwrap().flush()?;
+            self.graph.persistence.append_wal(&wal_entry)?;
+            self.graph.persistence.flush_wal()?;
         }
 
         self.vertex_writes.write().unwrap().clear();
@@ -566,32 +560,27 @@ impl MemTransaction {
                 .unwrap()
                 .drain(..)
                 .map(|mut entry| {
-                    entry.lsn = self.graph.wal_manager.next_lsn();
+                    entry.lsn = self.graph.persistence.next_lsn();
                     entry
                 })
                 .collect::<Vec<_>>();
+            let wal_count = redo_entries.len();
             for entry in redo_entries {
-                self.graph
-                    .wal_manager
-                    .wal()
-                    .write()
-                    .unwrap()
-                    .append(&entry)?;
+                self.graph.persistence.append_wal(&entry)?;
             }
 
             let wal_entry = RedoEntry {
-                lsn: self.graph.wal_manager.next_lsn(),
+                lsn: self.graph.persistence.next_lsn(),
                 txn_id: self.txn_id(),
                 iso_level: self.isolation_level,
                 op: Operation::CommitTransaction(commit_ts),
             };
-            self.graph
-                .wal_manager
-                .wal()
-                .write()
-                .unwrap()
-                .append(&wal_entry)?;
-            self.graph.wal_manager.wal().write().unwrap().flush()?;
+            self.graph.persistence.append_wal(&wal_entry)?;
+            self.graph.persistence.flush_wal()?;
+
+            for _ in 0..(wal_count + 2) {
+                self.graph.increment_wal_counter();
+            }
         }
 
         self.graph
@@ -599,7 +588,9 @@ impl MemTransaction {
             .latest_commit_ts
             .store(commit_ts.raw(), Ordering::SeqCst);
         self.graph.txn_manager.finish_transaction(self)?;
-        self.graph.check_auto_checkpoint()?;
+        if !skip_wal {
+            self.graph.check_auto_checkpoint()?;
+        }
 
         Ok(commit_ts)
     }
@@ -924,32 +915,27 @@ impl MemTransaction {
                 .unwrap()
                 .drain(..)
                 .map(|mut entry| {
-                    entry.lsn = self.graph.wal_manager.next_lsn();
+                    entry.lsn = self.graph.persistence.next_lsn();
                     entry
                 })
                 .collect::<Vec<_>>();
+            let wal_count = redo_entries.len();
             for entry in redo_entries {
-                self.graph
-                    .wal_manager
-                    .wal()
-                    .write()
-                    .unwrap()
-                    .append(&entry)?;
+                self.graph.persistence.append_wal(&entry)?;
             }
 
             let wal_entry = RedoEntry {
-                lsn: self.graph.wal_manager.next_lsn(),
+                lsn: self.graph.persistence.next_lsn(),
                 txn_id: self.txn_id(),
                 iso_level: self.isolation_level,
                 op: Operation::CommitTransaction(commit_ts),
             };
-            self.graph
-                .wal_manager
-                .wal()
-                .write()
-                .unwrap()
-                .append(&wal_entry)?;
-            self.graph.wal_manager.wal().write().unwrap().flush()?;
+            self.graph.persistence.append_wal(&wal_entry)?;
+            self.graph.persistence.flush_wal()?;
+
+            for _ in 0..(wal_count + 2) {
+                self.graph.increment_wal_counter();
+            }
         }
 
         self.graph
@@ -957,7 +943,9 @@ impl MemTransaction {
             .latest_commit_ts
             .store(commit_ts.raw(), Ordering::SeqCst);
         self.graph.txn_manager.finish_transaction(self)?;
-        self.graph.check_auto_checkpoint()?;
+        if !skip_wal {
+            self.graph.check_auto_checkpoint()?;
+        }
 
         Ok(commit_ts)
     }
@@ -987,7 +975,7 @@ mod tests {
 
     #[test]
     fn test_watermark_tracking() {
-        let (graph, _cleaner) = memory_graph::tests::mock_empty_graph();
+        let graph = memory_graph::tests::mock_empty_graph();
         let _base_commit_ts = graph.txn_manager.latest_commit_ts.load(Ordering::Acquire);
 
         // Start txn0
