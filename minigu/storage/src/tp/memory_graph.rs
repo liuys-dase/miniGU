@@ -1335,6 +1335,7 @@ impl MemoryGraph {
 /// Checks if the vertex is modified by other transactions or has a greater commit timestamp than
 /// the current transaction.
 /// Current check applies to both Snapshot Isolation and Serializable isolation levels.
+/// For optimistic locking, committed-version conflicts are deferred to commit validation.
 #[inline]
 fn check_write_conflict(commit_ts: Timestamp, txn: &Arc<MemTransaction>) -> StorageResult<()> {
     match commit_ts {
@@ -1830,6 +1831,105 @@ pub mod tests {
             StorageError::Transaction(TransactionError::VersionNotVisible(_))
         ));
         let _ = txn1.abort();
+    }
+
+    #[test]
+    fn test_optimistic_lock_defers_edge_conflict_to_commit() {
+        let graph = mock_empty_graph_with_locking(LockingStrategy::Optimistic);
+
+        let init_txn = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
+        let v1 = create_vertex_eve();
+        let v2 = create_vertex_frank();
+        let vid1 = graph.create_vertex(&init_txn, v1).unwrap();
+        let vid2 = graph.create_vertex(&init_txn, v2).unwrap();
+        let edge = create_edge(
+            10,
+            vid1,
+            vid2,
+            FRIEND,
+            vec![ScalarValue::String(Some("2025-01-01".to_string()))],
+        );
+        let eid = graph.create_edge(&init_txn, edge).unwrap();
+        init_txn.commit().unwrap();
+
+        let txn1 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
+        let txn2 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
+
+        graph.delete_edge(&txn2, eid).unwrap();
+        txn2.commit().unwrap();
+
+        assert!(graph.delete_edge(&txn1, eid).is_ok());
+        let err = txn1.commit().unwrap_err();
+        assert!(matches!(
+            err,
+            StorageError::Transaction(TransactionError::WriteWriteConflict(_))
+        ));
+    }
+
+    #[test]
+    fn test_abort_removes_adjacency_for_created_edge() {
+        let graph = mock_empty_graph_with_locking(LockingStrategy::Optimistic);
+
+        let init_txn = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
+        let v1 = create_vertex_eve();
+        let v2 = create_vertex_frank();
+        let vid1 = graph.create_vertex(&init_txn, v1).unwrap();
+        let vid2 = graph.create_vertex(&init_txn, v2).unwrap();
+        init_txn.commit().unwrap();
+
+        let txn = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
+        let edge = create_edge(
+            11,
+            vid1,
+            vid2,
+            FRIEND,
+            vec![ScalarValue::String(Some("2025-01-02".to_string()))],
+        );
+        let eid = edge.eid();
+        graph.create_edge(&txn, edge.clone()).unwrap();
+
+        let outgoing = Neighbor::new(edge.label_id(), edge.dst_id(), eid);
+        let incoming = Neighbor::new(edge.label_id(), edge.src_id(), eid);
+        assert!(
+            graph
+                .adjacency_list
+                .get(&vid1)
+                .unwrap()
+                .outgoing()
+                .contains(&outgoing)
+        );
+        assert!(
+            graph
+                .adjacency_list
+                .get(&vid2)
+                .unwrap()
+                .incoming()
+                .contains(&incoming)
+        );
+
+        txn.abort().unwrap();
+
+        if let Some(adj) = graph.adjacency_list.get(&vid1) {
+            assert!(!adj.outgoing().contains(&outgoing));
+        }
+        if let Some(adj) = graph.adjacency_list.get(&vid2) {
+            assert!(!adj.incoming().contains(&incoming));
+        }
     }
 
     #[test]

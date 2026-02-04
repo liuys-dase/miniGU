@@ -22,7 +22,8 @@ pub enum LockingStrategy {
     /// Pessimistic locking - detect write conflicts during write operations.
     #[default]
     Pessimistic,
-    /// Optimistic locking - defer write conflict detection until commit.
+    /// Optimistic locking - defer conflicts on committed versions until commit.
+    /// Note: miniGU still blocks concurrent uncommitted writes due to in-place updates.
     Optimistic,
 }
 

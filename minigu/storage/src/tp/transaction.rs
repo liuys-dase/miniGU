@@ -10,6 +10,7 @@ use minigu_transaction::{
 pub use minigu_transaction::{IsolationLevel, Timestamp};
 
 use super::memory_graph::MemoryGraph;
+use crate::common::model::edge::Neighbor;
 use crate::common::wal::graph_wal::{Operation, RedoEntry};
 use crate::common::{DeltaOp, SetPropsOp};
 use crate::error::{
@@ -448,11 +449,28 @@ impl MemTransaction {
                     if let Some(entry) = self.graph.edges.get(eid) {
                         let mut current = entry.chain.current.write().unwrap();
                         if current.commit_ts == self.txn_id() {
+                            let edge = current.data.clone();
                             // Restore deletion flag
                             current.data.is_tombstone = true;
                             current.commit_ts = commit_ts;
                             // Update undo pointer to previous version
                             *entry.chain.undo_ptr.write().unwrap() = next;
+
+                            // Roll back adjacency list changes for edges created in this txn.
+                            if let Some(adj) = self.graph.adjacency_list.get(&edge.src_id()) {
+                                adj.outgoing().remove(&Neighbor::new(
+                                    edge.label_id(),
+                                    edge.dst_id(),
+                                    *eid,
+                                ));
+                            }
+                            if let Some(adj) = self.graph.adjacency_list.get(&edge.dst_id()) {
+                                adj.incoming().remove(&Neighbor::new(
+                                    edge.label_id(),
+                                    edge.src_id(),
+                                    *eid,
+                                ));
+                            }
                         }
                     }
                 }
