@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock, Weak};
@@ -549,7 +550,16 @@ impl MemoryGraph {
     ///
     /// * `path` - Path to the database file (`.minigu`)
     pub fn with_db_file<P: AsRef<Path>>(path: P) -> StorageResult<Arc<Self>> {
-        Self::with_db_file_and_config(path, CheckpointConfig::default())
+        Self::with_db_file_and_config(path, CheckpointConfig::default(), TxnOptions::default())
+    }
+
+    /// Creates a new [`MemoryGraph`] backed by a single database file with custom transaction
+    /// defaults.
+    pub fn with_db_file_with_options<P: AsRef<Path>>(
+        path: P,
+        txn_options: TxnOptions,
+    ) -> StorageResult<Arc<Self>> {
+        Self::with_db_file_and_config(path, CheckpointConfig::default(), txn_options)
     }
 
     /// Creates a new [`MemoryGraph`] backed by a single database file with custom checkpoint
@@ -557,13 +567,10 @@ impl MemoryGraph {
     fn with_db_file_and_config<P: AsRef<Path>>(
         path: P,
         checkpoint_config: CheckpointConfig,
+        txn_options: TxnOptions,
     ) -> StorageResult<Arc<Self>> {
         let persistence = Arc::new(DbFilePersistence::open(path)?);
-        let graph = Self::with_persistence_and_config(
-            persistence,
-            checkpoint_config,
-            TxnOptions::default(),
-        );
+        let graph = Self::with_persistence_and_config(persistence, checkpoint_config, txn_options);
         graph.recover()?;
         Ok(graph)
     }
@@ -1141,12 +1148,47 @@ impl MemoryGraph {
                 txn.redo_buffer.write().unwrap().push(wal_entry);
             }
             LockStrategy::Optimistic => {
+                let mut edge_deletes: HashSet<EdgeId> = HashSet::new();
+                {
+                    let writes = txn.edge_writes.read().unwrap();
+                    for (eid, intent) in writes.iter() {
+                        let touches_vertex = match &intent.kind {
+                            WriteKind::InsertEdge(edge) => {
+                                edge.src_id() == vid || edge.dst_id() == vid
+                            }
+                            WriteKind::UpdateEdge { before, after } => {
+                                before.src_id() == vid
+                                    || before.dst_id() == vid
+                                    || after.src_id() == vid
+                                    || after.dst_id() == vid
+                            }
+                            WriteKind::DeleteEdge { before } => {
+                                before.src_id() == vid || before.dst_id() == vid
+                            }
+                            _ => false,
+                        };
+                        if touches_vertex {
+                            edge_deletes.insert(*eid);
+                        }
+                    }
+                }
+
+                for eid in edge_deletes.iter().copied().collect::<Vec<_>>() {
+                    self.record_occ_edge_delete(txn, eid)?;
+                }
+
                 if let Some(adjacency_container) = self.adjacency_list.get(&vid) {
                     for adj in adjacency_container.incoming().iter() {
-                        self.record_occ_edge_delete(txn, adj.value().eid())?;
+                        let eid = adj.value().eid();
+                        if edge_deletes.insert(eid) {
+                            self.record_occ_edge_delete(txn, eid)?;
+                        }
                     }
                     for adj in adjacency_container.outgoing().iter() {
-                        self.record_occ_edge_delete(txn, adj.value().eid())?;
+                        let eid = adj.value().eid();
+                        if edge_deletes.insert(eid) {
+                            self.record_occ_edge_delete(txn, eid)?;
+                        }
                     }
                 }
 
@@ -4701,6 +4743,117 @@ pub mod tests {
             }
             other => panic!("Expected write-write conflict, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn optimistic_iterators_include_write_intents() {
+        let graph = MemoryGraph::in_memory_with_options(TxnOptions {
+            default_lock: LockStrategy::Optimistic,
+            ..Default::default()
+        });
+
+        let txn = graph
+            .txn_manager()
+            .begin_transaction_with_lock(IsolationLevel::Snapshot, LockStrategy::Optimistic)
+            .unwrap();
+
+        graph
+            .create_vertex(
+                &txn,
+                create_vertex(100, PERSON, vec![ScalarValue::Int64(Some(1))]),
+            )
+            .unwrap();
+        graph
+            .create_vertex(
+                &txn,
+                create_vertex(101, PERSON, vec![ScalarValue::Int64(Some(2))]),
+            )
+            .unwrap();
+        let edge = create_edge(
+            200,
+            100,
+            101,
+            FRIEND,
+            vec![ScalarValue::String(Some("intent".to_string()))],
+        );
+        graph.create_edge(&txn, edge).unwrap();
+
+        let vids: Vec<_> = txn
+            .iter_vertices()
+            .filter_map(|res| res.ok())
+            .map(|v| v.vid())
+            .collect();
+        assert!(vids.contains(&100));
+        assert!(vids.contains(&101));
+
+        let eids: Vec<_> = txn
+            .iter_edges()
+            .filter_map(|res| res.ok())
+            .map(|e| e.eid())
+            .collect();
+        assert!(eids.contains(&200));
+
+        graph.delete_edge(&txn, 200).unwrap();
+        graph.delete_vertex(&txn, 100).unwrap();
+
+        let vids_after: Vec<_> = txn
+            .iter_vertices()
+            .filter_map(|res| res.ok())
+            .map(|v| v.vid())
+            .collect();
+        assert!(!vids_after.contains(&100));
+
+        let eids_after: Vec<_> = txn
+            .iter_edges()
+            .filter_map(|res| res.ok())
+            .map(|e| e.eid())
+            .collect();
+        assert!(!eids_after.contains(&200));
+    }
+
+    #[test]
+    fn optimistic_insert_delete_same_txn_commits() {
+        let graph = MemoryGraph::in_memory_with_options(TxnOptions {
+            default_lock: LockStrategy::Optimistic,
+            ..Default::default()
+        });
+
+        let txn = graph
+            .txn_manager()
+            .begin_transaction_with_lock(IsolationLevel::Snapshot, LockStrategy::Optimistic)
+            .unwrap();
+
+        graph
+            .create_vertex(
+                &txn,
+                create_vertex(300, PERSON, vec![ScalarValue::Int64(Some(0))]),
+            )
+            .unwrap();
+        graph
+            .create_vertex(
+                &txn,
+                create_vertex(301, PERSON, vec![ScalarValue::Int64(Some(0))]),
+            )
+            .unwrap();
+        let edge = create_edge(
+            3010,
+            300,
+            301,
+            FRIEND,
+            vec![ScalarValue::String(Some("temp".to_string()))],
+        );
+        graph.create_edge(&txn, edge).unwrap();
+
+        graph.delete_vertex(&txn, 300).unwrap();
+
+        txn.commit().unwrap();
+
+        let check_txn = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Snapshot)
+            .unwrap();
+        assert!(graph.get_vertex(&check_txn, 300).is_err());
+        assert!(graph.get_edge(&check_txn, 3010).is_err());
     }
 
     #[test]

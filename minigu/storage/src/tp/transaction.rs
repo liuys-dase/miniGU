@@ -625,10 +625,17 @@ impl MemTransaction {
                         }
                     }
                     WriteKind::UpdateVertex { .. } | WriteKind::DeleteVertex { .. } => {
-                        let entry = graph
-                            .vertices
-                            .get(vid)
-                            .ok_or_else(|| build_conflict(format!("Vertex {} missing", vid)))?;
+                        let entry = if let Some(entry) = graph.vertices.get(vid) {
+                            entry
+                        } else {
+                            if matches!(intent.kind, WriteKind::DeleteVertex { .. })
+                                && intent.guard_ts.raw() == 0
+                            {
+                                continue;
+                            }
+                            conflict = Some(build_conflict(format!("Vertex {} missing", vid)));
+                            break;
+                        };
                         let cur = entry.chain.current.read().unwrap();
                         let cur_ts = cur.commit_ts;
                         if cur_ts.is_txn_id() && cur_ts != self.txn_id() {
@@ -672,10 +679,17 @@ impl MemTransaction {
                             }
                         }
                         WriteKind::UpdateEdge { .. } | WriteKind::DeleteEdge { .. } => {
-                            let entry = graph
-                                .edges
-                                .get(eid)
-                                .ok_or_else(|| build_conflict(format!("Edge {} missing", eid)))?;
+                            let entry = if let Some(entry) = graph.edges.get(eid) {
+                                entry
+                            } else {
+                                if matches!(intent.kind, WriteKind::DeleteEdge { .. })
+                                    && intent.guard_ts.raw() == 0
+                                {
+                                    continue;
+                                }
+                                conflict = Some(build_conflict(format!("Edge {} missing", eid)));
+                                break;
+                            };
                             let cur = entry.chain.current.read().unwrap();
                             let cur_ts = cur.commit_ts;
                             if cur_ts.is_txn_id() && cur_ts != self.txn_id() {
@@ -765,10 +779,19 @@ impl MemTransaction {
                         current.commit_ts = self.txn_id();
                     }
                     WriteKind::DeleteVertex { before } => {
-                        let entry = graph
-                            .vertices
-                            .get(vid)
-                            .ok_or_else(|| build_conflict(format!("Vertex {} missing", vid)))?;
+                        let entry = if let Some(entry) = graph.vertices.get(vid) {
+                            entry
+                        } else if intent.guard_ts.raw() == 0 {
+                            graph
+                                .vertices
+                                .insert(*vid, VersionedVertex::new(before.clone()));
+                            graph
+                                .vertices
+                                .get(vid)
+                                .ok_or_else(|| build_conflict(format!("Vertex {} missing", vid)))?
+                        } else {
+                            return Err(build_conflict(format!("Vertex {} missing", vid)));
+                        };
                         let mut current = entry.chain.current.write().unwrap();
                         let prev_ts = current.commit_ts;
                         let undo_ptr = entry.chain.undo_ptr.read().unwrap().clone();
@@ -839,10 +862,17 @@ impl MemTransaction {
                         current.commit_ts = self.txn_id();
                     }
                     WriteKind::DeleteEdge { before } => {
-                        let entry = graph
-                            .edges
-                            .get(eid)
-                            .ok_or_else(|| build_conflict(format!("Edge {} missing", eid)))?;
+                        let entry = if let Some(entry) = graph.edges.get(eid) {
+                            entry
+                        } else if intent.guard_ts.raw() == 0 {
+                            graph.edges.insert(*eid, VersionedEdge::new(before.clone()));
+                            graph
+                                .edges
+                                .get(eid)
+                                .ok_or_else(|| build_conflict(format!("Edge {} missing", eid)))?
+                        } else {
+                            return Err(build_conflict(format!("Edge {} missing", eid)));
+                        };
                         let mut current = entry.chain.current.write().unwrap();
                         let prev_ts = current.commit_ts;
                         let undo_ptr = entry.chain.undo_ptr.read().unwrap().clone();
