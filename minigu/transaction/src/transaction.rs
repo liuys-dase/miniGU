@@ -16,6 +16,16 @@ pub enum IsolationLevel {
     Serializable,
 }
 
+/// Locking strategy for write conflict handling.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum LockingStrategy {
+    /// Pessimistic locking - detect write conflicts during write operations.
+    #[default]
+    Pessimistic,
+    /// Optimistic locking - defer write conflict detection until commit.
+    Optimistic,
+}
+
 /// Trait defining the core operations that all transactions must support.
 /// This trait abstracts the fundamental transaction behavior across different
 /// storage implementations.

@@ -7,7 +7,7 @@ use crossbeam_skiplist::SkipSet;
 use dashmap::DashMap;
 use minigu_common::types::{EdgeId, VectorIndexKey, VertexId};
 use minigu_common::value::{ScalarValue, VectorValue};
-use minigu_transaction::{IsolationLevel, Timestamp, Transaction};
+use minigu_transaction::{IsolationLevel, LockingStrategy, Timestamp, Transaction};
 
 use super::db_file_persistence::DbFilePersistence;
 use super::in_memory_persistence::InMemoryPersistence;
@@ -364,6 +364,13 @@ impl Default for CheckpointConfig {
     }
 }
 
+/// Configuration for memory graph runtime behavior.
+#[derive(Debug, Clone, Default)]
+pub struct MemoryGraphConfig {
+    pub checkpoint_config: CheckpointConfig,
+    pub locking_strategy: LockingStrategy,
+}
+
 pub struct MemoryGraph {
     // ---- Versioned data storage ----
     pub(super) vertices: DashMap<VertexId, VersionedVertex>, // Stores versioned vertices
@@ -403,6 +410,11 @@ impl MemoryGraph {
         Self::with_persistence(persistence)
     }
 
+    pub fn in_memory_with_config(config: MemoryGraphConfig) -> Arc<Self> {
+        let persistence = Arc::new(InMemoryPersistence::new());
+        Self::with_persistence_and_config(persistence, config)
+    }
+
     /// Creates a new [`MemoryGraph`] backed by a single database file.
     ///
     /// If the file exists, the graph will be recovered from the checkpoint
@@ -412,17 +424,16 @@ impl MemoryGraph {
     ///
     /// * `path` - Path to the database file (`.minigu`)
     pub fn with_db_file<P: AsRef<Path>>(path: P) -> StorageResult<Arc<Self>> {
-        Self::with_db_file_and_config(path, CheckpointConfig::default())
+        Self::with_db_file_and_config(path, MemoryGraphConfig::default())
     }
 
-    /// Creates a new [`MemoryGraph`] backed by a single database file with custom checkpoint
-    /// config.
-    fn with_db_file_and_config<P: AsRef<Path>>(
+    /// Creates a new [`MemoryGraph`] backed by a single database file with custom config.
+    pub fn with_db_file_and_config<P: AsRef<Path>>(
         path: P,
-        checkpoint_config: CheckpointConfig,
+        config: MemoryGraphConfig,
     ) -> StorageResult<Arc<Self>> {
         let persistence = Arc::new(DbFilePersistence::open(path)?);
-        let graph = Self::with_persistence_and_config(persistence, checkpoint_config);
+        let graph = Self::with_persistence_and_config(persistence, config);
         graph.recover()?;
         Ok(graph)
     }
@@ -431,19 +442,23 @@ impl MemoryGraph {
     ///
     /// This is the core constructor that all other constructors delegate to.
     fn with_persistence(persistence: Arc<dyn PersistenceProvider>) -> Arc<Self> {
-        Self::with_persistence_and_config(persistence, CheckpointConfig::default())
+        Self::with_persistence_and_config(persistence, MemoryGraphConfig::default())
     }
 
-    /// Creates a new [`MemoryGraph`] with the given persistence provider and checkpoint config.
+    /// Creates a new [`MemoryGraph`] with the given persistence provider and config.
     fn with_persistence_and_config(
         persistence: Arc<dyn PersistenceProvider>,
-        checkpoint_config: CheckpointConfig,
+        config: MemoryGraphConfig,
     ) -> Arc<Self> {
+        let MemoryGraphConfig {
+            checkpoint_config,
+            locking_strategy,
+        } = config;
         let graph = Arc::new(Self {
             vertices: DashMap::new(),
             edges: DashMap::new(),
             adjacency_list: DashMap::new(),
-            txn_manager: MemTxnManager::new(),
+            txn_manager: MemTxnManager::new(locking_strategy),
             persistence,
             checkpoint_lock: RwLock::new(()),
             checkpoint_config,
@@ -1332,12 +1347,18 @@ fn check_write_conflict(commit_ts: Timestamp, txn: &Arc<MemTransaction>) -> Stor
         )),
         // If the vertex is committed by other transactions and its commit timestamp is greater
         // than the start timestamp of the current transaction, return version not visible
-        ts if ts.is_commit_ts() && ts > txn.start_ts() => Err(StorageError::Transaction(
-            TransactionError::VersionNotVisible(format!(
-                "Data version not visible for {:?}",
-                txn.txn_id()
-            )),
-        )),
+        ts if ts.is_commit_ts() && ts > txn.start_ts() => {
+            if txn.locking_strategy() == LockingStrategy::Pessimistic {
+                Err(StorageError::Transaction(
+                    TransactionError::VersionNotVisible(format!(
+                        "Data version not visible for {:?}",
+                        txn.txn_id()
+                    )),
+                ))
+            } else {
+                Ok(())
+            }
+        }
         _ => Ok(()),
     }
 }
@@ -1348,7 +1369,7 @@ pub mod tests {
 
     use minigu_common::types::{LabelId, PropertyId};
     use minigu_common::value::{F32, ScalarValue, VectorValue};
-    use minigu_transaction::{GraphTxnManager, IsolationLevel, Transaction};
+    use minigu_transaction::{GraphTxnManager, IsolationLevel, LockingStrategy, Transaction};
     use {Edge, Vertex};
 
     use super::*;
@@ -1385,6 +1406,14 @@ pub mod tests {
     // Simplified test helpers using in-memory persistence
     pub fn mock_empty_graph() -> Arc<MemoryGraph> {
         MemoryGraph::in_memory()
+    }
+
+    pub fn mock_empty_graph_with_locking(locking_strategy: LockingStrategy) -> Arc<MemoryGraph> {
+        let config = MemoryGraphConfig {
+            locking_strategy,
+            ..MemoryGraphConfig::default()
+        };
+        MemoryGraph::in_memory_with_config(config)
     }
 
     pub fn mock_graph() -> Arc<MemoryGraph> {
@@ -1695,6 +1724,112 @@ pub mod tests {
         let read_v1 = graph.get_vertex(&txn2, vid1).unwrap();
         assert_eq!(read_v1, v1);
         assert!(txn2.commit().is_ok());
+    }
+
+    #[test]
+    fn test_optimistic_lock_defers_conflict_to_commit() {
+        let graph = mock_empty_graph_with_locking(LockingStrategy::Optimistic);
+
+        let init_txn = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
+        let vid = graph.create_vertex(&init_txn, create_vertex_eve()).unwrap();
+        init_txn.commit().unwrap();
+
+        let txn1 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
+        let txn2 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
+
+        graph
+            .set_vertex_property(&txn2, vid, vec![1], vec![ScalarValue::Int32(Some(30))])
+            .unwrap();
+        txn2.commit().unwrap();
+
+        assert!(
+            graph
+                .set_vertex_property(&txn1, vid, vec![1], vec![ScalarValue::Int32(Some(31))])
+                .is_ok()
+        );
+        let err = txn1.commit().unwrap_err();
+        assert!(matches!(
+            err,
+            StorageError::Transaction(TransactionError::WriteWriteConflict(_))
+        ));
+    }
+
+    #[test]
+    fn test_optimistic_lock_blocks_uncommitted_conflict() {
+        let graph = mock_empty_graph_with_locking(LockingStrategy::Optimistic);
+
+        let init_txn = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
+        let vid = graph.create_vertex(&init_txn, create_vertex_eve()).unwrap();
+        init_txn.commit().unwrap();
+
+        let txn1 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
+        graph
+            .set_vertex_property(&txn1, vid, vec![1], vec![ScalarValue::Int32(Some(30))])
+            .unwrap();
+
+        let txn2 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
+        let err = graph
+            .set_vertex_property(&txn2, vid, vec![1], vec![ScalarValue::Int32(Some(31))])
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            StorageError::Transaction(TransactionError::WriteWriteConflict(_))
+        ));
+        let _ = txn1.abort();
+        let _ = txn2.abort();
+    }
+
+    #[test]
+    fn test_pessimistic_lock_rejects_stale_write() {
+        let graph = mock_empty_graph_with_locking(LockingStrategy::Pessimistic);
+
+        let init_txn = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
+        let vid = graph.create_vertex(&init_txn, create_vertex_eve()).unwrap();
+        init_txn.commit().unwrap();
+
+        let txn1 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
+        let txn2 = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
+
+        graph
+            .set_vertex_property(&txn2, vid, vec![1], vec![ScalarValue::Int32(Some(30))])
+            .unwrap();
+        txn2.commit().unwrap();
+
+        let err = graph
+            .set_vertex_property(&txn1, vid, vec![1], vec![ScalarValue::Int32(Some(31))])
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            StorageError::Transaction(TransactionError::VersionNotVisible(_))
+        ));
+        let _ = txn1.abort();
     }
 
     #[test]

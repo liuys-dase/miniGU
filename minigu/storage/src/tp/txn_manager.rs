@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex, Weak};
 use crossbeam_skiplist::SkipMap;
 use minigu_common::types::{EdgeId, VertexId};
 use minigu_transaction::{
-    GraphTxnManager, Timestamp, Transaction, global_timestamp_generator,
+    GraphTxnManager, LockingStrategy, Timestamp, Transaction, global_timestamp_generator,
     global_transaction_id_generator,
 };
 
@@ -34,19 +34,13 @@ pub struct MemTxnManager {
     watermark: AtomicU64,
     /// Last garbage collection timestamp
     last_gc_ts: AtomicU64,
+    /// Locking strategy for new transactions.
+    locking_strategy: LockingStrategy,
 }
 
 impl Default for MemTxnManager {
     fn default() -> Self {
-        Self {
-            graph: Weak::new(),
-            active_txns: SkipMap::new(),
-            committed_txns: SkipMap::new(),
-            commit_lock: Mutex::new(()),
-            latest_commit_ts: AtomicU64::new(0),
-            watermark: AtomicU64::new(0),
-            last_gc_ts: AtomicU64::new(0),
-        }
+        Self::new(LockingStrategy::Pessimistic)
     }
 }
 
@@ -130,8 +124,17 @@ impl GraphTxnManager for MemTxnManager {
 
 impl MemTxnManager {
     /// Create a new MemTxnManager
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(locking_strategy: LockingStrategy) -> Self {
+        Self {
+            graph: Weak::new(),
+            active_txns: SkipMap::new(),
+            committed_txns: SkipMap::new(),
+            commit_lock: Mutex::new(()),
+            latest_commit_ts: AtomicU64::new(0),
+            watermark: AtomicU64::new(0),
+            last_gc_ts: AtomicU64::new(0),
+            locking_strategy,
+        }
     }
 
     /// Set the graph reference after construction
@@ -185,6 +188,7 @@ impl MemTxnManager {
             txn_id,
             start_ts,
             isolation_level,
+            self.locking_strategy,
         ));
         self.active_txns.insert(txn.txn_id(), txn.clone());
         self.update_watermark();

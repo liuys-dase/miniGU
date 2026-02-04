@@ -4,8 +4,8 @@ use std::sync::{Arc, OnceLock, RwLock};
 use dashmap::DashSet;
 use minigu_common::types::{EdgeId, VertexId};
 use minigu_transaction::{
-    GraphTxnManager, Transaction, UndoEntry as GenericUndoEntry, UndoPtr as GenericUndoPtr,
-    global_timestamp_generator,
+    GraphTxnManager, LockingStrategy, Transaction, UndoEntry as GenericUndoEntry,
+    UndoPtr as GenericUndoPtr, global_timestamp_generator,
 };
 pub use minigu_transaction::{IsolationLevel, Timestamp};
 
@@ -27,6 +27,7 @@ pub struct MemTransaction {
 
     // ---- Transaction Config ----
     isolation_level: IsolationLevel, // Isolation level of the transaction
+    lock_strategy: LockingStrategy,  // Locking strategy of the transaction
 
     // ---- Timestamp management ----
     /// Start timestamp assigned when the transaction begins
@@ -83,10 +84,12 @@ impl MemTransaction {
         txn_id: Timestamp,
         start_ts: Timestamp,
         isolation_level: IsolationLevel,
+        lock_strategy: LockingStrategy,
     ) -> Self {
         Self {
             graph,
             isolation_level,
+            lock_strategy,
             start_ts,
             commit_ts: OnceLock::new(),
             txn_id,
@@ -149,6 +152,25 @@ impl MemTransaction {
         Ok(())
     }
 
+    /// Validates the write set for optimistic locking.
+    /// If a write is based on a version committed after the transaction started,
+    /// it returns a write-write conflict error.
+    pub(super) fn validate_write_sets(&self) -> StorageResult<()> {
+        let undo_entries = self.undo_buffer.read().unwrap();
+        for undo_entry in undo_entries.iter() {
+            let ts = undo_entry.timestamp();
+            if ts.is_commit_ts() && ts > self.start_ts {
+                return Err(StorageError::Transaction(
+                    TransactionError::WriteWriteConflict(
+                        "Optimistic write conflict detected at commit".to_string(),
+                    ),
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
     /// Returns the set of vertex reads in this transaction.
     pub fn vertex_reads(&self) -> &DashSet<VertexId> {
         &self.vertex_reads
@@ -157,6 +179,11 @@ impl MemTransaction {
     /// Returns the set of edge reads in this transaction.
     pub fn edge_reads(&self) -> &DashSet<EdgeId> {
         &self.edge_reads
+    }
+
+    /// Returns the locking strategy for this transaction.
+    pub fn locking_strategy(&self) -> LockingStrategy {
+        self.lock_strategy
     }
 
     /// Returns a reference to the associated graph.
@@ -219,7 +246,15 @@ impl MemTransaction {
         // Acquire the global commit lock to enforce serial execution of commits.
         let _guard = self.graph.txn_manager.commit_lock.lock().unwrap();
 
-        // Step 1: Validate serializability if isolution level is Serializable.
+        // Step 1: Validate write sets for optimistic locking.
+        if self.locking_strategy() == LockingStrategy::Optimistic
+            && let Err(e) = self.validate_write_sets()
+        {
+            self.abort()?;
+            return Err(e);
+        }
+
+        // Step 2: Validate serializability if isolution level is Serializable.
         if let IsolationLevel::Serializable = self.isolation_level
             && let Err(e) = self.validate_read_sets()
         {
@@ -227,7 +262,7 @@ impl MemTransaction {
             return Err(e);
         }
 
-        // Step 2: Assign a commit timestamp (atomic operation).
+        // Step 3: Assign a commit timestamp (atomic operation).
         if let Err(e) = self.commit_ts.set(commit_ts) {
             self.abort()?;
             return Err(StorageError::Transaction(
@@ -235,7 +270,7 @@ impl MemTransaction {
             ));
         }
 
-        // Step 3: Process write in undo buffer.
+        // Step 4: Process write in undo buffer.
         {
             // Define a macro to simplify the update of the commit timestamp.
             macro_rules! update_commit_ts {
@@ -269,7 +304,7 @@ impl MemTransaction {
             }
         }
 
-        // Step 4: Write redo entry and commit to WAL,
+        // Step 5: Write redo entry and commit to WAL,
         // unless the function is called when recovering from WAL
         if !skip_wal {
             let redo_entries = self
@@ -300,7 +335,7 @@ impl MemTransaction {
             self.graph.persistence.append_wal(&wal_entry)?;
             self.graph.persistence.flush_wal()?;
 
-            // Step 5: Increment WAL counter by actual number of WAL entries written
+            // Step 6: Increment WAL counter by actual number of WAL entries written
             // This includes:
             // - BeginTransaction (written at transaction start, not counted there)
             // - All redo entries (deltas)
@@ -311,14 +346,14 @@ impl MemTransaction {
             }
         }
 
-        // Step 6: Clean up transaction state and update the `latest_commit_ts`.
+        // Step 7: Clean up transaction state and update the `latest_commit_ts`.
         self.graph
             .txn_manager
             .latest_commit_ts
             .store(commit_ts.raw(), Ordering::SeqCst);
         self.graph.txn_manager.finish_transaction(self)?;
 
-        // Step 7: Check auto checkpoint (after transaction is finished)
+        // Step 8: Check auto checkpoint (after transaction is finished)
         // We only check for checkpoint if we actually wrote to WAL (and thus incremented the
         // counter)
         if !skip_wal {
