@@ -537,11 +537,7 @@ impl MemoryGraph {
     /// Creates a new in-memory [`MemoryGraph`] with custom transaction defaults.
     pub fn in_memory_with_options(txn_options: TxnOptions) -> Arc<Self> {
         let persistence = Arc::new(InMemoryPersistence::new());
-        Self::with_persistence_and_config(
-            persistence,
-            CheckpointConfig::default(),
-            txn_options,
-        )
+        Self::with_persistence_and_config(persistence, CheckpointConfig::default(), txn_options)
     }
 
     /// Creates a new [`MemoryGraph`] backed by a single database file.
