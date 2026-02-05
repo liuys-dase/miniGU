@@ -587,6 +587,11 @@ impl MemTransaction {
             .txn_manager
             .latest_commit_ts
             .store(commit_ts.raw(), Ordering::SeqCst);
+
+        // Avoid retaining large clones in committed transactions.
+        self.vertex_writes.write().unwrap().clear();
+        self.edge_writes.write().unwrap().clear();
+
         self.graph.txn_manager.finish_transaction(self)?;
         if !skip_wal {
             self.graph.check_auto_checkpoint()?;
@@ -972,6 +977,11 @@ impl MemTransaction {
             .txn_manager
             .latest_commit_ts
             .store(commit_ts.raw(), Ordering::SeqCst);
+
+        // Avoid retaining large clones in committed transactions.
+        self.vertex_writes.write().unwrap().clear();
+        self.edge_writes.write().unwrap().clear();
+
         self.graph.txn_manager.finish_transaction(self)?;
         if !skip_wal {
             self.graph.check_auto_checkpoint()?;

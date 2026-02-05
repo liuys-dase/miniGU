@@ -218,7 +218,6 @@ impl MemTxnManager {
     }
 
     /// Begin a new transaction with an explicit lock strategy override.
-    #[cfg(test)]
     pub fn begin_transaction_with_lock(
         &self,
         isolation_level: IsolationLevel,

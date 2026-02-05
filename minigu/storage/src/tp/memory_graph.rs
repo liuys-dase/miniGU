@@ -966,7 +966,16 @@ impl MemoryGraph {
         vertex: Vertex,
     ) -> StorageResult<VertexId> {
         let vid = vertex.vid();
-        // Check if the vertex already exists
+        // NOTE: Vertex IDs are not reusable once tombstoned.
+        if let Some(entry) = self.vertices.get(&vid)
+            && entry.chain.current.read().unwrap().data.is_tombstone()
+        {
+            return Err(StorageError::VertexAlreadyExists(
+                VertexAlreadyExistsError::VertexAlreadyExists(vid.to_string()),
+            ));
+        }
+
+        // Check if the vertex already exists in the current snapshot.
         if self.get_vertex(txn, vid).is_ok() {
             return Err(StorageError::VertexAlreadyExists(
                 VertexAlreadyExistsError::VertexAlreadyExists(vid.to_string()),
@@ -1036,6 +1045,16 @@ impl MemoryGraph {
         // Check if the source/destination vertices and the edge exist
         self.get_vertex(txn, edge.src_id())?;
         self.get_vertex(txn, edge.dst_id())?;
+
+        // NOTE: Edge IDs are not reusable once tombstoned.
+        if let Some(entry) = self.edges.get(&eid)
+            && entry.chain.current.read().unwrap().data.is_tombstone()
+        {
+            return Err(StorageError::EdgeAlreadyExists(
+                EdgeAlreadyExistsError::EdgeAlreadyExists(eid.to_string()),
+            ));
+        }
+
         if self.get_edge(txn, eid).is_ok() {
             return Err(StorageError::EdgeAlreadyExists(
                 EdgeAlreadyExistsError::EdgeAlreadyExists(eid.to_string()),
@@ -2370,6 +2389,126 @@ pub mod tests {
             .begin_transaction(IsolationLevel::Serializable)
             .unwrap();
         assert!(graph.get_vertex(&txn3, vid1).is_err());
+    }
+
+    #[test]
+    fn tombstone_vertex_id_is_not_reusable() {
+        let graph = MemoryGraph::in_memory();
+
+        let create_txn = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Snapshot)
+            .unwrap();
+        graph
+            .create_vertex(
+                &create_txn,
+                create_vertex(700, PERSON, vec![ScalarValue::Int64(Some(0))]),
+            )
+            .unwrap();
+        create_txn.commit().unwrap();
+
+        let delete_txn = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Snapshot)
+            .unwrap();
+        graph.delete_vertex(&delete_txn, 700).unwrap();
+        delete_txn.commit().unwrap();
+
+        let txn_pess = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Snapshot)
+            .unwrap();
+        let res = graph.create_vertex(
+            &txn_pess,
+            create_vertex(700, PERSON, vec![ScalarValue::Int64(Some(1))]),
+        );
+        assert!(matches!(res, Err(StorageError::VertexAlreadyExists(_))));
+        txn_pess.abort().unwrap();
+
+        let txn_opt = graph
+            .txn_manager()
+            .begin_transaction_with_lock(IsolationLevel::Snapshot, LockStrategy::Optimistic)
+            .unwrap();
+        let res = graph.create_vertex(
+            &txn_opt,
+            create_vertex(700, PERSON, vec![ScalarValue::Int64(Some(1))]),
+        );
+        assert!(matches!(res, Err(StorageError::VertexAlreadyExists(_))));
+        txn_opt.abort().unwrap();
+    }
+
+    #[test]
+    fn tombstone_edge_id_is_not_reusable() {
+        let graph = MemoryGraph::in_memory();
+
+        let bootstrap = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Snapshot)
+            .unwrap();
+        graph
+            .create_vertex(
+                &bootstrap,
+                create_vertex(800, PERSON, vec![ScalarValue::Int64(Some(0))]),
+            )
+            .unwrap();
+        graph
+            .create_vertex(
+                &bootstrap,
+                create_vertex(801, PERSON, vec![ScalarValue::Int64(Some(0))]),
+            )
+            .unwrap();
+        bootstrap.commit().unwrap();
+
+        let create_edge_txn = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Snapshot)
+            .unwrap();
+        let edge = create_edge(
+            8000,
+            800,
+            801,
+            FRIEND,
+            vec![ScalarValue::String(Some("edge".to_string()))],
+        );
+        graph.create_edge(&create_edge_txn, edge).unwrap();
+        create_edge_txn.commit().unwrap();
+
+        let delete_edge_txn = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Snapshot)
+            .unwrap();
+        graph.delete_edge(&delete_edge_txn, 8000).unwrap();
+        delete_edge_txn.commit().unwrap();
+
+        let txn_pess = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Snapshot)
+            .unwrap();
+        let edge_again = create_edge(
+            8000,
+            800,
+            801,
+            FRIEND,
+            vec![ScalarValue::String(Some("edge_again".to_string()))],
+        );
+        let res = graph.create_edge(&txn_pess, edge_again);
+        assert!(matches!(res, Err(StorageError::EdgeAlreadyExists(_))));
+        txn_pess.abort().unwrap();
+
+        let txn_opt = graph
+            .txn_manager()
+            .begin_transaction_with_lock(IsolationLevel::Snapshot, LockStrategy::Optimistic)
+            .unwrap();
+        let edge_again = create_edge(
+            8000,
+            800,
+            801,
+            FRIEND,
+            vec![ScalarValue::String(Some("edge_again".to_string()))],
+        );
+        let res = graph.create_edge(&txn_opt, edge_again);
+        assert!(matches!(res, Err(StorageError::EdgeAlreadyExists(_))));
+        txn_opt.abort().unwrap();
     }
 
     #[test]
@@ -4990,6 +5129,45 @@ pub mod tests {
             .unwrap();
         assert!(graph.get_vertex(&check_txn, 300).is_err());
         assert!(graph.get_edge(&check_txn, 3010).is_err());
+    }
+
+    #[test]
+    fn optimistic_commit_clears_write_intents() {
+        let graph = MemoryGraph::in_memory();
+
+        let txn = graph
+            .txn_manager()
+            .begin_transaction_with_lock(IsolationLevel::Snapshot, LockStrategy::Optimistic)
+            .unwrap();
+
+        graph
+            .create_vertex(
+                &txn,
+                create_vertex(600, PERSON, vec![ScalarValue::Int64(Some(0))]),
+            )
+            .unwrap();
+        graph
+            .create_vertex(
+                &txn,
+                create_vertex(601, PERSON, vec![ScalarValue::Int64(Some(0))]),
+            )
+            .unwrap();
+        let edge = create_edge(
+            6000,
+            600,
+            601,
+            FRIEND,
+            vec![ScalarValue::String(Some("temp".to_string()))],
+        );
+        graph.create_edge(&txn, edge).unwrap();
+
+        assert!(txn.lookup_vertex_write(600).is_some());
+        assert!(txn.lookup_edge_write(6000).is_some());
+
+        txn.commit().unwrap();
+
+        assert!(txn.lookup_vertex_write(600).is_none());
+        assert!(txn.lookup_edge_write(6000).is_none());
     }
 
     #[test]
