@@ -117,88 +117,103 @@ impl<'a> AdjacencyIterator<'a> {
 
     /// Creates a new `AdjacencyIterator` for a given vertex and direction (incoming or outgoing).
     pub fn new(txn: &'a MemTransaction, vid: VertexId, direction: Direction) -> Self {
-        let adjacency_list = txn.graph().adjacency_list.get(&vid);
-        let combined = SkipSet::new();
+        let adjacency_entry = txn.graph().adjacency_list.get(&vid);
 
-        if let Some(entry) = adjacency_list {
-            match direction {
-                Direction::Incoming => {
-                    for neighbor in entry.incoming().iter() {
-                        combined.insert(*neighbor);
-                    }
-                }
-                Direction::Outgoing => {
-                    for neighbor in entry.outgoing().iter() {
-                        combined.insert(*neighbor);
-                    }
-                }
-                Direction::Both => {
-                    for neighbor in entry.incoming().iter() {
-                        combined.insert(*neighbor);
-                    }
-                    for neighbor in entry.outgoing().iter() {
-                        combined.insert(*neighbor);
-                    }
-                }
-            }
-        }
+        // Fast-path: in pessimistic mode, the adjacency lists are already updated in-place and
+        // do not require an overlay. Avoid O(degree) copying by reusing the original Arc.
+        let needs_overlay = matches!(txn.lock_strategy(), LockStrategy::Optimistic)
+            || matches!(direction, Direction::Both);
 
-        if matches!(txn.lock_strategy(), LockStrategy::Optimistic) {
-            let writes = txn.edge_writes.read().unwrap();
-            for intent in writes.values() {
-                match &intent.kind {
-                    WriteKind::InsertEdge(edge) | WriteKind::UpdateEdge { after: edge, .. } => {
-                        if edge.is_tombstone() {
-                            continue;
-                        }
-                        if matches!(direction, Direction::Outgoing | Direction::Both)
-                            && edge.src_id() == vid
-                        {
-                            combined.insert(Neighbor::new(
-                                edge.label_id(),
-                                edge.dst_id(),
-                                edge.eid(),
-                            ));
-                        }
-                        if matches!(direction, Direction::Incoming | Direction::Both)
-                            && edge.dst_id() == vid
-                        {
-                            combined.insert(Neighbor::new(
-                                edge.label_id(),
-                                edge.src_id(),
-                                edge.eid(),
-                            ));
-                        }
-                    }
-                    WriteKind::DeleteEdge { before } => {
-                        if matches!(direction, Direction::Outgoing | Direction::Both)
-                            && before.src_id() == vid
-                        {
-                            combined.remove(&Neighbor::new(
-                                before.label_id(),
-                                before.dst_id(),
-                                before.eid(),
-                            ));
-                        }
-                        if matches!(direction, Direction::Incoming | Direction::Both)
-                            && before.dst_id() == vid
-                        {
-                            combined.remove(&Neighbor::new(
-                                before.label_id(),
-                                before.src_id(),
-                                before.eid(),
-                            ));
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        let adj_list = if combined.is_empty() {
-            None
+        let adj_list = if !needs_overlay {
+            let base = adjacency_entry.as_ref().and_then(|entry| match direction {
+                Direction::Incoming => Some(entry.incoming().clone()),
+                Direction::Outgoing => Some(entry.outgoing().clone()),
+                Direction::Both => None,
+            });
+            base.filter(|set| !set.is_empty())
         } else {
-            Some(Arc::new(combined))
+            let combined = SkipSet::new();
+
+            if let Some(entry) = adjacency_entry.as_ref() {
+                match direction {
+                    Direction::Incoming => {
+                        for neighbor in entry.incoming().iter() {
+                            combined.insert(*neighbor);
+                        }
+                    }
+                    Direction::Outgoing => {
+                        for neighbor in entry.outgoing().iter() {
+                            combined.insert(*neighbor);
+                        }
+                    }
+                    Direction::Both => {
+                        for neighbor in entry.incoming().iter() {
+                            combined.insert(*neighbor);
+                        }
+                        for neighbor in entry.outgoing().iter() {
+                            combined.insert(*neighbor);
+                        }
+                    }
+                }
+            }
+
+            if matches!(txn.lock_strategy(), LockStrategy::Optimistic) {
+                let writes = txn.edge_writes.read().unwrap();
+                for intent in writes.values() {
+                    match &intent.kind {
+                        WriteKind::InsertEdge(edge) | WriteKind::UpdateEdge { after: edge, .. } => {
+                            if edge.is_tombstone() {
+                                continue;
+                            }
+                            if matches!(direction, Direction::Outgoing | Direction::Both)
+                                && edge.src_id() == vid
+                            {
+                                combined.insert(Neighbor::new(
+                                    edge.label_id(),
+                                    edge.dst_id(),
+                                    edge.eid(),
+                                ));
+                            }
+                            if matches!(direction, Direction::Incoming | Direction::Both)
+                                && edge.dst_id() == vid
+                            {
+                                combined.insert(Neighbor::new(
+                                    edge.label_id(),
+                                    edge.src_id(),
+                                    edge.eid(),
+                                ));
+                            }
+                        }
+                        WriteKind::DeleteEdge { before } => {
+                            if matches!(direction, Direction::Outgoing | Direction::Both)
+                                && before.src_id() == vid
+                            {
+                                combined.remove(&Neighbor::new(
+                                    before.label_id(),
+                                    before.dst_id(),
+                                    before.eid(),
+                                ));
+                            }
+                            if matches!(direction, Direction::Incoming | Direction::Both)
+                                && before.dst_id() == vid
+                            {
+                                combined.remove(&Neighbor::new(
+                                    before.label_id(),
+                                    before.src_id(),
+                                    before.eid(),
+                                ));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            if combined.is_empty() {
+                None
+            } else {
+                Some(Arc::new(combined))
+            }
         };
 
         let mut result = Self {
@@ -264,5 +279,83 @@ impl MemTransaction {
     #[allow(dead_code)]
     pub fn iter_adjacency_incoming(&self, vid: VertexId) -> AdjacencyIterator<'_> {
         AdjacencyIterator::new(self, vid, Direction::Incoming)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use minigu_common::types::LabelId;
+    use minigu_transaction::{IsolationLevel, LockStrategy};
+
+    use super::AdjacencyIterator;
+    use crate::common::iterators::Direction;
+    use crate::model::edge::{Edge, Neighbor};
+    use crate::model::properties::PropertyRecord;
+    use crate::model::vertex::Vertex;
+    use crate::tp::memory_graph::MemoryGraph;
+
+    #[test]
+    fn adjacency_iterator_pessimistic_outgoing_reuses_arc() {
+        let graph = crate::tp::memory_graph::tests::mock_graph();
+        let txn = graph
+            .txn_manager()
+            .begin_transaction_with_lock(IsolationLevel::Serializable, LockStrategy::Pessimistic)
+            .unwrap();
+
+        let vid = 1;
+        let expected = graph.adjacency_list.get(&vid).unwrap().outgoing().clone();
+        assert!(!expected.is_empty());
+
+        let iter = AdjacencyIterator::new(txn.as_ref(), vid, Direction::Outgoing);
+        let actual = iter.adj_list.expect("adj_list should exist");
+
+        assert!(Arc::ptr_eq(&actual, &expected));
+    }
+
+    #[test]
+    fn adjacency_iterator_pessimistic_incoming_reuses_arc() {
+        let graph = crate::tp::memory_graph::tests::mock_graph();
+        let txn = graph
+            .txn_manager()
+            .begin_transaction_with_lock(IsolationLevel::Serializable, LockStrategy::Pessimistic)
+            .unwrap();
+
+        let vid = 1;
+        let expected = graph.adjacency_list.get(&vid).unwrap().incoming().clone();
+        assert!(!expected.is_empty());
+
+        let iter = AdjacencyIterator::new(txn.as_ref(), vid, Direction::Incoming);
+        let actual = iter.adj_list.expect("adj_list should exist");
+
+        assert!(Arc::ptr_eq(&actual, &expected));
+    }
+
+    #[test]
+    fn adjacency_iterator_optimistic_overlay_includes_inserts() {
+        let graph = MemoryGraph::in_memory();
+        let txn = graph
+            .txn_manager()
+            .begin_transaction_with_lock(IsolationLevel::Serializable, LockStrategy::Optimistic)
+            .unwrap();
+
+        let label = LabelId::new(1).unwrap();
+        graph
+            .create_vertex(&txn, Vertex::new(1, label, PropertyRecord::new(vec![])))
+            .unwrap();
+        graph
+            .create_vertex(&txn, Vertex::new(2, label, PropertyRecord::new(vec![])))
+            .unwrap();
+        graph
+            .create_edge(&txn, Edge::new(10, 1, 2, label, PropertyRecord::new(vec![])))
+            .unwrap();
+
+        let neighbors: Vec<Neighbor> = txn
+            .iter_adjacency_outgoing(1)
+            .map(|r| r.unwrap())
+            .collect();
+
+        assert_eq!(neighbors, vec![Neighbor::new(label, 2, 10)]);
     }
 }
