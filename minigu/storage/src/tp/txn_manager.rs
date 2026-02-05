@@ -212,6 +212,11 @@ impl MemTxnManager {
         Ok(txn)
     }
 
+    /// Begin a new transaction using the manager's default isolation level.
+    pub fn begin_transaction_default(&self) -> Result<Arc<MemTransaction>, StorageError> {
+        self.begin_transaction_at(None, None, self.default_isolation_level, None, false)
+    }
+
     /// Begin a new transaction with an explicit lock strategy override.
     #[cfg(test)]
     pub fn begin_transaction_with_lock(

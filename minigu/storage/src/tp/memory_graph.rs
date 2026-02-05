@@ -1148,6 +1148,27 @@ impl MemoryGraph {
                 txn.redo_buffer.write().unwrap().push(wal_entry);
             }
             LockStrategy::Optimistic => {
+                if let Some(intent) = txn.lookup_vertex_write(vid) {
+                    match intent.kind {
+                        // Record the vertex delete based on the write intent
+                        WriteKind::InsertVertex(ref before) => {
+                            txn.record_vertex_delete(vid, Timestamp::with_ts(0), before.clone());
+                        }
+                        // Record the vertex delete based on the write intent
+                        WriteKind::UpdateVertex { before, .. } => {
+                            txn.record_vertex_delete(vid, intent.guard_ts, before);
+                        }
+                        WriteKind::DeleteVertex { .. } => {}
+                        _ => {}
+                    }
+                } else {
+                    let entry = self.vertices.get(&vid).ok_or(StorageError::VertexNotFound(
+                        VertexNotFoundError::VertexNotFound(vid.to_string()),
+                    ))?;
+                    let (before, guard_ts) = Self::snapshot_vertex_with_guard(&entry, txn, vid)?;
+                    txn.record_vertex_delete(vid, guard_ts, before);
+                }
+
                 let mut edge_deletes: HashSet<EdgeId> = HashSet::new();
                 {
                     let writes = txn.edge_writes.read().unwrap();
@@ -1190,31 +1211,6 @@ impl MemoryGraph {
                             self.record_occ_edge_delete(txn, eid)?;
                         }
                     }
-                }
-
-                if let Some(intent) = txn.lookup_vertex_write(vid) {
-                    match intent.kind {
-                        // Record the vertex delete based on the write intent
-                        WriteKind::InsertVertex(ref before) => {
-                            txn.record_vertex_delete(vid, Timestamp::with_ts(0), before.clone());
-                        }
-                        // Record the vertex delete based on the write intent
-                        WriteKind::UpdateVertex { before, .. } => {
-                            txn.record_vertex_delete(vid, intent.guard_ts, before);
-                        }
-                        WriteKind::DeleteVertex { .. } => {}
-                        _ => {}
-                    }
-                } else {
-                    let entry = self.vertices.get(&vid).ok_or(StorageError::VertexNotFound(
-                        VertexNotFoundError::VertexNotFound(vid.to_string()),
-                    ))?;
-                    let current = entry.chain.current.read().unwrap();
-                    prewrite_check_vertex(current.commit_ts, txn, vid)?;
-                    let guard_ts = current.commit_ts;
-                    let before = current.data.clone();
-                    drop(current);
-                    txn.record_vertex_delete(vid, guard_ts, before);
                 }
 
                 let wal_entry = RedoEntry {
@@ -4497,6 +4493,32 @@ pub mod tests {
     }
 
     #[test]
+    fn txn_options_default_lock_affects_begin_transaction() {
+        let graph = MemoryGraph::in_memory_with_options(TxnOptions {
+            default_lock: LockStrategy::Optimistic,
+            ..Default::default()
+        });
+
+        let txn = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Snapshot)
+            .unwrap();
+
+        assert_eq!(txn.lock_strategy(), LockStrategy::Optimistic);
+    }
+
+    #[test]
+    fn txn_options_default_isolation_affects_begin_transaction_default() {
+        let graph = MemoryGraph::in_memory_with_options(TxnOptions {
+            default_isolation: IsolationLevel::Serializable,
+            ..Default::default()
+        });
+
+        let txn = graph.txn_manager().begin_transaction_default().unwrap();
+        assert_eq!(*txn.isolation_level(), IsolationLevel::Serializable);
+    }
+
+    #[test]
     fn optimistic_conflict_is_detected_at_commit() {
         let graph = MemoryGraph::in_memory_with_options(TxnOptions {
             default_lock: LockStrategy::Optimistic,
@@ -4677,6 +4699,52 @@ pub mod tests {
             StorageError::Transaction(TransactionError::WriteWriteConflict(msg)) => {
                 assert!(
                     msg.contains("Edge 10"),
+                    "unexpected conflict message: {msg}"
+                );
+            }
+            other => panic!("Expected write-write conflict, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn optimistic_vertex_delete_conflict_is_detected() {
+        let graph = MemoryGraph::in_memory_with_options(TxnOptions {
+            default_lock: LockStrategy::Optimistic,
+            ..Default::default()
+        });
+
+        // Bootstrap a single vertex.
+        let bootstrap = graph
+            .txn_manager()
+            .begin_transaction_with_lock(IsolationLevel::Snapshot, LockStrategy::Optimistic)
+            .unwrap();
+        let vertex = create_vertex(30, PERSON, vec![ScalarValue::Int64(Some(0))]);
+        graph.create_vertex(&bootstrap, vertex).unwrap();
+        bootstrap.commit().unwrap();
+
+        // Two transactions start from the same snapshot.
+        let txn1 = graph
+            .txn_manager()
+            .begin_transaction_with_lock(IsolationLevel::Snapshot, LockStrategy::Optimistic)
+            .unwrap();
+        let txn2 = graph
+            .txn_manager()
+            .begin_transaction_with_lock(IsolationLevel::Snapshot, LockStrategy::Optimistic)
+            .unwrap();
+
+        // Txn1 updates and commits first.
+        graph
+            .set_vertex_property(&txn1, 30, vec![0], vec![ScalarValue::Int64(Some(1))])
+            .unwrap();
+        txn1.commit().unwrap();
+
+        // Txn2 tries to delete the vertex from its stale view; commit should conflict.
+        graph.delete_vertex(&txn2, 30).unwrap();
+        let err = txn2.commit().unwrap_err();
+        match err {
+            StorageError::Transaction(TransactionError::WriteWriteConflict(msg)) => {
+                assert!(
+                    msg.contains("Vertex 30"),
                     "unexpected conflict message: {msg}"
                 );
             }
