@@ -4880,6 +4880,74 @@ pub mod tests {
     }
 
     #[test]
+    fn optimistic_adjacency_iterator_sees_write_intents() {
+        let graph = MemoryGraph::in_memory_with_options(TxnOptions {
+            default_lock: LockStrategy::Optimistic,
+            ..Default::default()
+        });
+
+        let txn = graph
+            .txn_manager()
+            .begin_transaction_with_lock(IsolationLevel::Snapshot, LockStrategy::Optimistic)
+            .unwrap();
+
+        graph
+            .create_vertex(
+                &txn,
+                create_vertex(400, PERSON, vec![ScalarValue::Int64(Some(0))]),
+            )
+            .unwrap();
+        graph
+            .create_vertex(
+                &txn,
+                create_vertex(401, PERSON, vec![ScalarValue::Int64(Some(0))]),
+            )
+            .unwrap();
+
+        let edge = create_edge(
+            500,
+            400,
+            401,
+            FRIEND,
+            vec![ScalarValue::String(Some("adj_intent".to_string()))],
+        );
+        graph.create_edge(&txn, edge).unwrap();
+
+        let outgoing: Vec<_> = txn
+            .iter_adjacency_outgoing(400)
+            .filter_map(|res| res.ok())
+            .collect();
+        assert!(
+            outgoing
+                .iter()
+                .any(|n| n.eid() == 500 && n.neighbor_id() == 401),
+            "expected outgoing adjacency to include the uncommitted insert"
+        );
+
+        let incoming: Vec<_> = txn
+            .iter_adjacency_incoming(401)
+            .filter_map(|res| res.ok())
+            .collect();
+        assert!(
+            incoming
+                .iter()
+                .any(|n| n.eid() == 500 && n.neighbor_id() == 400),
+            "expected incoming adjacency to include the uncommitted insert"
+        );
+
+        graph.delete_edge(&txn, 500).unwrap();
+
+        let outgoing_after_delete: Vec<_> = txn
+            .iter_adjacency_outgoing(400)
+            .filter_map(|res| res.ok())
+            .collect();
+        assert!(
+            !outgoing_after_delete.iter().any(|n| n.eid() == 500),
+            "expected adjacency to hide the edge after delete intent"
+        );
+    }
+
+    #[test]
     fn optimistic_insert_delete_same_txn_commits() {
         let graph = MemoryGraph::in_memory_with_options(TxnOptions {
             default_lock: LockStrategy::Optimistic,

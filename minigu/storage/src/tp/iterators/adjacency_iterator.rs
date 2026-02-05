@@ -41,14 +41,34 @@ impl Iterator for AdjacencyIterator<'_> {
 
             let eid = entry.eid();
 
-            // Perform MVCC visibility check
-            let is_visible = self
-                .txn
-                .graph()
-                .edges
-                .get(&eid)
-                .map(|edge| edge.is_visible(self.txn))
-                .unwrap_or(false);
+            // Perform MVCC visibility check.
+            //
+            // In OCC/Optimistic mode, newly inserted edges live only in the transaction's
+            // write set before commit. To preserve "read-your-writes" semantics, consult
+            // the write intent first.
+            let is_visible = if matches!(self.txn.lock_strategy(), LockStrategy::Optimistic)
+                && let Some(intent) = self.txn.lookup_edge_write(eid)
+            {
+                match intent.kind {
+                    WriteKind::InsertEdge(ref e)
+                    | WriteKind::UpdateEdge { after: ref e, .. } => !e.is_tombstone(),
+                    WriteKind::DeleteEdge { .. } => false,
+                    _ => self
+                        .txn
+                        .graph()
+                        .edges
+                        .get(&eid)
+                        .map(|edge| edge.is_visible(self.txn))
+                        .unwrap_or(false),
+                }
+            } else {
+                self.txn
+                    .graph()
+                    .edges
+                    .get(&eid)
+                    .map(|edge| edge.is_visible(self.txn))
+                    .unwrap_or(false)
+            };
 
             if is_visible && self.filters.iter().all(|f| f(entry)) {
                 let adj = *entry;
