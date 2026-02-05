@@ -50,8 +50,9 @@ impl Iterator for AdjacencyIterator<'_> {
                 && let Some(intent) = self.txn.lookup_edge_write(eid)
             {
                 match intent.kind {
-                    WriteKind::InsertEdge(ref e)
-                    | WriteKind::UpdateEdge { after: ref e, .. } => !e.is_tombstone(),
+                    WriteKind::InsertEdge(ref e) | WriteKind::UpdateEdge { after: ref e, .. } => {
+                        !e.is_tombstone()
+                    }
                     WriteKind::DeleteEdge { .. } => false,
                     _ => self
                         .txn
@@ -348,13 +349,13 @@ mod tests {
             .create_vertex(&txn, Vertex::new(2, label, PropertyRecord::new(vec![])))
             .unwrap();
         graph
-            .create_edge(&txn, Edge::new(10, 1, 2, label, PropertyRecord::new(vec![])))
+            .create_edge(
+                &txn,
+                Edge::new(10, 1, 2, label, PropertyRecord::new(vec![])),
+            )
             .unwrap();
 
-        let neighbors: Vec<Neighbor> = txn
-            .iter_adjacency_outgoing(1)
-            .map(|r| r.unwrap())
-            .collect();
+        let neighbors: Vec<Neighbor> = txn.iter_adjacency_outgoing(1).map(|r| r.unwrap()).collect();
 
         assert_eq!(neighbors, vec![Neighbor::new(label, 2, 10)]);
     }
