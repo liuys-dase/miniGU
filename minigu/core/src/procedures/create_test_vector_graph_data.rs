@@ -44,7 +44,7 @@ pub fn build_procedure() -> Procedure {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("current schema not set"))?;
 
-        let graph = MemoryGraph::in_memory();
+        let graph = MemoryGraph::in_memory_with_options(context.database().config().txn_options);
         let mut graph_type = MemoryGraphTypeCatalog::new();
 
         let person_label_id = graph_type.add_label("PERSON".to_string()).unwrap();
