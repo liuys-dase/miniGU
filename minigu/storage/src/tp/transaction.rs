@@ -198,10 +198,12 @@ impl MemTransaction {
         self.lock_strategy
     }
 
+    /// Looks up a write intent for a specific vertex.
     pub fn lookup_vertex_write(&self, vid: VertexId) -> Option<WriteIntent> {
         self.vertex_writes.read().unwrap().get(&vid).cloned()
     }
 
+    /// Looks up a write intent for a specific edge.
     pub fn lookup_edge_write(&self, eid: EdgeId) -> Option<WriteIntent> {
         self.edge_writes.read().unwrap().get(&eid).cloned()
     }

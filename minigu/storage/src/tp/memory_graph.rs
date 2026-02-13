@@ -409,13 +409,18 @@ impl MemoryGraph {
         txn: &Arc<MemTransaction>,
         vid: VertexId,
     ) -> StorageResult<(Vertex, Timestamp)> {
+        // Start from the current head version, then walk backward only if it is newer than this
+        // transaction's snapshot.
         let current = entry.chain.current.read().unwrap();
         let mut visible = current.data.clone();
+        // guard_ts tracks the commit timestamp of the version represented by `visible`.
         let mut guard_ts = current.commit_ts;
         prewrite_check_vertex(guard_ts, txn, vid)?;
 
         let mut undo_ptr = entry.chain.undo_ptr.read().unwrap().clone();
 
+        // Fast path: current head is already visible to this transaction
+        // (either our own uncommitted write, or a committed version not newer than start_ts).
         if (guard_ts.is_txn_id() && guard_ts == txn.txn_id())
             || (guard_ts.is_commit_ts() && guard_ts <= txn.start_ts())
         {
@@ -432,6 +437,7 @@ impl MemoryGraph {
 
         drop(current);
 
+        // Replay undo entries backward until we reach the newest version visible at start_ts.
         while let Some(undo_entry) = undo_ptr.upgrade() {
             match undo_entry.delta() {
                 DeltaOp::CreateVertex(original) => visible = original.clone(),
@@ -451,6 +457,8 @@ impl MemoryGraph {
             undo_ptr = undo_entry.next();
         }
 
+        // If we still cannot reach a visible version, or the visible version is deleted,
+        // this vertex is not snapshot-visible.
         if guard_ts > txn.start_ts() || visible.is_tombstone() {
             return Err(StorageError::Transaction(
                 TransactionError::VersionNotVisible(format!(
@@ -470,13 +478,18 @@ impl MemoryGraph {
         txn: &Arc<MemTransaction>,
         eid: EdgeId,
     ) -> StorageResult<(Edge, Timestamp)> {
+        // Start from the current head version, then walk backward only if it is newer than this
+        // transaction's snapshot.
         let current = entry.chain.current.read().unwrap();
         let mut visible = current.data.clone();
+        // guard_ts tracks the commit timestamp of the version represented by `visible`.
         let mut guard_ts = current.commit_ts;
         prewrite_check_edge(guard_ts, txn, eid)?;
 
         let mut undo_ptr = entry.chain.undo_ptr.read().unwrap().clone();
 
+        // Fast path: current head is already visible to this transaction
+        // (either our own uncommitted write, or a committed version not newer than start_ts).
         if (guard_ts.is_txn_id() && guard_ts == txn.txn_id())
             || (guard_ts.is_commit_ts() && guard_ts <= txn.start_ts())
         {
@@ -493,6 +506,7 @@ impl MemoryGraph {
 
         drop(current);
 
+        // Replay undo entries backward until we reach the newest version visible at start_ts.
         while let Some(undo_entry) = undo_ptr.upgrade() {
             match undo_entry.delta() {
                 DeltaOp::CreateEdge(original) => visible = original.clone(),
@@ -512,6 +526,8 @@ impl MemoryGraph {
             undo_ptr = undo_entry.next();
         }
 
+        // If we still cannot reach a visible version, or the visible version is deleted,
+        // this edge is not snapshot-visible.
         if guard_ts > txn.start_ts() || visible.is_tombstone() {
             return Err(StorageError::Transaction(
                 TransactionError::VersionNotVisible(format!(
@@ -531,8 +547,7 @@ impl MemoryGraph {
     /// This is useful for testing or when persistence is not needed.
     /// All data will be lost when the graph is dropped.
     pub fn in_memory() -> Arc<Self> {
-        let persistence = Arc::new(InMemoryPersistence::new());
-        Self::with_persistence(persistence)
+        Self::in_memory_with_options(TxnOptions::default())
     }
 
     /// Creates a new in-memory [`MemoryGraph`] with custom transaction defaults.
@@ -573,17 +588,6 @@ impl MemoryGraph {
         let graph = Self::with_persistence_and_config(persistence, checkpoint_config, txn_options);
         graph.recover()?;
         Ok(graph)
-    }
-
-    /// Creates a new [`MemoryGraph`] with the given persistence provider.
-    ///
-    /// This is the core constructor that all other constructors delegate to.
-    fn with_persistence(persistence: Arc<dyn PersistenceProvider>) -> Arc<Self> {
-        Self::with_persistence_and_config(
-            persistence,
-            CheckpointConfig::default(),
-            TxnOptions::default(),
-        )
     }
 
     /// Creates a new [`MemoryGraph`] with the given persistence provider and checkpoint config.
@@ -783,10 +787,13 @@ impl MemoryGraph {
     // ===== Read-only graph methods =====
     /// Retrieves a vertex by its ID within the context of a transaction.
     pub fn get_vertex(&self, txn: &Arc<MemTransaction>, vid: VertexId) -> StorageResult<Vertex> {
+        // Under optimistic locking, reads should first consult this transaction's own write intent
+        // so we can read our uncommitted changes ("read your writes").
         if txn.lock_strategy() == LockStrategy::Optimistic
             && let Some(intent) = txn.lookup_vertex_write(vid)
         {
             match intent.kind {
+                // Insert/update intents expose the post-write image in this transaction.
                 WriteKind::InsertVertex(ref v) | WriteKind::UpdateVertex { after: ref v, .. } => {
                     if v.is_tombstone() {
                         return Err(StorageError::VertexNotFound(
@@ -795,6 +802,7 @@ impl MemoryGraph {
                     }
                     return Ok(v.clone());
                 }
+                // A pending delete makes this vertex logically invisible to current txn reads.
                 WriteKind::DeleteVertex { .. } => {
                     return Err(StorageError::VertexNotFound(
                         VertexNotFoundError::VertexTombstone(vid.to_string()),
@@ -853,10 +861,13 @@ impl MemoryGraph {
 
     /// Retrieves an edge by its ID within the context of a transaction.
     pub fn get_edge(&self, txn: &Arc<MemTransaction>, eid: EdgeId) -> StorageResult<Edge> {
+        // Under optimistic locking, reads should first consult this transaction's own write intent
+        // so we can read our uncommitted changes ("read your writes").
         if txn.lock_strategy() == LockStrategy::Optimistic
             && let Some(intent) = txn.lookup_edge_write(eid)
         {
             match intent.kind {
+                // Insert/update intents expose the post-write image in this transaction.
                 WriteKind::InsertEdge(ref e) | WriteKind::UpdateEdge { after: ref e, .. } => {
                     if e.is_tombstone() {
                         return Err(StorageError::EdgeNotFound(
@@ -865,6 +876,7 @@ impl MemoryGraph {
                     }
                     return Ok(e.clone());
                 }
+                // A pending delete makes this edge logically invisible to current txn reads.
                 WriteKind::DeleteEdge { .. } => {
                     return Err(StorageError::EdgeNotFound(
                         EdgeNotFoundError::EdgeTombstone(eid.to_string()),
@@ -983,18 +995,24 @@ impl MemoryGraph {
         }
         match txn.lock_strategy() {
             LockStrategy::Pessimistic => {
+                // Pessimistic mode writes into the shared version chain immediately.
+                // If absent, initialize the head as this txn-owned version.
                 let entry = self
                     .vertices
                     .entry(vid)
                     .or_insert_with(|| VersionedVertex::with_txn_id(vertex.clone(), txn.txn_id()));
 
                 let current = entry.chain.current.read().unwrap();
+                // Ensure current head is writable for this transaction.
                 check_write_conflict(current.commit_ts, txn)?;
                 // Write the undo entry
                 {
+                    // For an insert, rollback is represented as a logical delete.
                     let delta = DeltaOp::DelVertex(vid);
                     let next_ptr = entry.chain.undo_ptr.read().unwrap().clone();
                     let mut undo_buffer = txn.undo_buffer.write().unwrap();
+                    // If head is already owned by this txn, keep the synthetic "no committed base"
+                    // marker (ts=0); otherwise remember previous committed timestamp as guard.
                     let undo_entry = if current.commit_ts == txn.txn_id() {
                         Arc::new(UndoEntry::new(delta, Timestamp::with_ts(0), next_ptr))
                     } else {
@@ -1005,12 +1023,13 @@ impl MemoryGraph {
                 }
             }
             LockStrategy::Optimistic => {
-                // Record the write intent in the transaction's write set
+                // Optimistic mode does not mutate shared state now; it only stages a write intent.
                 {
                     let mut ws = txn.vertex_writes.write().unwrap();
                     ws.entry(vid)
                         .and_modify(|intent| {
                             intent.kind = WriteKind::InsertVertex(vertex.clone());
+                            // Preserve the lowest guard_ts once initialized.
                             if intent.guard_ts.raw() == 0 {
                                 intent.guard_ts = Timestamp::with_ts(0);
                             }
@@ -1063,16 +1082,20 @@ impl MemoryGraph {
 
         match txn.lock_strategy() {
             LockStrategy::Pessimistic => {
+                // Pessimistic mode writes into the shared version chain immediately.
+                // If absent, initialize the head as this txn-owned version.
                 let entry = self
                     .edges
                     .entry(eid)
                     .or_insert_with(|| VersionedEdge::with_modified_ts(edge.clone(), txn.txn_id()));
 
                 let current = entry.chain.current.read().unwrap();
+                // Ensure current head is writable for this transaction.
                 check_write_conflict(current.commit_ts, txn)?;
 
                 // Write the undo entry
                 {
+                    // For an insert, rollback is represented as a logical delete.
                     let delta_edge = DeltaOp::DelEdge(eid);
                     let undo_ptr = entry.chain.undo_ptr.read().unwrap().clone();
                     let mut undo_buffer = txn.undo_buffer.write().unwrap();
@@ -1081,6 +1104,7 @@ impl MemoryGraph {
                     undo_buffer.push(undo_entry.clone());
                     *entry.chain.undo_ptr.write().unwrap() = Arc::downgrade(&undo_entry);
                 }
+                // Keep adjacency structures consistent with the inserted edge.
                 self.adjacency_list
                     .entry(src_id)
                     .or_insert_with(AdjacencyContainer::new)
@@ -1093,12 +1117,13 @@ impl MemoryGraph {
                     .insert(Neighbor::new(label_id, src_id, eid));
             }
             LockStrategy::Optimistic => {
-                // Record the write intent in the transaction's write set
+                // Optimistic mode does not mutate shared state now; it only stages a write intent.
                 {
                     let mut ws = txn.edge_writes.write().unwrap();
                     ws.entry(eid)
                         .and_modify(|intent| {
                             intent.kind = WriteKind::InsertEdge(edge.clone());
+                            // Preserve the lowest guard_ts once initialized.
                             if intent.guard_ts.raw() == 0 {
                                 intent.guard_ts = Timestamp::with_ts(0);
                             }
@@ -1127,6 +1152,7 @@ impl MemoryGraph {
     pub fn delete_vertex(&self, txn: &Arc<MemTransaction>, vid: VertexId) -> StorageResult<()> {
         match txn.lock_strategy() {
             LockStrategy::Pessimistic => {
+                // Pessimistic mode mutates shared state immediately after conflict checks.
                 let entry = self.vertices.get(&vid).ok_or(StorageError::VertexNotFound(
                     VertexNotFoundError::VertexNotFound(vid.to_string()),
                 ))?;
@@ -1134,6 +1160,7 @@ impl MemoryGraph {
                 let mut current = entry.chain.current.write().unwrap();
                 prewrite_check_vertex(current.commit_ts, txn, vid)?;
 
+                // Cascade-delete all currently materialized incident edges.
                 if let Some(adjacency_container) = self.adjacency_list.get(&vid) {
                     for adj in adjacency_container.incoming().iter() {
                         if self.edges.get(&adj.value().eid()).is_some() {
@@ -1147,6 +1174,7 @@ impl MemoryGraph {
                     }
                 }
 
+                // Save previous visible image for rollback.
                 let delta = DeltaOp::CreateVertex(current.data.clone());
                 let undo_ptr = entry.chain.undo_ptr.read().unwrap().clone();
                 let mut undo_buffer = txn.undo_buffer.write().unwrap();
@@ -1154,6 +1182,7 @@ impl MemoryGraph {
                 undo_buffer.push(undo_entry.clone());
                 *entry.chain.undo_ptr.write().unwrap() = Arc::downgrade(&undo_entry);
 
+                // Apply logical delete in-place and mark this txn as the current owner.
                 let tombstone = Vertex::tombstone(current.data.clone());
                 current.data = tombstone;
                 current.commit_ts = txn.txn_id();
@@ -1167,6 +1196,8 @@ impl MemoryGraph {
                 txn.redo_buffer.write().unwrap().push(wal_entry);
             }
             LockStrategy::Optimistic => {
+                // Optimistic mode records delete intent instead of mutating shared vertex state
+                // now.
                 if let Some(intent) = txn.lookup_vertex_write(vid) {
                     match intent.kind {
                         // Record the vertex delete based on the write intent
@@ -1188,6 +1219,7 @@ impl MemoryGraph {
                     txn.record_vertex_delete(vid, guard_ts, before);
                 }
 
+                // Collect incident edges from staged edge writes first.
                 let mut edge_deletes: HashSet<EdgeId> = HashSet::new();
                 {
                     let writes = txn.edge_writes.read().unwrap();
@@ -1213,10 +1245,12 @@ impl MemoryGraph {
                     }
                 }
 
+                // Record delete intents for staged incident edges.
                 for eid in edge_deletes.iter().copied().collect::<Vec<_>>() {
                     self.record_occ_edge_delete(txn, eid)?;
                 }
 
+                // Also scan committed adjacency; set insertion deduplicates with staged results.
                 if let Some(adjacency_container) = self.adjacency_list.get(&vid) {
                     for adj in adjacency_container.incoming().iter() {
                         let eid = adj.value().eid();
@@ -1249,6 +1283,7 @@ impl MemoryGraph {
     pub fn delete_edge(&self, txn: &Arc<MemTransaction>, eid: EdgeId) -> StorageResult<()> {
         match txn.lock_strategy() {
             LockStrategy::Pessimistic => {
+                // Pessimistic mode mutates shared state immediately after conflict checks.
                 let entry = self.edges.get(&eid).ok_or(StorageError::EdgeNotFound(
                     EdgeNotFoundError::EdgeNotFound(eid.to_string()),
                 ))?;
@@ -1256,6 +1291,7 @@ impl MemoryGraph {
                 let mut current = entry.chain.current.write().unwrap();
                 prewrite_check_edge(current.commit_ts, txn, eid)?;
 
+                // Save previous visible image for rollback.
                 let delta = DeltaOp::CreateEdge(current.data.clone());
                 let undo_ptr = entry.chain.undo_ptr.read().unwrap().clone();
                 let mut undo_buffer = txn.undo_buffer.write().unwrap();
@@ -1263,6 +1299,7 @@ impl MemoryGraph {
                 undo_buffer.push(undo_entry.clone());
                 *entry.chain.undo_ptr.write().unwrap() = Arc::downgrade(&undo_entry);
 
+                // Apply logical delete in-place and mark this txn as the current owner.
                 let tombstone = Edge::tombstone(current.data.clone());
                 current.data = tombstone;
                 current.commit_ts = txn.txn_id();
@@ -1276,6 +1313,7 @@ impl MemoryGraph {
                 txn.redo_buffer.write().unwrap().push(wal_entry);
             }
             LockStrategy::Optimistic => {
+                // Optimistic mode records delete intent instead of mutating shared edge state now.
                 if let Some(intent) = txn.lookup_edge_write(eid) {
                     match intent.kind {
                         WriteKind::InsertEdge(ref before) => {
@@ -1288,6 +1326,8 @@ impl MemoryGraph {
                         _ => {}
                     }
                 } else {
+                    // No staged intent exists; capture snapshot-visible before-image as delete
+                    // base.
                     let entry = self.edges.get(&eid).ok_or(StorageError::EdgeNotFound(
                         EdgeNotFoundError::EdgeNotFound(eid.to_string()),
                     ))?;
@@ -1309,7 +1349,11 @@ impl MemoryGraph {
         Ok(())
     }
 
+    /// Records an edge delete intent under OCC using either txn-local writes or snapshot-visible
+    /// state.
     fn record_occ_edge_delete(&self, txn: &Arc<MemTransaction>, eid: EdgeId) -> StorageResult<()> {
+        // Reuse existing edge write intent if present, so delete is based on txn-local before
+        // image.
         if let Some(intent) = txn.lookup_edge_write(eid) {
             match intent.kind {
                 WriteKind::InsertEdge(ref before) => {
@@ -1322,6 +1366,7 @@ impl MemoryGraph {
                 _ => {}
             }
         } else {
+            // Otherwise derive the delete baseline from snapshot-visible shared state.
             let entry = self.edges.get(&eid).ok_or(StorageError::EdgeNotFound(
                 EdgeNotFoundError::EdgeNotFound(eid.to_string()),
             ))?;
@@ -1329,6 +1374,7 @@ impl MemoryGraph {
             txn.record_edge_delete(eid, guard_ts, before);
         }
 
+        // Always append redo intent; LSN is assigned when transaction commits.
         let wal_entry = RedoEntry {
             lsn: 0,
             txn_id: txn.txn_id(),
@@ -1350,6 +1396,7 @@ impl MemoryGraph {
     ) -> StorageResult<()> {
         match txn.lock_strategy() {
             LockStrategy::Pessimistic => {
+                // Pessimistic mode updates shared version-chain state immediately.
                 let entry = self.vertices.get(&vid).ok_or(StorageError::VertexNotFound(
                     VertexNotFoundError::VertexNotFound(vid.to_string()),
                 ))?;
@@ -1365,6 +1412,7 @@ impl MemoryGraph {
                     prewrite_check_vertex
                 );
 
+                // Persist logical delta in redo buffer; LSN will be assigned at commit.
                 let wal_entry = RedoEntry {
                     lsn: 0, // Temporary set to 0, will be updated when commit
                     txn_id: txn.txn_id(),
@@ -1377,6 +1425,8 @@ impl MemoryGraph {
                 txn.redo_buffer.write().unwrap().push(wal_entry);
             }
             LockStrategy::Optimistic => {
+                // Delay shared-state mutation; first try to fold property change into existing
+                // txn-local write intent.
                 let entry_res = self.vertices.get(&vid).ok_or(StorageError::VertexNotFound(
                     VertexNotFoundError::VertexNotFound(vid.to_string()),
                 ));
@@ -1389,6 +1439,8 @@ impl MemoryGraph {
                                 let mut ws = txn.vertex_writes.write().unwrap();
                                 ws.entry(vid)
                                     .and_modify(|intent| {
+                                        // Keep insert intent and refresh inserted image with new
+                                        // props.
                                         intent.kind = WriteKind::InsertVertex(after.clone());
                                         if intent.guard_ts.raw() == 0 {
                                             intent.guard_ts = Timestamp::with_ts(0);
@@ -1417,6 +1469,7 @@ impl MemoryGraph {
                             return Ok(());
                         }
                         WriteKind::UpdateVertex { before, after } => {
+                            // Rebase property update on existing update intent's "after" image.
                             let mut updated = after.clone();
                             updated.set_props(&indices, props.clone());
                             txn.record_vertex_update(vid, intent.guard_ts, before, updated.clone());
@@ -1438,6 +1491,7 @@ impl MemoryGraph {
                             return Ok(());
                         }
                         WriteKind::DeleteVertex { .. } => {
+                            // Delete and property update conflict in the same OCC write set.
                             return Err(StorageError::Transaction(
                                 TransactionError::WriteWriteConflict(format!(
                                     "Vertex {} scheduled for deletion",
@@ -1449,6 +1503,7 @@ impl MemoryGraph {
                     }
                 }
 
+                // No local intent: snapshot-read visible version as update baseline.
                 let entry = entry_res?;
                 let (before, guard_ts) = Self::snapshot_vertex_with_guard(&entry, txn, vid)?;
                 let mut after = before.clone();
@@ -1486,6 +1541,7 @@ impl MemoryGraph {
     ) -> StorageResult<()> {
         match txn.lock_strategy() {
             LockStrategy::Pessimistic => {
+                // Pessimistic mode updates shared version-chain state immediately.
                 let entry = self.edges.get(&eid).ok_or(StorageError::EdgeNotFound(
                     EdgeNotFoundError::EdgeNotFound(eid.to_string()),
                 ))?;
@@ -1501,6 +1557,7 @@ impl MemoryGraph {
                     prewrite_check_edge
                 );
 
+                // Persist logical delta in redo buffer; LSN will be assigned at commit.
                 let wal_entry = RedoEntry {
                     lsn: 0, // Temporary set to 0, will be updated when commit
                     txn_id: txn.txn_id(),
@@ -1510,6 +1567,8 @@ impl MemoryGraph {
                 txn.redo_buffer.write().unwrap().push(wal_entry);
             }
             LockStrategy::Optimistic => {
+                // Delay shared-state mutation; first try to fold property change into existing
+                // txn-local write intent.
                 let entry_res = self.edges.get(&eid).ok_or(StorageError::EdgeNotFound(
                     EdgeNotFoundError::EdgeNotFound(eid.to_string()),
                 ));
@@ -1527,6 +1586,8 @@ impl MemoryGraph {
                                     let mut ws = txn.edge_writes.write().unwrap();
                                     ws.entry(eid)
                                         .and_modify(|intent| {
+                                            // Keep insert intent and refresh inserted image with
+                                            // new props.
                                             intent.kind = WriteKind::InsertEdge(after.clone());
                                             if intent.guard_ts.raw() == 0 {
                                                 intent.guard_ts = Timestamp::with_ts(0);
@@ -1538,6 +1599,8 @@ impl MemoryGraph {
                                         });
                                 }
                                 WriteKind::UpdateEdge { before, .. } => {
+                                    // Rebase property update on existing update intent's "after"
+                                    // image.
                                     txn.record_edge_update(
                                         eid,
                                         intent.guard_ts,
@@ -1565,6 +1628,7 @@ impl MemoryGraph {
                             return Ok(());
                         }
                         WriteKind::DeleteEdge { .. } => {
+                            // Delete and property update conflict in the same OCC write set.
                             return Err(StorageError::Transaction(
                                 TransactionError::WriteWriteConflict(format!(
                                     "Edge {} scheduled for deletion",
@@ -1576,6 +1640,7 @@ impl MemoryGraph {
                     }
                 }
 
+                // No local intent: snapshot-read visible version as update baseline.
                 let entry = entry_res?;
                 let (before, guard_ts) = Self::snapshot_edge_with_guard(&entry, txn, eid)?;
                 let mut after = before.clone();
