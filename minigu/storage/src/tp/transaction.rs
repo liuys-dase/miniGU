@@ -218,16 +218,20 @@ impl MemTransaction {
         let mut ws = self.vertex_writes.write().unwrap();
         ws.entry(vid)
             .and_modify(|intent| {
+                // Keep the first non-zero guard timestamp as conflict-check baseline.
                 if intent.guard_ts.raw() == 0 {
                     intent.guard_ts = guard_ts;
                 }
                 match intent.kind {
+                    // Insert followed by update stays as insert with refreshed image.
                     WriteKind::InsertVertex(ref mut v) => {
                         *v = new_after.clone();
                     }
+                    // Collapse repeated updates into the latest "after" image.
                     WriteKind::UpdateVertex { ref mut after, .. } => {
                         *after = new_after.clone();
                     }
+                    // Delete followed by update is represented as an update intent.
                     WriteKind::DeleteVertex { .. } => {
                         intent.kind = WriteKind::UpdateVertex {
                             before: before.clone(),
@@ -249,9 +253,11 @@ impl MemTransaction {
     pub fn record_vertex_delete(&self, vid: VertexId, guard_ts: Timestamp, before: Vertex) {
         let mut ws = self.vertex_writes.write().unwrap();
         if let Some(intent) = ws.get_mut(&vid) {
+            // Preserve earliest meaningful guard timestamp for OCC validation.
             if intent.guard_ts.raw() == 0 {
                 intent.guard_ts = guard_ts;
             }
+            // Delete dominates previous vertex write intents.
             intent.kind = WriteKind::DeleteVertex { before };
         } else {
             ws.insert(
@@ -274,16 +280,20 @@ impl MemTransaction {
         let mut ws = self.edge_writes.write().unwrap();
         ws.entry(eid)
             .and_modify(|intent| {
+                // Keep the first non-zero guard timestamp as conflict-check baseline.
                 if intent.guard_ts.raw() == 0 {
                     intent.guard_ts = guard_ts;
                 }
                 match intent.kind {
+                    // Insert followed by update stays as insert with refreshed image.
                     WriteKind::InsertEdge(ref mut e) => {
                         *e = new_after.clone();
                     }
+                    // Collapse repeated updates into the latest "after" image.
                     WriteKind::UpdateEdge { ref mut after, .. } => {
                         *after = new_after.clone();
                     }
+                    // Delete followed by update is represented as an update intent.
                     WriteKind::DeleteEdge { .. } => {
                         intent.kind = WriteKind::UpdateEdge {
                             before: before.clone(),
@@ -305,9 +315,11 @@ impl MemTransaction {
     pub fn record_edge_delete(&self, eid: EdgeId, guard_ts: Timestamp, before: Edge) {
         let mut ws = self.edge_writes.write().unwrap();
         if let Some(intent) = ws.get_mut(&eid) {
+            // Preserve earliest meaningful guard timestamp for OCC validation.
             if intent.guard_ts.raw() == 0 {
                 intent.guard_ts = guard_ts;
             }
+            // Delete dominates previous edge write intents.
             intent.kind = WriteKind::DeleteEdge { before };
         } else {
             ws.insert(
@@ -516,6 +528,7 @@ impl MemTransaction {
     }
 
     fn commit_pessimistic(&self, commit_ts: Timestamp, skip_wal: bool) -> StorageResult<Timestamp> {
+        // Mark transaction commit timestamp first; fail fast on duplicate commit.
         if let Err(e) = self.commit_ts.set(commit_ts) {
             self.abort()?;
             return Err(StorageError::Transaction(
@@ -524,6 +537,7 @@ impl MemTransaction {
         }
 
         {
+            // Promote all records touched under txn_id lock to final commit_ts.
             macro_rules! update_commit_ts {
                 ($self:expr, $entity_type:ident, $id:expr) => {
                     $self
@@ -555,49 +569,7 @@ impl MemTransaction {
             }
         }
 
-        if !skip_wal {
-            let redo_entries = self
-                .redo_buffer
-                .write()
-                .unwrap()
-                .drain(..)
-                .map(|mut entry| {
-                    entry.lsn = self.graph.persistence.next_lsn();
-                    entry
-                })
-                .collect::<Vec<_>>();
-            let wal_count = redo_entries.len();
-            for entry in redo_entries {
-                self.graph.persistence.append_wal(&entry)?;
-            }
-
-            let wal_entry = RedoEntry {
-                lsn: self.graph.persistence.next_lsn(),
-                txn_id: self.txn_id(),
-                iso_level: self.isolation_level,
-                op: Operation::CommitTransaction(commit_ts),
-            };
-            self.graph.persistence.append_wal(&wal_entry)?;
-            self.graph.persistence.flush_wal()?;
-
-            for _ in 0..(wal_count + 2) {
-                self.graph.increment_wal_counter();
-            }
-        }
-
-        self.graph
-            .txn_manager
-            .latest_commit_ts
-            .store(commit_ts.raw(), Ordering::SeqCst);
-
-        // Avoid retaining large clones in committed transactions.
-        self.vertex_writes.write().unwrap().clear();
-        self.edge_writes.write().unwrap().clear();
-
-        self.graph.txn_manager.finish_transaction(self)?;
-        if !skip_wal {
-            self.graph.check_auto_checkpoint()?;
-        }
+        self.finalize_commit_common(commit_ts, skip_wal)?;
 
         Ok(commit_ts)
     }
@@ -617,6 +589,7 @@ impl MemTransaction {
             for (vid, intent) in v_ws.iter() {
                 match intent.kind {
                     WriteKind::InsertVertex(_) => {
+                        // OCC insert requires "not exists and not locked by others".
                         if let Some(entry) = graph.vertices.get(vid) {
                             let cur = entry.chain.current.read().unwrap();
                             let cur_ts = cur.commit_ts;
@@ -632,9 +605,12 @@ impl MemTransaction {
                         }
                     }
                     WriteKind::UpdateVertex { .. } | WriteKind::DeleteVertex { .. } => {
+                        // Update/Delete require stable base version matching intent.guard_ts.
                         let entry = if let Some(entry) = graph.vertices.get(vid) {
                             entry
                         } else {
+                            // guard_ts==0 means "insert then delete in same txn"; missing row is
+                            // valid.
                             if matches!(intent.kind, WriteKind::DeleteVertex { .. })
                                 && intent.guard_ts.raw() == 0
                             {
@@ -671,6 +647,7 @@ impl MemTransaction {
                 for (eid, intent) in e_ws.iter() {
                     match intent.kind {
                         WriteKind::InsertEdge(_) => {
+                            // OCC insert requires "not exists and not locked by others".
                             if let Some(entry) = graph.edges.get(eid) {
                                 let cur = entry.chain.current.read().unwrap();
                                 let cur_ts = cur.commit_ts;
@@ -686,9 +663,12 @@ impl MemTransaction {
                             }
                         }
                         WriteKind::UpdateEdge { .. } | WriteKind::DeleteEdge { .. } => {
+                            // Update/Delete require stable base version matching intent.guard_ts.
                             let entry = if let Some(entry) = graph.edges.get(eid) {
                                 entry
                             } else {
+                                // guard_ts==0 means "insert then delete in same txn"; missing row
+                                // is valid.
                                 if matches!(intent.kind, WriteKind::DeleteEdge { .. })
                                     && intent.guard_ts.raw() == 0
                                 {
@@ -744,11 +724,20 @@ impl MemTransaction {
         // Phase 2: Apply write intents with short-term lock commit_ts = txn_id.
         {
             let mut undo_buf = self.undo_buffer.write().unwrap();
+            let mut append_undo = |delta: DeltaOp,
+                                   prev_ts: Timestamp,
+                                   undo_ptr: UndoPtr,
+                                   chain_undo: &RwLock<UndoPtr>| {
+                let undo_entry = Arc::new(UndoEntry::new(delta, prev_ts, undo_ptr));
+                undo_buf.push(undo_entry.clone());
+                *chain_undo.write().unwrap() = Arc::downgrade(&undo_entry);
+            };
 
             let v_ws = self.vertex_writes.read().unwrap();
             for (vid, intent) in v_ws.iter() {
                 match &intent.kind {
                     WriteKind::InsertVertex(new_v) => {
+                        // Materialize insert and add rollback delta (DelVertex).
                         let entry = graph
                             .vertices
                             .entry(*vid)
@@ -759,14 +748,14 @@ impl MemTransaction {
                         let undo_ptr = entry.chain.undo_ptr.read().unwrap().clone();
 
                         let delta = DeltaOp::DelVertex(*vid);
-                        let undo_entry = Arc::new(UndoEntry::new(delta, prev_ts, undo_ptr));
-                        undo_buf.push(undo_entry.clone());
-                        *entry.chain.undo_ptr.write().unwrap() = Arc::downgrade(&undo_entry);
+                        append_undo(delta, prev_ts, undo_ptr, &entry.chain.undo_ptr);
 
                         current.data = new_v.clone();
+                        // Use txn_id as short-term write lock during apply phase.
                         current.commit_ts = self.txn_id();
                     }
                     WriteKind::UpdateVertex { before, after } => {
+                        // Apply update and store property-level inverse delta for undo.
                         let entry = graph
                             .vertices
                             .get(vid)
@@ -778,14 +767,14 @@ impl MemTransaction {
                         let (indices, props) =
                             compute_prop_delta(before.properties(), after.properties());
                         let delta = DeltaOp::SetVertexProps(*vid, SetPropsOp { indices, props });
-                        let undo_entry = Arc::new(UndoEntry::new(delta, prev_ts, undo_ptr));
-                        undo_buf.push(undo_entry.clone());
-                        *entry.chain.undo_ptr.write().unwrap() = Arc::downgrade(&undo_entry);
+                        append_undo(delta, prev_ts, undo_ptr, &entry.chain.undo_ptr);
 
                         current.data = after.clone();
                         current.commit_ts = self.txn_id();
                     }
                     WriteKind::DeleteVertex { before } => {
+                        // If missing and guard_ts==0, this is insert-then-delete in same txn.
+                        // Recreate transient entry so undo/redo pipeline stays uniform.
                         let entry = if let Some(entry) = graph.vertices.get(vid) {
                             entry
                         } else if intent.guard_ts.raw() == 0 {
@@ -804,9 +793,7 @@ impl MemTransaction {
                         let undo_ptr = entry.chain.undo_ptr.read().unwrap().clone();
 
                         let delta = DeltaOp::CreateVertex(before.clone());
-                        let undo_entry = Arc::new(UndoEntry::new(delta, prev_ts, undo_ptr));
-                        undo_buf.push(undo_entry.clone());
-                        *entry.chain.undo_ptr.write().unwrap() = Arc::downgrade(&undo_entry);
+                        append_undo(delta, prev_ts, undo_ptr, &entry.chain.undo_ptr);
 
                         current.data = Vertex::tombstone(current.data.clone());
                         current.commit_ts = self.txn_id();
@@ -819,6 +806,7 @@ impl MemTransaction {
             for (eid, intent) in e_ws.iter() {
                 match &intent.kind {
                     WriteKind::InsertEdge(new_e) => {
+                        // Materialize insert and add rollback delta (DelEdge).
                         let entry = graph
                             .edges
                             .entry(*eid)
@@ -829,13 +817,12 @@ impl MemTransaction {
                         let undo_ptr = entry.chain.undo_ptr.read().unwrap().clone();
 
                         let delta = DeltaOp::DelEdge(*eid);
-                        let undo_entry = Arc::new(UndoEntry::new(delta, prev_ts, undo_ptr));
-                        undo_buf.push(undo_entry.clone());
-                        *entry.chain.undo_ptr.write().unwrap() = Arc::downgrade(&undo_entry);
+                        append_undo(delta, prev_ts, undo_ptr, &entry.chain.undo_ptr);
 
                         current.data = new_e.clone();
                         current.commit_ts = self.txn_id();
 
+                        // Maintain adjacency indexes alongside edge materialization.
                         graph
                             .adjacency_list
                             .entry(new_e.src_id())
@@ -850,6 +837,7 @@ impl MemTransaction {
                             .insert(Neighbor::new(new_e.label_id(), new_e.src_id(), *eid));
                     }
                     WriteKind::UpdateEdge { before, after } => {
+                        // Apply update and store property-level inverse delta for undo.
                         let entry = graph
                             .edges
                             .get(eid)
@@ -861,14 +849,14 @@ impl MemTransaction {
                         let (indices, props) =
                             compute_prop_delta(before.properties(), after.properties());
                         let delta = DeltaOp::SetEdgeProps(*eid, SetPropsOp { indices, props });
-                        let undo_entry = Arc::new(UndoEntry::new(delta, prev_ts, undo_ptr));
-                        undo_buf.push(undo_entry.clone());
-                        *entry.chain.undo_ptr.write().unwrap() = Arc::downgrade(&undo_entry);
+                        append_undo(delta, prev_ts, undo_ptr, &entry.chain.undo_ptr);
 
                         current.data = after.clone();
                         current.commit_ts = self.txn_id();
                     }
                     WriteKind::DeleteEdge { before } => {
+                        // If missing and guard_ts==0, this is insert-then-delete in same txn.
+                        // Recreate transient entry so undo/redo pipeline stays uniform.
                         let entry = if let Some(entry) = graph.edges.get(eid) {
                             entry
                         } else if intent.guard_ts.raw() == 0 {
@@ -885,13 +873,12 @@ impl MemTransaction {
                         let undo_ptr = entry.chain.undo_ptr.read().unwrap().clone();
 
                         let delta = DeltaOp::CreateEdge(before.clone());
-                        let undo_entry = Arc::new(UndoEntry::new(delta, prev_ts, undo_ptr));
-                        undo_buf.push(undo_entry.clone());
-                        *entry.chain.undo_ptr.write().unwrap() = Arc::downgrade(&undo_entry);
+                        append_undo(delta, prev_ts, undo_ptr, &entry.chain.undo_ptr);
 
                         current.data = Edge::tombstone(current.data.clone());
                         current.commit_ts = self.txn_id();
 
+                        // Keep adjacency indexes consistent with edge tombstone.
                         let src_neighbor =
                             Neighbor::new(current.data.label_id(), current.data.dst_id(), *eid);
                         let dst_neighbor =
@@ -938,6 +925,7 @@ impl MemTransaction {
             }
         }
 
+        // Mark transaction committed after successful apply/finalize.
         if let Err(e) = self.commit_ts.set(commit_ts) {
             self.abort()?;
             return Err(StorageError::Transaction(
@@ -945,34 +933,51 @@ impl MemTransaction {
             ));
         }
 
+        self.finalize_commit_common(commit_ts, skip_wal)?;
+
+        Ok(commit_ts)
+    }
+
+    /// Drains the transaction redo buffer, appends all delta WAL records plus the commit marker,
+    /// flushes WAL to persistence, and updates the checkpoint trigger counter.
+    fn flush_redo_and_commit_wal(&self, commit_ts: Timestamp) -> StorageResult<()> {
+        let redo_entries = self
+            .redo_buffer
+            .write()
+            .unwrap()
+            .drain(..)
+            .map(|mut entry| {
+                entry.lsn = self.graph.persistence.next_lsn();
+                entry
+            })
+            .collect::<Vec<_>>();
+        let wal_count = redo_entries.len();
+        for entry in redo_entries {
+            self.graph.persistence.append_wal(&entry)?;
+        }
+
+        let wal_entry = RedoEntry {
+            lsn: self.graph.persistence.next_lsn(),
+            txn_id: self.txn_id(),
+            iso_level: self.isolation_level,
+            op: Operation::CommitTransaction(commit_ts),
+        };
+        self.graph.persistence.append_wal(&wal_entry)?;
+        self.graph.persistence.flush_wal()?;
+
+        for _ in 0..(wal_count + 2) {
+            self.graph.increment_wal_counter();
+        }
+
+        Ok(())
+    }
+
+    /// Performs commit-finalization steps shared by pessimistic and optimistic paths:
+    /// optional WAL flush, global commit timestamp publish, write-set cleanup, transaction finish,
+    /// and optional auto-checkpoint check.
+    fn finalize_commit_common(&self, commit_ts: Timestamp, skip_wal: bool) -> StorageResult<()> {
         if !skip_wal {
-            let redo_entries = self
-                .redo_buffer
-                .write()
-                .unwrap()
-                .drain(..)
-                .map(|mut entry| {
-                    entry.lsn = self.graph.persistence.next_lsn();
-                    entry
-                })
-                .collect::<Vec<_>>();
-            let wal_count = redo_entries.len();
-            for entry in redo_entries {
-                self.graph.persistence.append_wal(&entry)?;
-            }
-
-            let wal_entry = RedoEntry {
-                lsn: self.graph.persistence.next_lsn(),
-                txn_id: self.txn_id(),
-                iso_level: self.isolation_level,
-                op: Operation::CommitTransaction(commit_ts),
-            };
-            self.graph.persistence.append_wal(&wal_entry)?;
-            self.graph.persistence.flush_wal()?;
-
-            for _ in 0..(wal_count + 2) {
-                self.graph.increment_wal_counter();
-            }
+            self.flush_redo_and_commit_wal(commit_ts)?;
         }
 
         self.graph
@@ -980,7 +985,6 @@ impl MemTransaction {
             .latest_commit_ts
             .store(commit_ts.raw(), Ordering::SeqCst);
 
-        // Avoid retaining large clones in committed transactions.
         self.vertex_writes.write().unwrap().clear();
         self.edge_writes.write().unwrap().clear();
 
@@ -989,7 +993,7 @@ impl MemTransaction {
             self.graph.check_auto_checkpoint()?;
         }
 
-        Ok(commit_ts)
+        Ok(())
     }
 }
 
