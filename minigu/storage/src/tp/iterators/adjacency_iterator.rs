@@ -302,7 +302,13 @@ mod tests {
         let graph = crate::tp::memory_graph::tests::mock_graph();
         let txn = graph
             .txn_manager()
-            .begin_transaction_with_lock(IsolationLevel::Serializable, LockStrategy::Pessimistic)
+            .begin_transaction_at(
+                None,
+                None,
+                IsolationLevel::Serializable,
+                LockStrategy::Pessimistic,
+                false,
+            )
             .unwrap();
 
         let vid = 1;
@@ -320,7 +326,13 @@ mod tests {
         let graph = crate::tp::memory_graph::tests::mock_graph();
         let txn = graph
             .txn_manager()
-            .begin_transaction_with_lock(IsolationLevel::Serializable, LockStrategy::Pessimistic)
+            .begin_transaction_at(
+                None,
+                None,
+                IsolationLevel::Serializable,
+                LockStrategy::Pessimistic,
+                false,
+            )
             .unwrap();
 
         let vid = 1;
@@ -338,7 +350,13 @@ mod tests {
         let graph = MemoryGraph::in_memory();
         let txn = graph
             .txn_manager()
-            .begin_transaction_with_lock(IsolationLevel::Serializable, LockStrategy::Optimistic)
+            .begin_transaction_at(
+                None,
+                None,
+                IsolationLevel::Serializable,
+                LockStrategy::Optimistic,
+                false,
+            )
             .unwrap();
 
         let label = LabelId::new(1).unwrap();

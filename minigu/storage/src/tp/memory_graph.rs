@@ -650,7 +650,7 @@ impl MemoryGraph {
                         Some(entry.txn_id),
                         Some(start_ts),
                         entry.iso_level,
-                        None,
+                        self.txn_manager.default_lock_strategy,
                         true,
                     )?;
                     txn = Some(t);
@@ -2492,7 +2492,13 @@ pub mod tests {
 
         let txn_opt = graph
             .txn_manager()
-            .begin_transaction_with_lock(IsolationLevel::Snapshot, LockStrategy::Optimistic)
+            .begin_transaction_at(
+                None,
+                None,
+                IsolationLevel::Snapshot,
+                LockStrategy::Optimistic,
+                false,
+            )
             .unwrap();
         let res = graph.create_vertex(
             &txn_opt,
@@ -2562,7 +2568,13 @@ pub mod tests {
 
         let txn_opt = graph
             .txn_manager()
-            .begin_transaction_with_lock(IsolationLevel::Snapshot, LockStrategy::Optimistic)
+            .begin_transaction_at(
+                None,
+                None,
+                IsolationLevel::Snapshot,
+                LockStrategy::Optimistic,
+                false,
+            )
             .unwrap();
         let edge_again = create_edge(
             8000,
@@ -4732,7 +4744,13 @@ pub mod tests {
         // Bootstrap a single vertex
         let bootstrap = graph
             .txn_manager()
-            .begin_transaction_with_lock(IsolationLevel::Snapshot, LockStrategy::Optimistic)
+            .begin_transaction_at(
+                None,
+                None,
+                IsolationLevel::Snapshot,
+                LockStrategy::Optimistic,
+                false,
+            )
             .unwrap();
         let vertex = create_vertex(1, PERSON, vec![ScalarValue::Int64(Some(0))]);
         graph.create_vertex(&bootstrap, vertex).unwrap();
@@ -4741,11 +4759,23 @@ pub mod tests {
         // Two transactions start from the same snapshot.
         let txn1 = graph
             .txn_manager()
-            .begin_transaction_with_lock(IsolationLevel::Snapshot, LockStrategy::Optimistic)
+            .begin_transaction_at(
+                None,
+                None,
+                IsolationLevel::Snapshot,
+                LockStrategy::Optimistic,
+                false,
+            )
             .unwrap();
         let txn2 = graph
             .txn_manager()
-            .begin_transaction_with_lock(IsolationLevel::Snapshot, LockStrategy::Optimistic)
+            .begin_transaction_at(
+                None,
+                None,
+                IsolationLevel::Snapshot,
+                LockStrategy::Optimistic,
+                false,
+            )
             .unwrap();
 
         // Txn1 updates and commits first.
@@ -4780,7 +4810,13 @@ pub mod tests {
         // Bootstrap vertices and an edge.
         let bootstrap = graph
             .txn_manager()
-            .begin_transaction_with_lock(IsolationLevel::Snapshot, LockStrategy::Optimistic)
+            .begin_transaction_at(
+                None,
+                None,
+                IsolationLevel::Snapshot,
+                LockStrategy::Optimistic,
+                false,
+            )
             .unwrap();
         graph
             .create_vertex(
@@ -4807,11 +4843,23 @@ pub mod tests {
         // Two optimistic transactions on the same snapshot.
         let txn1 = graph
             .txn_manager()
-            .begin_transaction_with_lock(IsolationLevel::Snapshot, LockStrategy::Optimistic)
+            .begin_transaction_at(
+                None,
+                None,
+                IsolationLevel::Snapshot,
+                LockStrategy::Optimistic,
+                false,
+            )
             .unwrap();
         let txn2 = graph
             .txn_manager()
-            .begin_transaction_with_lock(IsolationLevel::Snapshot, LockStrategy::Optimistic)
+            .begin_transaction_at(
+                None,
+                None,
+                IsolationLevel::Snapshot,
+                LockStrategy::Optimistic,
+                false,
+            )
             .unwrap();
 
         // Txn1 updates and commits first.
@@ -4853,7 +4901,13 @@ pub mod tests {
         // Bootstrap vertices; no edges yet.
         let bootstrap = graph
             .txn_manager()
-            .begin_transaction_with_lock(IsolationLevel::Snapshot, LockStrategy::Optimistic)
+            .begin_transaction_at(
+                None,
+                None,
+                IsolationLevel::Snapshot,
+                LockStrategy::Optimistic,
+                false,
+            )
             .unwrap();
         graph
             .create_vertex(
@@ -4871,11 +4925,23 @@ pub mod tests {
 
         let txn1 = graph
             .txn_manager()
-            .begin_transaction_with_lock(IsolationLevel::Snapshot, LockStrategy::Optimistic)
+            .begin_transaction_at(
+                None,
+                None,
+                IsolationLevel::Snapshot,
+                LockStrategy::Optimistic,
+                false,
+            )
             .unwrap();
         let txn2 = graph
             .txn_manager()
-            .begin_transaction_with_lock(IsolationLevel::Snapshot, LockStrategy::Optimistic)
+            .begin_transaction_at(
+                None,
+                None,
+                IsolationLevel::Snapshot,
+                LockStrategy::Optimistic,
+                false,
+            )
             .unwrap();
 
         // Txn1 creates the edge and commits.
@@ -4920,7 +4986,13 @@ pub mod tests {
         // Bootstrap a single vertex.
         let bootstrap = graph
             .txn_manager()
-            .begin_transaction_with_lock(IsolationLevel::Snapshot, LockStrategy::Optimistic)
+            .begin_transaction_at(
+                None,
+                None,
+                IsolationLevel::Snapshot,
+                LockStrategy::Optimistic,
+                false,
+            )
             .unwrap();
         let vertex = create_vertex(30, PERSON, vec![ScalarValue::Int64(Some(0))]);
         graph.create_vertex(&bootstrap, vertex).unwrap();
@@ -4929,11 +5001,23 @@ pub mod tests {
         // Two transactions start from the same snapshot.
         let txn1 = graph
             .txn_manager()
-            .begin_transaction_with_lock(IsolationLevel::Snapshot, LockStrategy::Optimistic)
+            .begin_transaction_at(
+                None,
+                None,
+                IsolationLevel::Snapshot,
+                LockStrategy::Optimistic,
+                false,
+            )
             .unwrap();
         let txn2 = graph
             .txn_manager()
-            .begin_transaction_with_lock(IsolationLevel::Snapshot, LockStrategy::Optimistic)
+            .begin_transaction_at(
+                None,
+                None,
+                IsolationLevel::Snapshot,
+                LockStrategy::Optimistic,
+                false,
+            )
             .unwrap();
 
         // Txn1 updates and commits first.
@@ -4966,7 +5050,13 @@ pub mod tests {
         // Bootstrap vertices and an edge.
         let bootstrap = graph
             .txn_manager()
-            .begin_transaction_with_lock(IsolationLevel::Snapshot, LockStrategy::Optimistic)
+            .begin_transaction_at(
+                None,
+                None,
+                IsolationLevel::Snapshot,
+                LockStrategy::Optimistic,
+                false,
+            )
             .unwrap();
         graph
             .create_vertex(
@@ -4992,11 +5082,23 @@ pub mod tests {
 
         let txn1 = graph
             .txn_manager()
-            .begin_transaction_with_lock(IsolationLevel::Snapshot, LockStrategy::Optimistic)
+            .begin_transaction_at(
+                None,
+                None,
+                IsolationLevel::Snapshot,
+                LockStrategy::Optimistic,
+                false,
+            )
             .unwrap();
         let txn2 = graph
             .txn_manager()
-            .begin_transaction_with_lock(IsolationLevel::Snapshot, LockStrategy::Optimistic)
+            .begin_transaction_at(
+                None,
+                None,
+                IsolationLevel::Snapshot,
+                LockStrategy::Optimistic,
+                false,
+            )
             .unwrap();
 
         // Txn1 deletes the edge and commits.
@@ -5026,7 +5128,13 @@ pub mod tests {
 
         let txn = graph
             .txn_manager()
-            .begin_transaction_with_lock(IsolationLevel::Snapshot, LockStrategy::Optimistic)
+            .begin_transaction_at(
+                None,
+                None,
+                IsolationLevel::Snapshot,
+                LockStrategy::Optimistic,
+                false,
+            )
             .unwrap();
 
         graph
@@ -5092,7 +5200,13 @@ pub mod tests {
 
         let txn = graph
             .txn_manager()
-            .begin_transaction_with_lock(IsolationLevel::Snapshot, LockStrategy::Optimistic)
+            .begin_transaction_at(
+                None,
+                None,
+                IsolationLevel::Snapshot,
+                LockStrategy::Optimistic,
+                false,
+            )
             .unwrap();
 
         graph
@@ -5160,7 +5274,13 @@ pub mod tests {
 
         let txn = graph
             .txn_manager()
-            .begin_transaction_with_lock(IsolationLevel::Snapshot, LockStrategy::Optimistic)
+            .begin_transaction_at(
+                None,
+                None,
+                IsolationLevel::Snapshot,
+                LockStrategy::Optimistic,
+                false,
+            )
             .unwrap();
 
         graph
@@ -5202,7 +5322,13 @@ pub mod tests {
 
         let txn = graph
             .txn_manager()
-            .begin_transaction_with_lock(IsolationLevel::Snapshot, LockStrategy::Optimistic)
+            .begin_transaction_at(
+                None,
+                None,
+                IsolationLevel::Snapshot,
+                LockStrategy::Optimistic,
+                false,
+            )
             .unwrap();
 
         graph

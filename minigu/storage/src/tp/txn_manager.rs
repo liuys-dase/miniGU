@@ -65,7 +65,13 @@ impl GraphTxnManager for MemTxnManager {
         &self,
         isolation_level: IsolationLevel,
     ) -> Result<Arc<Self::Transaction>, Self::Error> {
-        self.begin_transaction_at(None, None, isolation_level, None, false)
+        self.begin_transaction_at(
+            None,
+            None,
+            isolation_level,
+            self.default_lock_strategy,
+            false,
+        )
     }
 
     fn finish_transaction(&self, txn: &Self::Transaction) -> Result<(), Self::Error> {
@@ -151,7 +157,7 @@ impl MemTxnManager {
         txn_id: Option<Timestamp>,
         start_ts: Option<Timestamp>,
         isolation_level: IsolationLevel,
-        lock_strategy: Option<LockStrategy>,
+        lock_strategy: LockStrategy,
         skip_wal: bool,
     ) -> Result<Arc<MemTransaction>, StorageError> {
         let graph = self.graph.upgrade().ok_or_else(|| {
@@ -192,7 +198,7 @@ impl MemTxnManager {
             txn_id,
             start_ts,
             isolation_level,
-            lock_strategy.unwrap_or(self.default_lock_strategy),
+            lock_strategy,
         ));
         self.active_txns.insert(txn.txn_id(), txn.clone());
         self.update_watermark();
@@ -214,16 +220,13 @@ impl MemTxnManager {
 
     /// Begin a new transaction using the manager's default isolation level.
     pub fn begin_transaction_default(&self) -> Result<Arc<MemTransaction>, StorageError> {
-        self.begin_transaction_at(None, None, self.default_isolation_level, None, false)
-    }
-
-    /// Begin a new transaction with an explicit lock strategy override.
-    pub fn begin_transaction_with_lock(
-        &self,
-        isolation_level: IsolationLevel,
-        lock_strategy: LockStrategy,
-    ) -> Result<Arc<MemTransaction>, StorageError> {
-        self.begin_transaction_at(None, None, isolation_level, Some(lock_strategy), false)
+        self.begin_transaction_at(
+            None,
+            None,
+            self.default_isolation_level,
+            self.default_lock_strategy,
+            false,
+        )
     }
 
     /// Update the watermark based on currently active transactions.
