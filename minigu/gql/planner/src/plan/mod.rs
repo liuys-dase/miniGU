@@ -1,12 +1,16 @@
 pub mod call;
+pub mod create_vector_index;
+pub mod drop_vector_index;
 pub mod expand;
 pub mod explain;
 pub mod filter;
+pub mod hash_join;
 pub mod limit;
 pub mod logical_match;
 pub mod offset;
 pub mod one_row;
 pub mod project;
+pub mod property_fetch;
 pub mod scan;
 pub mod sort;
 pub mod vector_index_scan;
@@ -17,14 +21,18 @@ use minigu_common::data_type::DataSchemaRef;
 use serde::Serialize;
 
 use crate::plan::call::Call;
+use crate::plan::create_vector_index::CreateVectorIndex;
+use crate::plan::drop_vector_index::DropVectorIndex;
 use crate::plan::expand::Expand;
 use crate::plan::explain::Explain;
 use crate::plan::filter::Filter;
+use crate::plan::hash_join::HashJoin;
 use crate::plan::limit::Limit;
 use crate::plan::logical_match::LogicalMatch;
 use crate::plan::offset::Offset;
 use crate::plan::one_row::OneRow;
 use crate::plan::project::Project;
+use crate::plan::property_fetch::VertexPropertyFetch;
 use crate::plan::scan::NodeIdScan;
 use crate::plan::sort::Sort;
 use crate::plan::vector_index_scan::VectorIndexScan;
@@ -84,7 +92,11 @@ pub enum PlanNode {
     LogicalLimit(Arc<Limit>),
     LogicalOffset(Arc<Offset>),
     LogicalVectorIndexScan(Arc<VectorIndexScan>),
+    LogicalVertexPropertyFetch(Arc<VertexPropertyFetch>),
+    LogicalHashJoin(Arc<HashJoin>),
     LogicalExplain(Arc<Explain>),
+    LogicalCreateVectorIndex(Arc<CreateVectorIndex>),
+    LogicalDropVectorIndex(Arc<DropVectorIndex>),
 
     PhysicalFilter(Arc<Filter>),
     PhysicalProject(Arc<Project>),
@@ -94,6 +106,8 @@ pub enum PlanNode {
     PhysicalLimit(Arc<Limit>),
     PhysicalOffset(Arc<Offset>),
     PhysicalVectorIndexScan(Arc<VectorIndexScan>),
+    PhysicalVertexPropertyFetch(Arc<VertexPropertyFetch>),
+    PhysicalHashJoin(Arc<HashJoin>),
     //  PhysicalNodeScan retrieves node ids based on labels during the scan phase,
     //  without immediately materializing full node attributes.
     //  During subsequent matching and computation, these ids are lazily expanded
@@ -103,6 +117,8 @@ pub enum PlanNode {
     // PhysicalCatalogModify(Arc<PhysicalCatalogModify>)
     PhysicalExpand(Arc<Expand>),
     PhysicalExplain(Arc<Explain>),
+    PhysicalCreateVectorIndex(Arc<CreateVectorIndex>),
+    PhysicalDropVectorIndex(Arc<DropVectorIndex>),
 }
 
 impl PlanData for PlanNode {
@@ -116,6 +132,11 @@ impl PlanData for PlanNode {
             PlanNode::LogicalSort(node) => node.base(),
             PlanNode::LogicalLimit(node) => node.base(),
             PlanNode::LogicalExplain(node) => node.base(),
+            PlanNode::LogicalVectorIndexScan(node) => node.base(),
+            PlanNode::LogicalVertexPropertyFetch(node) => node.base(),
+            PlanNode::LogicalHashJoin(node) => node.base(),
+            PlanNode::LogicalCreateVectorIndex(node) => node.base(),
+            PlanNode::LogicalDropVectorIndex(node) => node.base(),
             PlanNode::LogicalOffset(node) => node.base(),
 
             PlanNode::PhysicalFilter(node) => node.base(),
@@ -126,10 +147,13 @@ impl PlanData for PlanNode {
             PlanNode::PhysicalLimit(node) => node.base(),
             PlanNode::PhysicalOffset(node) => node.base(),
             PlanNode::PhysicalNodeScan(node) => node.base(),
-            PlanNode::LogicalVectorIndexScan(node) => node.base(),
             PlanNode::PhysicalVectorIndexScan(node) => node.base(),
+            PlanNode::PhysicalVertexPropertyFetch(node) => node.base(),
+            PlanNode::PhysicalHashJoin(node) => node.base(),
             PlanNode::PhysicalExpand(node) => node.base(),
             PlanNode::PhysicalExplain(node) => node.base(),
+            PlanNode::PhysicalCreateVectorIndex(node) => node.base(),
+            PlanNode::PhysicalDropVectorIndex(node) => node.base(),
         }
     }
 
@@ -144,7 +168,11 @@ impl PlanData for PlanNode {
             PlanNode::LogicalLimit(node) => node.explain(indent),
             PlanNode::LogicalOffset(node) => node.explain(indent),
             PlanNode::LogicalVectorIndexScan(node) => node.explain(indent),
+            PlanNode::LogicalVertexPropertyFetch(node) => node.explain(indent),
+            PlanNode::LogicalHashJoin(node) => node.explain(indent),
             PlanNode::LogicalExplain(node) => node.explain(indent),
+            PlanNode::LogicalCreateVectorIndex(node) => node.explain(indent),
+            PlanNode::LogicalDropVectorIndex(node) => node.explain(indent),
 
             PlanNode::PhysicalFilter(node) => node.explain(indent),
             PlanNode::PhysicalProject(node) => node.explain(indent),
@@ -154,9 +182,13 @@ impl PlanData for PlanNode {
             PlanNode::PhysicalLimit(node) => node.explain(indent),
             PlanNode::PhysicalOffset(node) => node.explain(indent),
             PlanNode::PhysicalVectorIndexScan(node) => node.explain(indent),
+            PlanNode::PhysicalVertexPropertyFetch(node) => node.explain(indent),
+            PlanNode::PhysicalHashJoin(node) => node.explain(indent),
             PlanNode::PhysicalNodeScan(node) => node.explain(indent),
             PlanNode::PhysicalExpand(node) => node.explain(indent),
             PlanNode::PhysicalExplain(node) => node.explain(indent),
+            PlanNode::PhysicalCreateVectorIndex(node) => node.explain(indent),
+            PlanNode::PhysicalDropVectorIndex(node) => node.explain(indent),
         }
     }
 }
