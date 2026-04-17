@@ -5,8 +5,8 @@ use arrow::array::{
     Int32Array, Int64Array, NullBufferBuilder, StringArray, UInt8Array, UInt16Array, UInt32Array,
     UInt64Array,
 };
-use minigu_common::IsolationLevel;
 use arrow::datatypes::{DataType, Field};
+use minigu_common::IsolationLevel;
 use minigu_common::types::{PropertyId, VertexIdArray};
 use minigu_common::value::ScalarValue;
 use minigu_context::graph::{GraphContainer, GraphStorage};

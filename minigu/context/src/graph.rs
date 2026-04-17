@@ -297,18 +297,16 @@ mod tests {
     use std::sync::Arc;
 
     use minigu_catalog::label_set::LabelSet;
-    use minigu_catalog::memory::graph_type::MemoryGraphTypeCatalog;
-    use minigu_catalog::memory::graph_type::MemoryVertexTypeCatalog;
+    use minigu_catalog::memory::graph_type::{MemoryGraphTypeCatalog, MemoryVertexTypeCatalog};
     use minigu_catalog::property::Property;
     use minigu_catalog::provider::{GraphProvider, GraphTypeProvider};
     use minigu_catalog::txn::{CatalogTxnManager, CatalogTxnView};
-    use minigu_common::data_type::LogicalType;
     use minigu_common::IsolationLevel;
+    use minigu_common::data_type::LogicalType;
     use minigu_common::types::{LabelId, PropertyId, VectorMetric};
     use minigu_common::value::{F32, ScalarValue, VectorValue};
     use minigu_storage::common::{PropertyRecord, Vertex};
     use minigu_storage::tp::memory_graph;
-    use minigu_transaction::Transaction;
     use minigu_transaction::TxnState;
 
     use super::*;
@@ -326,10 +324,14 @@ mod tests {
         dimension: usize,
     ) -> (GraphContainer, Arc<MemoryGraph>, VectorIndexKey) {
         let graph = MemoryGraph::in_memory();
-        let mut graph_type = MemoryGraphTypeCatalog::new();
+        let graph_type = MemoryGraphTypeCatalog::new();
+        let catalog_txn_mgr = CatalogTxnManager::new();
+        let catalog_txn = catalog_txn_mgr
+            .begin_transaction(IsolationLevel::Serializable)
+            .expect("catalog transaction should begin");
 
         let person_label_id = graph_type
-            .add_label("PERSON".to_string())
+            .add_label_txn("PERSON".to_string(), catalog_txn.as_ref())
             .expect("label should be created");
         let person_label_set: LabelSet = vec![person_label_id].into_iter().collect();
         let person_type = Arc::new(MemoryVertexTypeCatalog::new(
@@ -343,7 +345,12 @@ mod tests {
                 ),
             ],
         ));
-        assert!(graph_type.add_vertex_type(person_label_set, person_type));
+        graph_type
+            .add_vertex_type_txn(person_label_set, person_type, catalog_txn.as_ref())
+            .expect("vertex type should be created");
+        catalog_txn
+            .commit()
+            .expect("catalog transaction should commit");
 
         let container = GraphContainer::new(
             Arc::new(graph_type),

@@ -2,9 +2,9 @@ use std::convert::TryFrom;
 use std::io;
 use std::sync::Arc;
 
-use minigu_common::IsolationLevel;
 use arrow::array::{Array, ArrayRef, AsArray, BooleanArray, Float32Array, UInt64Array};
 use arrow::datatypes::UInt64Type;
+use minigu_common::IsolationLevel;
 use minigu_common::data_chunk::DataChunk;
 use minigu_context::error::Error as ContextError;
 use minigu_context::graph::{GraphContainer, GraphStorage};
