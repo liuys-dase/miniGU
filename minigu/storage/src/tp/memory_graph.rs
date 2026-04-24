@@ -164,7 +164,7 @@ impl VersionedVertex {
                 DeltaOp::DelVertex(_) => {
                     visible_vertex.is_tombstone = true;
                 }
-                _ => unreachable!("Unreachable delta op for a vertex"),
+                _ => {}
             };
             MemTransaction::apply_deltas_for_read(undo_ptr, apply_deltas, txn.start_ts());
             // Check if the vertex is tombstone after applying the deltas
@@ -270,7 +270,7 @@ impl VersionedEdge {
                 DeltaOp::DelEdge(_) => {
                     current_edge.is_tombstone = true;
                 }
-                _ => unreachable!("Unreachable delta op for an edge"),
+                _ => {}
             };
             MemTransaction::apply_deltas_for_read(undo_ptr, apply_deltas, txn.start_ts());
             // Check if the vertex is tombstone after applying the deltas
