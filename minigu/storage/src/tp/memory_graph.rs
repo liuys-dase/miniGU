@@ -553,7 +553,7 @@ impl MemoryGraph {
     /// Creates a new in-memory [`MemoryGraph`] with custom transaction defaults.
     pub fn in_memory_with_options(txn_options: TxnOptions) -> Arc<Self> {
         let persistence = Arc::new(InMemoryPersistence::new());
-        Self::with_persistence_and_config(persistence, CheckpointConfig::default(), txn_options)
+        Self::with_persistence(persistence, txn_options)
     }
 
     /// Creates a new [`MemoryGraph`] backed by a single database file.
@@ -588,6 +588,30 @@ impl MemoryGraph {
         let graph = Self::with_persistence_and_config(persistence, checkpoint_config, txn_options);
         graph.recover()?;
         Ok(graph)
+    }
+
+    /// Creates a new [`MemoryGraph`] with the given persistence provider.
+    ///
+    /// This is the core constructor that all other constructors delegate to.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn with_persistence(
+        persistence: Arc<dyn PersistenceProvider>,
+        txn_options: TxnOptions,
+    ) -> Arc<Self> {
+        Self::with_persistence_and_config(persistence, CheckpointConfig::default(), txn_options)
+    }
+
+    /// As an incremental wasm32 bring-up step, disable auto-checkpoint for now.
+    #[cfg(target_arch = "wasm32")]
+    fn with_persistence(
+        persistence: Arc<dyn PersistenceProvider>,
+        txn_options: TxnOptions,
+    ) -> Arc<Self> {
+        Self::with_persistence_and_config(
+            persistence,
+            CheckpointConfig { wal_threshold: 0 },
+            txn_options,
+        )
     }
 
     /// Creates a new [`MemoryGraph`] with the given persistence provider and checkpoint config.

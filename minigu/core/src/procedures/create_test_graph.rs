@@ -14,10 +14,10 @@ use minigu_common::value::ScalarValue;
 use minigu_context::database::{DatabaseConfig, DatabaseContext};
 use minigu_context::graph::{GraphContainer, GraphStorage};
 use minigu_context::procedure::Procedure;
+use minigu_context::runtime::DatabaseRuntime;
 use minigu_context::session::SessionContext;
 use minigu_storage::tp::MemoryGraph;
 use minigu_transaction::{GraphTxnManager, IsolationLevel, LockStrategy, TxnOptions};
-use rayon::ThreadPoolBuilder;
 
 /// Create a test graph with the given name in the current schema.
 pub fn build_procedure() -> Procedure {
@@ -58,7 +58,7 @@ mod tests {
         ));
 
         let catalog = MemoryCatalog::new(DirectoryOrSchema::Directory(root));
-        let runtime = ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+        let runtime = DatabaseRuntime::new(1).unwrap();
         let database = Arc::new(DatabaseContext::new(
             catalog,
             runtime,
