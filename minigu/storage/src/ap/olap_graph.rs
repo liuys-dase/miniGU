@@ -81,6 +81,7 @@ impl OlapStorageEdge {
 #[derive(Clone, Debug)]
 pub struct OlapEdge {
     // Edge data
+    pub eid: EdgeId,
     pub label_id: Option<LabelId>,
     pub src_id: VertexId,
     pub dst_id: VertexId,
@@ -871,6 +872,7 @@ impl OlapGraph for OlapStorage {
         }
 
         let edge_with_props = OlapEdge {
+            eid: edge.eid,
             label_id: edge.label_id,
             src_id: block.src_id,
             dst_id: edge.dst_id,
@@ -941,6 +943,7 @@ impl OlapGraph for OlapStorage {
         }
 
         let edge_with_props = OlapEdge {
+            eid: edge.eid,
             label_id: edge.label_id,
             src_id: block.src_id,
             dst_id: edge.dst_id,

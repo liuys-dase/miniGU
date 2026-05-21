@@ -118,6 +118,7 @@ fn create_edge_test() {
             let _result1 = storage.create_edge(
                 &txn,
                 OlapEdge {
+                    eid: 0,
                     label_id: NonZeroU32::new(i * 10000 + j),
                     src_id: i as u64,
                     dst_id: ((j - 1) * i) as u64,
@@ -160,6 +161,7 @@ fn test_create_edge_sets_timestamps() {
     let _ = storage.create_edge(
         &txn,
         OlapEdge {
+            eid: 0,
             label_id: NonZeroU32::new(100),
             src_id: 1,
             dst_id: 42,
@@ -237,6 +239,7 @@ fn get_edge_test() {
                 .create_edge(
                     &txn,
                     OlapEdge {
+                        eid: 0,
                         label_id: NonZeroU32::new((i * 10000 + j) as u32),
                         src_id: i as u64,
                         dst_id: (j * (i + 1)) as u64,
@@ -307,6 +310,7 @@ fn edge_iterator_test() {
             let _result1 = storage.create_edge(
                 &txn,
                 OlapEdge {
+                    eid: 0,
                     label_id: NonZeroU32::new((i * 10000 + j) as u32),
                     src_id: i as VertexId,
                     dst_id: (j * (i + 1)) as VertexId,
@@ -354,6 +358,7 @@ fn adjacency_iterator_test() {
             let _result1 = storage.create_edge(
                 &txn,
                 OlapEdge {
+                    eid: 0,
                     label_id: NonZeroU32::new((i * 10000 + j) as u32),
                     src_id: i as VertexId,
                     dst_id: (j * (i + 1)) as VertexId,
@@ -472,6 +477,7 @@ fn set_edge_properties_test() {
                 .create_edge(
                     &txn,
                     OlapEdge {
+                        eid: 0,
                         label_id: NonZeroU32::new((i * 10000 + j) as u32),
                         src_id: i as VertexId,
                         dst_id: (j + i) as VertexId,
@@ -541,6 +547,7 @@ fn delete_vertex_test() {
             let _result1 = storage.create_edge(
                 &txn,
                 OlapEdge {
+                    eid: 0,
                     label_id: NonZeroU32::new((i * 10000 + j) as u32),
                     src_id: i as VertexId,
                     dst_id: (j + i) as VertexId,
@@ -582,6 +589,7 @@ fn delete_property_test() {
             .create_edge(
                 &txn,
                 OlapEdge {
+                    eid: 0,
                     label_id: NonZeroU32::new(i),
                     src_id: 1 as VertexId,
                     dst_id: (10000 + i) as VertexId,
@@ -650,6 +658,7 @@ fn compress_edge_test() {
             let _result1 = storage.create_edge(
                 &txn,
                 OlapEdge {
+                    eid: 0,
                     label_id: NonZeroU32::new((i * 10000 + j) as u32),
                     src_id: i as u64,
                     dst_id: (j + i) as u64,
@@ -697,6 +706,7 @@ fn compress_property_test() {
             let _result1 = storage.create_edge(
                 &txn,
                 OlapEdge {
+                    eid: 0,
                     label_id: NonZeroU32::new((i * 10000 + j) as u32),
                     src_id: i as u64,
                     dst_id: (j * (i + 1)) as u64,
@@ -712,6 +722,7 @@ fn compress_property_test() {
             let _result1 = storage.create_edge(
                 &txn,
                 OlapEdge {
+                    eid: 0,
                     label_id: NonZeroU32::new((i * 2 * 10000 + j) as u32),
                     src_id: i as u64,
                     dst_id: (j * (i * 2 + 1)) as u64,
@@ -1401,6 +1412,7 @@ fn parse_two_column_dataset(file_path: &str) -> (Vec<OlapVertex>, Vec<OlapEdge>)
         }
 
         edges.push(OlapEdge {
+            eid: 0,
             label_id: NonZeroU32::new(1),
             src_id: src_id as VertexId,
             dst_id: dst_id as VertexId,
@@ -1443,6 +1455,7 @@ fn parse_twitter_congress_dataset(file_path: &str) -> (Vec<OlapVertex>, Vec<Olap
         }
 
         edges.push(OlapEdge {
+            eid: 0,
             label_id: NonZeroU32::new(1),
             src_id: src_id as VertexId,
             dst_id: dst_id as VertexId,
@@ -1493,6 +1506,7 @@ fn parse_title_episode_dataset(file_path: &str) -> (Vec<OlapVertex>, Vec<OlapEdg
         }
 
         edges.push(OlapEdge {
+            eid: 0,
             label_id: NonZeroU32::new(1),
             src_id: src_id as VertexId,
             dst_id: dst_id as VertexId,
@@ -1540,6 +1554,7 @@ fn parse_title_crew_dataset(file_path: &str) -> (Vec<OlapVertex>, Vec<OlapEdge>)
         }
 
         edges.push(OlapEdge {
+            eid: 0,
             label_id: NonZeroU32::new(1),
             src_id: src_id as VertexId,
             dst_id: dst_id as VertexId,
@@ -1605,6 +1620,7 @@ fn parse_mooc_actions_dataset(
         }
 
         edges.push(OlapEdge {
+            eid: 0,
             label_id: NonZeroU32::new(1),
             src_id: src_id as VertexId,
             dst_id: dst_id as VertexId,

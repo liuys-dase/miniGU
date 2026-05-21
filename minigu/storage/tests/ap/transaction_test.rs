@@ -38,6 +38,7 @@ fn create_test_edges(
     let _ = storage.create_edge_in_txn(
         &txn,
         OlapEdge {
+            eid: 0,
             label_id: NonZeroU32::new(100 + edge_offset),
             src_id: 1,
             dst_id: 10,
@@ -49,6 +50,7 @@ fn create_test_edges(
     let _ = storage.create_edge_in_txn(
         &txn,
         OlapEdge {
+            eid: 0,
             label_id: NonZeroU32::new(101 + edge_offset),
             src_id: 1,
             dst_id: 20,
@@ -60,6 +62,7 @@ fn create_test_edges(
     let _ = storage.create_edge_in_txn(
         &txn,
         OlapEdge {
+            eid: 0,
             label_id: NonZeroU32::new(102 + edge_offset),
             src_id: 1,
             dst_id: 30,
@@ -106,6 +109,7 @@ fn test_ap_commit_replaces_txn_id() {
     let _ = arc_storage.create_edge_in_txn(
         &edge1_txn,
         OlapEdge {
+            eid: 0,
             label_id: NonZeroU32::new(100),
             src_id: 1,
             dst_id: 42,
@@ -127,6 +131,7 @@ fn test_ap_commit_replaces_txn_id() {
     let _ = arc_storage.create_edge_in_txn(
         &edge2_txn,
         OlapEdge {
+            eid: 0,
             label_id: NonZeroU32::new(100),
             src_id: 1,
             dst_id: 42,
@@ -251,6 +256,7 @@ fn test_uncommitted_data_isolation() {
         .create_edge_in_txn(
             &txn_a,
             OlapEdge {
+                eid: 0,
                 label_id: NonZeroU32::new(500),
                 src_id: 1,
                 dst_id: 100,
@@ -340,6 +346,7 @@ fn test_set_edge_property_in_txn_basic() {
         .create_edge_in_txn(
             &txn_1,
             OlapEdge {
+                eid: 0,
                 label_id: NonZeroU32::new(100),
                 src_id: 1,
                 dst_id: 10,
@@ -416,6 +423,7 @@ fn test_set_edge_property_in_txn_multiple_properties() {
         .create_edge_in_txn(
             &txn_1,
             OlapEdge {
+                eid: 0,
                 label_id: NonZeroU32::new(100),
                 src_id: 1,
                 dst_id: 10,
@@ -529,6 +537,7 @@ fn test_set_edge_property_in_txn_transaction_rollback() {
         .create_edge_in_txn(
             &txn_1,
             OlapEdge {
+                eid: 0,
                 label_id: NonZeroU32::new(100),
                 src_id: 1,
                 dst_id: 10,
@@ -598,6 +607,7 @@ fn test_delete_edge_in_txn_basic() {
         .create_edge_in_txn(
             &txn,
             OlapEdge {
+                eid: 0,
                 label_id: NonZeroU32::new(100),
                 src_id: 1,
                 dst_id: 10,
@@ -742,6 +752,7 @@ fn test_delete_edge_in_txn_transaction_rollback() {
         .create_edge_in_txn(
             &txn,
             OlapEdge {
+                eid: 0,
                 label_id: NonZeroU32::new(100),
                 src_id: 1,
                 dst_id: 10,
@@ -827,6 +838,7 @@ fn test_delete_edge_in_txn_with_properties() {
         .create_edge_in_txn(
             &txn_1,
             OlapEdge {
+                eid: 0,
                 label_id: NonZeroU32::new(100),
                 src_id: 1,
                 dst_id: 10,
@@ -893,6 +905,7 @@ fn test_concurrent_set_and_delete_serializes_writes() {
         .create_edge_in_txn(
             &setup_txn,
             OlapEdge {
+                eid: 0,
                 label_id: NonZeroU32::new(100),
                 src_id: 1,
                 dst_id: 10,
@@ -993,6 +1006,7 @@ fn test_concurrent_read_hides_uncommitted_edge() {
             .create_edge_in_txn(
                 &txn,
                 OlapEdge {
+                    eid: 0,
                     label_id: NonZeroU32::new(200),
                     src_id: 1,
                     dst_id: 100,
@@ -1068,6 +1082,7 @@ fn test_concurrent_insert_and_set_preserves_properties() {
         .create_edge_in_txn(
             &setup_txn,
             OlapEdge {
+                eid: 0,
                 label_id: NonZeroU32::new(300),
                 src_id: 1,
                 dst_id: 20,
@@ -1114,6 +1129,7 @@ fn test_concurrent_insert_and_set_preserves_properties() {
             .create_edge_in_txn(
                 &txn,
                 OlapEdge {
+                    eid: 0,
                     label_id: NonZeroU32::new(301),
                     src_id: 1,
                     dst_id: 10,
@@ -1165,6 +1181,7 @@ fn test_concurrent_commit_and_abort_preserve_committed_value() {
         .create_edge_in_txn(
             &setup_txn,
             OlapEdge {
+                eid: 0,
                 label_id: NonZeroU32::new(400),
                 src_id: 1,
                 dst_id: 10,
@@ -1268,6 +1285,7 @@ fn test_abort_create_edge_keeps_property_alignment() {
         .create_edge_in_txn(
             &base_txn,
             OlapEdge {
+                eid: 0,
                 label_id: NonZeroU32::new(600),
                 src_id: 1,
                 dst_id: 10,
@@ -1279,6 +1297,7 @@ fn test_abort_create_edge_keeps_property_alignment() {
         .create_edge_in_txn(
             &base_txn,
             OlapEdge {
+                eid: 0,
                 label_id: NonZeroU32::new(601),
                 src_id: 1,
                 dst_id: 20,
@@ -1290,6 +1309,7 @@ fn test_abort_create_edge_keeps_property_alignment() {
         .create_edge_in_txn(
             &base_txn,
             OlapEdge {
+                eid: 0,
                 label_id: NonZeroU32::new(602),
                 src_id: 1,
                 dst_id: 30,
@@ -1311,6 +1331,7 @@ fn test_abort_create_edge_keeps_property_alignment() {
         .create_edge_in_txn(
             &abort_txn,
             OlapEdge {
+                eid: 0,
                 label_id: NonZeroU32::new(603),
                 src_id: 1,
                 dst_id: 15,
