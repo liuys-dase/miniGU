@@ -133,13 +133,13 @@ mod tests {
         MemoryEdgeTypeCatalog, MemoryGraphTypeCatalog, MemoryVertexTypeCatalog,
     };
     use minigu_catalog::property::Property;
+    use minigu_common::IsolationLevel;
     use minigu_common::data_type::LogicalType;
     use minigu_common::types::LabelId;
     use minigu_common::value::ScalarValue;
     use minigu_context::graph::{GraphContainer, GraphStorage};
     use minigu_storage::common::{Edge, PropertyRecord, Vertex};
     use minigu_storage::tp::MemoryGraph;
-    use minigu_transaction::{GraphTxnManager, IsolationLevel, Transaction};
 
     use super::*;
 
@@ -148,7 +148,9 @@ mod tests {
         let mut graph_type = MemoryGraphTypeCatalog::new();
 
         // Add labels
+        #[allow(deprecated)]
         let person_label_id = graph_type.add_label("PERSON".to_string()).unwrap();
+        #[allow(deprecated)]
         let friend_label_id = graph_type.add_label("FRIEND".to_string()).unwrap();
 
         // Create vertex type
@@ -174,10 +176,15 @@ mod tests {
             )],
         ));
 
+        #[allow(deprecated)]
         graph_type.add_vertex_type(person_label_set, person);
+        #[allow(deprecated)]
         graph_type.add_edge_type(friend_label_set, friend);
 
-        Arc::new(GraphContainer::new(Arc::new(graph_type), GraphStorage::Memory(graph)))
+        Arc::new(GraphContainer::new(
+            Arc::new(graph_type),
+            GraphStorage::Memory(graph),
+        ))
     }
 
     fn setup_test_data(container: &GraphContainer) {

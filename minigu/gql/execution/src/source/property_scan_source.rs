@@ -76,22 +76,12 @@ fn scalar_values_to_array(values: Vec<ScalarValue>) -> ArrayRef {
             convert_scalar_values_to_array!(values, ScalarValue::UInt64, UInt64Array, u64)
         }
         ScalarValue::Float32(_) => {
-            convert_scalar_values_to_array!(
-                values,
-                ScalarValue::Float32,
-                Float32Array,
-                f32,
-                |f| f.into_inner()
-            )
+            convert_scalar_values_to_array!(values, ScalarValue::Float32, Float32Array, f32, |f| f
+                .into_inner())
         }
         ScalarValue::Float64(_) => {
-            convert_scalar_values_to_array!(
-                values,
-                ScalarValue::Float64,
-                Float64Array,
-                f64,
-                |f| f.into_inner()
-            )
+            convert_scalar_values_to_array!(values, ScalarValue::Float64, Float64Array, f64, |f| f
+                .into_inner())
         }
         ScalarValue::Boolean(_) => {
             convert_scalar_values_to_array!(values, ScalarValue::Boolean, BooleanArray, bool)
@@ -213,12 +203,12 @@ mod tests {
 
     use arrow::array::{BooleanArray, Float32Array, Float64Array, Int32Array, Int64Array};
     use minigu_catalog::memory::graph_type::MemoryGraphTypeCatalog;
+    use minigu_common::IsolationLevel;
     use minigu_common::types::{LabelId, PropertyId, VertexId, VertexIdArray};
     use minigu_common::value::ScalarValue;
     use minigu_context::graph::{GraphContainer, GraphStorage};
     use minigu_storage::common::{PropertyRecord, Vertex};
     use minigu_storage::tp::MemoryGraph;
-    use minigu_transaction::{GraphTxnManager, IsolationLevel, Transaction};
 
     use crate::source::VertexPropertySource;
 

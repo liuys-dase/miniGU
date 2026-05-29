@@ -89,7 +89,11 @@ impl VectorIndexScanExecutor {
         let txn = Arc::clone(self.read_session.txn());
         let visible_vertices = txn
             .iter_vertices()
-            .map(|result| result.map(|vertex| vertex.vid()).map_err(ExecutionError::from))
+            .map(|result| {
+                result
+                    .map(|vertex| vertex.vid())
+                    .map_err(ExecutionError::from)
+            })
             .collect::<ExecutionResult<Vec<_>>>()?;
         let visible_indices = visible_vertices
             .into_iter()
@@ -266,7 +270,8 @@ mod tests {
 
     use arrow::array::BooleanArray;
     use minigu_catalog::memory::graph_type::MemoryGraphTypeCatalog;
-    use minigu_common::types::{LabelId, PropertyId, VertexId, VectorIndexKey, VectorMetric};
+    use minigu_common::IsolationLevel;
+    use minigu_common::types::{LabelId, PropertyId, VectorIndexKey, VectorMetric, VertexId};
     use minigu_common::value::ScalarValue;
     use minigu_context::graph::{GraphContainer, GraphStorage};
     use minigu_planner::bound::{BoundExpr, BoundExprKind};
@@ -274,7 +279,6 @@ mod tests {
     use minigu_planner::plan::vector_index_scan::VectorIndexScan;
     use minigu_storage::common::{PropertyRecord, Vertex};
     use minigu_storage::tp::MemoryGraph;
-    use minigu_transaction::{GraphTxnManager, IsolationLevel, Transaction};
 
     use super::*;
 
@@ -358,7 +362,10 @@ mod tests {
         assert!(result.value(0), "vertex 0 should be visible");
         assert!(result.value(1), "vertex 1 should be visible");
         assert!(result.value(2), "vertex 2 should be visible");
-        assert!(!result.value(3), "vertex 3 was inserted after snapshot — must be excluded");
+        assert!(
+            !result.value(3),
+            "vertex 3 was inserted after snapshot — must be excluded"
+        );
     }
 }
 

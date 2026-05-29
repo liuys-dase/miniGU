@@ -25,7 +25,9 @@ impl QueryReadExecutor {
         }
         self.finished = true;
         if let Some(read_session) = self.read_session.take() {
-            read_session.commit().map_err(ExecutionError::from)?;
+            read_session
+                .commit()
+                .map_err(|err| ExecutionError::Custom(Box::new(err)))?;
         }
         Ok(())
     }

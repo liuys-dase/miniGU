@@ -22,8 +22,8 @@ use crate::executor::create_vector_index::CreateVectorIndexBuilder;
 use crate::executor::drop_vector_index::DropVectorIndexBuilder;
 use crate::executor::join::JoinCond;
 use crate::executor::procedure_call::ProcedureCallBuilder;
-use crate::executor::sort::SortSpec;
 use crate::executor::query_read::QueryReadExecutor;
+use crate::executor::sort::SortSpec;
 use crate::executor::vector_index_scan::VectorIndexScanBuilder;
 use crate::executor::{BoxedExecutor, Executor, IntoExecutor};
 use crate::source::VertexSource;
@@ -81,9 +81,9 @@ impl ExecutorBuilder {
             return Ok(None);
         };
         let provider = graph_ref.object().clone();
-        let container = provider
-            .downcast_arc::<GraphContainer>()
-            .map_err(|_| ContextError::Internal("only in-memory graph reads are supported".into()))?;
+        let container = provider.downcast_arc::<GraphContainer>().map_err(|_| {
+            ContextError::Internal("only in-memory graph reads are supported".into())
+        })?;
         let read_session = container
             .open_read_session()
             .map_err(|e| ContextError::Internal(e.to_string()))?;
@@ -440,14 +440,14 @@ mod tests {
     use std::sync::Arc;
 
     use minigu_catalog::label_set::LabelSet;
+    use minigu_catalog::memory::MemoryCatalog;
     use minigu_catalog::memory::directory::MemoryDirectoryCatalog;
     use minigu_catalog::memory::graph_type::{
         MemoryEdgeTypeCatalog, MemoryGraphTypeCatalog, MemoryVertexTypeCatalog,
     };
-    use minigu_catalog::memory::MemoryCatalog;
     use minigu_catalog::property::Property;
-    use minigu_catalog::provider::DirectoryOrSchema;
-    use minigu_catalog::provider::DirectoryProvider;
+    use minigu_catalog::provider::{DirectoryOrSchema, DirectoryProvider};
+    use minigu_common::IsolationLevel;
     use minigu_common::data_type::LogicalType;
     use minigu_common::types::{LabelId, PropertyId};
     use minigu_common::value::ScalarValue;
@@ -455,13 +455,12 @@ mod tests {
     use minigu_context::graph::{GraphContainer, GraphStorage};
     use minigu_context::runtime::DatabaseRuntime;
     use minigu_context::session::SessionContext;
+    use minigu_planner::plan::PlanNode;
     use minigu_planner::plan::expand::{Expand, ExpandDirection};
     use minigu_planner::plan::property_fetch::{PropertyOutput, VertexPropertyFetch};
     use minigu_planner::plan::scan::NodeIdScan;
-    use minigu_planner::plan::PlanNode;
     use minigu_storage::common::{Edge, PropertyRecord, Vertex};
     use minigu_storage::tp::MemoryGraph;
-    use minigu_transaction::{GraphTxnManager, IsolationLevel, Transaction};
 
     use super::*;
 
@@ -473,6 +472,7 @@ mod tests {
         GRAPH_READ_SESSION_OPEN_COUNT_FOR_TEST.load(std::sync::atomic::Ordering::SeqCst)
     }
 
+    #[allow(deprecated)]
     fn build_test_session() -> SessionContext {
         let graph = MemoryGraph::in_memory();
         let mut graph_type = MemoryGraphTypeCatalog::new();
@@ -514,13 +514,7 @@ mod tests {
         }
         // 1 -> 2, 1 -> 3
         for (eid, src, dst) in [(1, 1, 2), (2, 1, 3)] {
-            let e = Edge::new(
-                eid,
-                src,
-                dst,
-                friend_label,
-                PropertyRecord::new(vec![]),
-            );
+            let e = Edge::new(eid, src, dst, friend_label, PropertyRecord::new(vec![]));
             graph.create_edge(&txn, e).unwrap();
         }
         txn.commit().unwrap();
@@ -549,10 +543,7 @@ mod tests {
 
         let person = LabelId::new(1).unwrap();
         let friend = LabelId::new(2).unwrap();
-        let scan = PlanNode::PhysicalNodeScan(Arc::new(NodeIdScan::new(
-            "a",
-            vec![vec![person]],
-        )));
+        let scan = PlanNode::PhysicalNodeScan(Arc::new(NodeIdScan::new("a", vec![vec![person]])));
         let expand = PlanNode::PhysicalExpand(Arc::new(Expand::new(
             scan,
             0,
@@ -574,10 +565,7 @@ mod tests {
         )));
 
         let executor = ExecutorBuilder::new(session).build(&plan);
-        let chunks = executor
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap();
+        let chunks = executor.into_iter().collect::<Result<Vec<_>, _>>().unwrap();
         assert!(!chunks.is_empty(), "should produce at least one chunk");
         assert_eq!(
             graph_read_session_open_count(),
