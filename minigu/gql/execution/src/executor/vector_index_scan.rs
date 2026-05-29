@@ -67,6 +67,11 @@ impl Executor for VectorIndexScanExecutor {
     }
 }
 
+enum CandidateBitmap {
+    Empty,
+    Filter(BooleanArray),
+}
+
 impl VectorIndexScanExecutor {
     fn execute_scan(&mut self) -> ExecutionResult<DataChunk> {
         let candidate_bitmap = self.consume_child_bitmap()?;
@@ -367,9 +372,4 @@ mod tests {
             "vertex 3 was inserted after snapshot — must be excluded"
         );
     }
-}
-
-enum CandidateBitmap {
-    Empty,
-    Filter(BooleanArray),
 }
