@@ -2,11 +2,9 @@ use std::sync::Arc;
 
 use arrow::array::{ArrayRef, UInt64Array};
 use minigu_common::types::{EdgeId, LabelId, VertexId, VertexIdArray};
-use minigu_context::graph::{GraphContainer, GraphStorage};
+use minigu_context::graph::{GraphReadSession, GraphStorage};
 use minigu_storage::common::model::edge::Neighbor;
 use minigu_storage::iterators::AdjacencyIteratorTrait;
-use minigu_storage::tp::transaction::IsolationLevel;
-use minigu_transaction::GraphTxnManager;
 
 use super::ExpandSource;
 use crate::error::ExecutionResult;
@@ -46,7 +44,73 @@ impl Iterator for GraphExpandIter {
     }
 }
 
-impl ExpandSource for GraphContainer {
+fn expand_from_read_session(
+    read_session: GraphReadSession,
+    vertex: VertexId,
+    edge_labels: Option<Vec<Vec<LabelId>>>,
+    target_vertex_labels: Option<Vec<Vec<LabelId>>>,
+) -> Option<GraphExpandIter> {
+    let mem = Arc::clone(read_session.graph());
+    let txn = Arc::clone(read_session.txn());
+
+    if mem.get_vertex(&txn, vertex).is_err() {
+        return None;
+    }
+
+    let mut neighbors = Vec::new();
+    let adj_batch_size = read_session.container().adjacency_batch_size();
+    let mut adj_iter = txn.iter_adjacency_outgoing(vertex, adj_batch_size);
+
+    if let Some(labels) = &edge_labels {
+        use std::collections::HashSet;
+        let allowed_labels: HashSet<LabelId> = labels.iter().flatten().copied().collect();
+        adj_iter = AdjacencyIteratorTrait::filter(adj_iter, move |neighbor| {
+            allowed_labels.contains(&neighbor.label_id())
+        });
+    }
+
+    for neighbor_result in adj_iter {
+        match neighbor_result {
+            Ok(neighbor) => {
+                if let Some(target_labels) = &target_vertex_labels {
+                    match mem.get_vertex(&txn, neighbor.neighbor_id()) {
+                        Ok(neighbor_vertex) => {
+                            let neighbor_label = neighbor_vertex.label_id;
+                            let mut matches = false;
+                            for and_labels in target_labels {
+                                if and_labels.is_empty() {
+                                    matches = true;
+                                    break;
+                                }
+                                if and_labels.contains(&neighbor_label) {
+                                    matches = true;
+                                    break;
+                                }
+                            }
+                            if !matches {
+                                continue;
+                            }
+                        }
+                        Err(_) => continue,
+                    }
+                }
+                neighbors.push(neighbor);
+            }
+            Err(_) => continue,
+        }
+    }
+
+    let expand_batch_size = read_session.container().expand_batch_size();
+    Some(GraphExpandIter {
+        neighbors,
+        offset: 0,
+        batch_size: expand_batch_size,
+        _graph_storage: GraphStorage::Memory(Arc::clone(read_session.graph())),
+        _txn: txn,
+    })
+}
+
+impl ExpandSource for GraphReadSession {
     type ExpandIter = GraphExpandIter;
 
     fn expand_from_vertex(
@@ -55,87 +119,7 @@ impl ExpandSource for GraphContainer {
         edge_labels: Option<Vec<Vec<LabelId>>>,
         target_vertex_labels: Option<Vec<Vec<LabelId>>>,
     ) -> Option<Self::ExpandIter> {
-        let mem = match self.graph_storage() {
-            GraphStorage::Memory(m) => Arc::clone(m),
-        };
-
-        let txn = match mem
-            .txn_manager()
-            .begin_transaction(IsolationLevel::Serializable)
-        {
-            Ok(txn) => txn,
-            Err(_) => return None,
-        };
-
-        // Check if vertex exists
-        if mem.get_vertex(&txn, vertex).is_err() {
-            return None;
-        }
-
-        // Use the transaction's adjacency iterator to get all visible outgoing neighbors
-        let mut neighbors = Vec::new();
-        let adj_batch_size = self.adjacency_batch_size();
-        let mut adj_iter = txn.iter_adjacency_outgoing(vertex, adj_batch_size);
-
-        // Filter by edge labels
-        if let Some(labels) = &edge_labels {
-            use std::collections::HashSet;
-            let allowed_labels: HashSet<LabelId> = labels.iter().flatten().copied().collect();
-            adj_iter = AdjacencyIteratorTrait::filter(adj_iter, move |neighbor| {
-                allowed_labels.contains(&neighbor.label_id())
-            });
-        }
-
-        // Filter by target vertex labels
-        for neighbor_result in adj_iter {
-            match neighbor_result {
-                Ok(neighbor) => {
-                    // If target vertex labels are specified, check if the neighbor matches
-                    if let Some(target_labels) = &target_vertex_labels {
-                        match mem.get_vertex(&txn, neighbor.neighbor_id()) {
-                            Ok(neighbor_vertex) => {
-                                // Check if neighbor vertex label matches target labels
-                                let neighbor_label = neighbor_vertex.label_id;
-                                let mut matches = false;
-                                for and_labels in target_labels {
-                                    if and_labels.is_empty() {
-                                        matches = true;
-                                        break;
-                                    }
-                                    if and_labels.contains(&neighbor_label) {
-                                        matches = true;
-                                        break;
-                                    }
-                                }
-                                if !matches {
-                                    continue; // Skip neighbors that don't match target labels
-                                }
-                            }
-                            Err(_) => {
-                                // If we can't get the vertex, skip it
-                                continue;
-                            }
-                        }
-                    }
-                    neighbors.push(neighbor);
-                }
-                Err(_) => {
-                    // If there's an error iterating neighbors, we can skip it
-                    continue;
-                }
-            }
-        }
-
-        let expand_batch_size = self.expand_batch_size();
-        Some(GraphExpandIter {
-            neighbors,
-            offset: 0,
-            batch_size: expand_batch_size,
-            _graph_storage: match self.graph_storage() {
-                GraphStorage::Memory(m) => GraphStorage::Memory(Arc::clone(m)),
-            },
-            _txn: txn,
-        })
+        expand_from_read_session(self.clone(), vertex, edge_labels, target_vertex_labels)
     }
 }
 
@@ -159,7 +143,7 @@ mod tests {
 
     use super::*;
 
-    fn create_test_graph() -> GraphContainer {
+    fn create_test_graph() -> Arc<GraphContainer> {
         let graph = MemoryGraph::in_memory();
         let mut graph_type = MemoryGraphTypeCatalog::new();
 
@@ -193,7 +177,7 @@ mod tests {
         graph_type.add_vertex_type(person_label_set, person);
         graph_type.add_edge_type(friend_label_set, friend);
 
-        GraphContainer::new(Arc::new(graph_type), GraphStorage::Memory(graph))
+        Arc::new(GraphContainer::new(Arc::new(graph_type), GraphStorage::Memory(graph)))
     }
 
     fn setup_test_data(container: &GraphContainer) {
@@ -292,36 +276,41 @@ mod tests {
     fn test_expand_from_nonexistent_vertex() {
         let container = create_test_graph();
         setup_test_data(&container);
+        let read = container.open_read_session().unwrap();
 
         // Try to expand from a non-existent vertex
-        let result = container.expand_from_vertex(999, None, None);
+        let result = read.expand_from_vertex(999, None, None);
         assert!(
             result.is_none(),
             "Should return None for non-existent vertex"
         );
+        read.commit().unwrap();
     }
 
     #[test]
     fn test_expand_from_vertex_with_no_neighbors() {
         let container = create_test_graph();
         setup_test_data(&container);
+        let read = container.open_read_session().unwrap();
 
         // Vertex 4 has no outgoing edges
-        let result = container.expand_from_vertex(4, None, None);
+        let result = read.expand_from_vertex(4, None, None);
         assert!(result.is_some(), "Should return Some for existing vertex");
 
         let mut iter = result.unwrap();
         // Should return an empty iterator
         assert!(iter.next().is_none(), "Should have no neighbors");
+        read.commit().unwrap();
     }
 
     #[test]
     fn test_expand_from_vertex_with_neighbors() {
         let container = create_test_graph();
         setup_test_data(&container);
+        let read = container.open_read_session().unwrap();
 
         // Vertex 1 has neighbors: 2, 3
-        let result = container.expand_from_vertex(1, None, None);
+        let result = read.expand_from_vertex(1, None, None);
         assert!(result.is_some(), "Should return Some for existing vertex");
 
         let mut iter = result.unwrap();
@@ -346,15 +335,17 @@ mod tests {
 
         // Should be done after one batch
         assert!(iter.next().is_none(), "Should have no more batches");
+        read.commit().unwrap();
     }
 
     #[test]
     fn test_expand_from_vertex_with_single_neighbor() {
         let container = create_test_graph();
         setup_test_data(&container);
+        let read = container.open_read_session().unwrap();
 
         // Vertex 2 has one neighbor: 3
-        let result = container.expand_from_vertex(2, None, None);
+        let result = read.expand_from_vertex(2, None, None);
         assert!(result.is_some(), "Should return Some for existing vertex");
 
         let mut iter = result.unwrap();
@@ -375,6 +366,7 @@ mod tests {
 
         // Should be done after one batch
         assert!(iter.next().is_none(), "Should have no more batches");
+        read.commit().unwrap();
     }
 
     #[test]
@@ -431,7 +423,8 @@ mod tests {
         txn.commit().unwrap();
 
         // Now expand from vertex 5
-        let result = container.expand_from_vertex(5, None, None);
+        let read = container.open_read_session().unwrap();
+        let result = read.expand_from_vertex(5, None, None);
         assert!(result.is_some(), "Should return Some for existing vertex");
 
         let iter = result.unwrap();
@@ -449,5 +442,54 @@ mod tests {
         // With batch_size=64, we should have 2 batches: 64 + 31
         assert!(batch_count >= 1, "Should have at least one batch");
         assert!(batch_count <= 2, "Should have at most 2 batches");
+        read.commit().unwrap();
+    }
+
+    fn insert_committed_edge(container: &GraphContainer, eid: u64, src: u64, dst: u64) {
+        let mem = match container.graph_storage() {
+            GraphStorage::Memory(mem) => Arc::clone(mem),
+        };
+        let txn = mem
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
+        let friend_label_id = LabelId::new(1).unwrap();
+        let edge = Edge::new(
+            eid,
+            src,
+            dst,
+            friend_label_id,
+            PropertyRecord::new(vec![ScalarValue::Int32(Some(999))]),
+        );
+        mem.create_edge(&txn, edge).unwrap();
+        txn.commit().unwrap();
+    }
+
+    #[test]
+    fn graph_read_session_expand_uses_original_snapshot_after_edge_insert() {
+        let container = create_test_graph();
+        setup_test_data(&container);
+        let read = container.open_read_session().unwrap();
+
+        insert_committed_edge(&container, 999, 1, 4);
+
+        let mut neighbor_ids = Vec::new();
+        let expand_iter = read
+            .expand_from_vertex(1, None, None)
+            .expect("vertex 1 should exist in the read snapshot");
+        for batch in expand_iter {
+            let columns = batch.unwrap();
+            let ids = columns[1]
+                .as_any()
+                .downcast_ref::<UInt64Array>()
+                .expect("neighbor id column should be UInt64");
+            for row in 0..ids.len() {
+                neighbor_ids.push(ids.value(row));
+            }
+        }
+
+        assert_eq!(neighbor_ids, vec![2, 3]);
+        assert!(!neighbor_ids.contains(&4));
+        read.commit().unwrap();
     }
 }

@@ -16,11 +16,19 @@ use minigu_storage::error::StorageResult;
 use minigu_storage::tp::MemoryGraph;
 use minigu_storage::tp::transaction::{IsolationLevel, MemTransaction};
 use minigu_transaction::manager::GraphTxnManager;
+use minigu_transaction::Transaction;
 
 use crate::error::{IndexCatalogError, IndexCatalogResult};
 
 pub enum GraphStorage {
     Memory(Arc<MemoryGraph>),
+}
+
+#[derive(Clone)]
+pub struct GraphReadSession {
+    container: Arc<GraphContainer>,
+    graph: Arc<MemoryGraph>,
+    txn: Arc<MemTransaction>,
 }
 
 #[derive(Debug, Default)]
@@ -96,6 +104,52 @@ pub struct GraphContainer {
     adjacency_batch_size: AtomicUsize,
 }
 
+impl GraphReadSession {
+    pub fn new(container: Arc<GraphContainer>, isolation: IsolationLevel) -> StorageResult<Self> {
+        let graph = match container.graph_storage() {
+            GraphStorage::Memory(graph) => Arc::clone(graph),
+        };
+        let txn = graph.txn_manager().begin_transaction(isolation)?;
+        Ok(Self {
+            container,
+            graph,
+            txn,
+        })
+    }
+
+    #[inline]
+    pub fn container(&self) -> &Arc<GraphContainer> {
+        &self.container
+    }
+
+    #[inline]
+    pub fn graph(&self) -> &Arc<MemoryGraph> {
+        &self.graph
+    }
+
+    #[inline]
+    pub fn txn(&self) -> &Arc<MemTransaction> {
+        &self.txn
+    }
+
+    pub fn commit(&self) -> StorageResult<()> {
+        self.txn.commit().map(|_| ())
+    }
+
+    pub fn abort(&self) -> StorageResult<()> {
+        self.txn.abort()
+    }
+
+    pub fn vertex_source(
+        &self,
+        label_ids: &Option<Vec<Vec<LabelId>>>,
+        batch_size: usize,
+    ) -> StorageResult<Box<dyn Iterator<Item = Arc<VertexIdArray>> + Send + 'static>> {
+        self.container
+            .vertex_source_with_txn(&self.txn, label_ids, batch_size)
+    }
+}
+
 impl GraphContainer {
     pub fn new(graph_type: Arc<MemoryGraphTypeCatalog>, graph_storage: GraphStorage) -> Self {
         Self {
@@ -128,6 +182,10 @@ impl GraphContainer {
     #[inline]
     pub fn adjacency_batch_size(&self) -> usize {
         self.adjacency_batch_size.load(Ordering::Relaxed)
+    }
+
+    pub fn open_read_session(self: &Arc<Self>) -> StorageResult<GraphReadSession> {
+        GraphReadSession::new(Arc::clone(self), IsolationLevel::Snapshot)
     }
 
     #[inline]
@@ -238,31 +296,27 @@ fn vertex_has_all_labels(
 }
 
 impl GraphContainer {
-    pub fn vertex_source(
+    pub fn vertex_source_with_txn(
         &self,
+        txn: &Arc<MemTransaction>,
         label_ids: &Option<Vec<Vec<LabelId>>>,
         batch_size: usize,
     ) -> StorageResult<Box<dyn Iterator<Item = Arc<VertexIdArray>> + Send + 'static>> {
         let mem = match self.graph_storage() {
             GraphStorage::Memory(m) => Arc::clone(m),
         };
-        let txn = mem
-            .txn_manager()
-            .begin_transaction(IsolationLevel::Serializable)?;
         let mut ids: Vec<u64> = Vec::new();
         {
-            let it = mem.iter_vertices(&txn)?;
+            let it = mem.iter_vertices(txn)?;
             for v in it {
                 let v = v?;
                 let vid = v.vid();
-                if vertex_has_all_labels(&mem, &txn, vid, label_ids)? {
+                if vertex_has_all_labels(&mem, txn, vid, label_ids)? {
                     ids.push(vid);
                 }
             }
         }
 
-        // TODO(Colin): Sort IDs to ensure deterministic output in tests.
-        // Remove once ORDER BY is supported.
         ids.sort_unstable();
 
         assert!(
@@ -281,6 +335,30 @@ impl GraphContainer {
         });
 
         Ok(Box::new(iter))
+    }
+
+    pub fn vertex_source(
+        &self,
+        label_ids: &Option<Vec<Vec<LabelId>>>,
+        batch_size: usize,
+    ) -> StorageResult<Box<dyn Iterator<Item = Arc<VertexIdArray>> + Send + 'static>> {
+        let mem = match self.graph_storage() {
+            GraphStorage::Memory(m) => Arc::clone(m),
+        };
+        let txn = mem
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Snapshot)?;
+        let result = self.vertex_source_with_txn(&txn, label_ids, batch_size);
+        match result {
+            Ok(iter) => {
+                txn.commit()?;
+                Ok(iter)
+            }
+            Err(err) => {
+                let _ = txn.abort();
+                Err(err)
+            }
+        }
     }
 }
 

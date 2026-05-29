@@ -6,7 +6,8 @@ use minigu_catalog::provider::GraphTypeProvider;
 use minigu_common::data_chunk::DataChunk;
 use minigu_common::data_type::{DataField, DataSchema, LogicalType};
 use minigu_common::types::VertexIdArray;
-use minigu_context::graph::GraphContainer;
+use minigu_context::error::Error as ContextError;
+use minigu_context::graph::{GraphContainer, GraphReadSession};
 use minigu_context::session::SessionContext;
 use minigu_planner::bound::{BoundExpr, BoundExprKind};
 use minigu_planner::plan::{PlanData, PlanNode};
@@ -22,21 +23,79 @@ use crate::executor::drop_vector_index::DropVectorIndexBuilder;
 use crate::executor::join::JoinCond;
 use crate::executor::procedure_call::ProcedureCallBuilder;
 use crate::executor::sort::SortSpec;
+use crate::executor::query_read::QueryReadExecutor;
 use crate::executor::vector_index_scan::VectorIndexScanBuilder;
 use crate::executor::{BoxedExecutor, Executor, IntoExecutor};
 use crate::source::VertexSource;
 
+#[cfg(test)]
+static GRAPH_READ_SESSION_OPEN_COUNT_FOR_TEST: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 pub struct ExecutorBuilder {
     session: SessionContext,
+    graph_read_session: Option<GraphReadSession>,
 }
 
 impl ExecutorBuilder {
     pub fn new(session: SessionContext) -> Self {
-        Self { session }
+        Self {
+            session,
+            graph_read_session: None,
+        }
     }
 
-    pub fn build(self, plan: &PlanNode) -> BoxedExecutor {
-        self.build_executor(plan)
+    pub fn build(mut self, plan: &PlanNode) -> BoxedExecutor {
+        if Self::plan_needs_graph_read(plan) {
+            self.graph_read_session = self
+                .open_graph_read_session()
+                .expect("failed to open graph read session");
+        }
+        let executor = self.build_executor(plan);
+        if self.graph_read_session.is_some() {
+            Box::new(QueryReadExecutor::new(
+                executor,
+                self.graph_read_session.clone(),
+            ))
+        } else {
+            executor
+        }
+    }
+
+    fn plan_needs_graph_read(plan: &PlanNode) -> bool {
+        match plan {
+            PlanNode::PhysicalNodeScan(_)
+            | PlanNode::PhysicalExpand(_)
+            | PlanNode::PhysicalVectorIndexScan(_)
+            | PlanNode::PhysicalVertexPropertyFetch(_) => true,
+            PlanNode::PhysicalCreateVectorIndex(_)
+            | PlanNode::PhysicalDropVectorIndex(_)
+            | PlanNode::PhysicalCreateGraph(_)
+            | PlanNode::PhysicalDropGraph(_) => false,
+            _ => plan.children().iter().any(Self::plan_needs_graph_read),
+        }
+    }
+
+    fn open_graph_read_session(&self) -> Result<Option<GraphReadSession>, ContextError> {
+        let Some(graph_ref) = self.session.current_graph.clone() else {
+            return Ok(None);
+        };
+        let provider = graph_ref.object().clone();
+        let container = provider
+            .downcast_arc::<GraphContainer>()
+            .map_err(|_| ContextError::Internal("only in-memory graph reads are supported".into()))?;
+        let read_session = container
+            .open_read_session()
+            .map_err(|e| ContextError::Internal(e.to_string()))?;
+        #[cfg(test)]
+        GRAPH_READ_SESSION_OPEN_COUNT_FOR_TEST.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(Some(read_session))
+    }
+
+    fn graph_read_session(&self) -> GraphReadSession {
+        self.graph_read_session
+            .clone()
+            .expect("graph read session should be initialized for graph read plans")
     }
 
     fn build_executor(&self, physical_plan: &PlanNode) -> BoxedExecutor {
@@ -55,18 +114,9 @@ impl ExecutorBuilder {
             PlanNode::PhysicalNodeScan(node_scan) => {
                 // NodeScan provide graph id and label, Handle in next pr.
                 assert_eq!(children.len(), 0);
-                let container: Arc<GraphContainer> = self
-                    .session
-                    .current_graph
-                    .clone()
-                    .expect("current graph should be set")
-                    .object()
-                    .clone()
-                    .downcast_arc::<GraphContainer>()
-                    .expect("failed to downcast to GraphContainer");
-
                 let config = self.session.database().config();
-                let batches = container
+                let read_session = self.graph_read_session();
+                let batches = read_session
                     .vertex_source(
                         &Some(node_scan.labels.clone()),
                         config.execution.vertex_scan_batch_size,
@@ -105,7 +155,7 @@ impl ExecutorBuilder {
                     expand.input_column_index,
                     Some(expand.edge_labels.clone()),
                     expand.target_vertex_labels.clone(),
-                    container,
+                    self.graph_read_session(),
                 );
                 let column_indices_to_flatten: Vec<usize> =
                     (num_child_columns..num_child_columns + 2).collect();
@@ -171,7 +221,7 @@ impl ExecutorBuilder {
                             child_executor = Box::new(child_executor.scan_vertex_property(
                                 vid_index,
                                 property_list.clone(),
-                                container,
+                                self.graph_read_session(),
                             ));
 
                             // Format: {var_name}_{prop_name} to handle cases where multiple
@@ -248,7 +298,7 @@ impl ExecutorBuilder {
                     .expect("binding column should exist in child schema");
                 let child_executor = self.build_executor(&children[0]);
                 VectorIndexScanBuilder::new(
-                    self.session.clone(),
+                    self.graph_read_session(),
                     vector_scan.clone(),
                     child_executor,
                     binding_column_index,
@@ -280,19 +330,10 @@ impl ExecutorBuilder {
                     .expect("child schema should exist")
                     .get_field_index_by_name(&fetch.binding)
                     .expect("binding column should exist");
-                let container: Arc<GraphContainer> = self
-                    .session
-                    .current_graph
-                    .clone()
-                    .expect("current graph should be set")
-                    .object()
-                    .clone()
-                    .downcast_arc::<GraphContainer>()
-                    .expect("failed to downcast to GraphContainer");
                 Box::new(child_executor.scan_vertex_property(
                     binding_idx,
                     fetch.property_ids.clone(),
-                    container,
+                    self.graph_read_session(),
                 ))
             }
             PlanNode::PhysicalExplain(explain) => {
@@ -391,5 +432,157 @@ impl ExecutorBuilder {
                 Box::new(VectorDistanceEvaluator::new(lhs, rhs, *metric, *dimension))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use minigu_catalog::label_set::LabelSet;
+    use minigu_catalog::memory::directory::MemoryDirectoryCatalog;
+    use minigu_catalog::memory::graph_type::{
+        MemoryEdgeTypeCatalog, MemoryGraphTypeCatalog, MemoryVertexTypeCatalog,
+    };
+    use minigu_catalog::memory::MemoryCatalog;
+    use minigu_catalog::property::Property;
+    use minigu_catalog::provider::DirectoryOrSchema;
+    use minigu_catalog::provider::DirectoryProvider;
+    use minigu_common::data_type::LogicalType;
+    use minigu_common::types::{LabelId, PropertyId};
+    use minigu_common::value::ScalarValue;
+    use minigu_context::database::{DatabaseConfig, DatabaseContext};
+    use minigu_context::graph::{GraphContainer, GraphStorage};
+    use minigu_context::runtime::DatabaseRuntime;
+    use minigu_context::session::SessionContext;
+    use minigu_planner::plan::expand::{Expand, ExpandDirection};
+    use minigu_planner::plan::property_fetch::{PropertyOutput, VertexPropertyFetch};
+    use minigu_planner::plan::scan::NodeIdScan;
+    use minigu_planner::plan::PlanNode;
+    use minigu_storage::common::{Edge, PropertyRecord, Vertex};
+    use minigu_storage::tp::MemoryGraph;
+    use minigu_transaction::{GraphTxnManager, IsolationLevel, Transaction};
+
+    use super::*;
+
+    fn reset_graph_read_session_open_count() {
+        GRAPH_READ_SESSION_OPEN_COUNT_FOR_TEST.store(0, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn graph_read_session_open_count() -> usize {
+        GRAPH_READ_SESSION_OPEN_COUNT_FOR_TEST.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn build_test_session() -> SessionContext {
+        let graph = MemoryGraph::in_memory();
+        let mut graph_type = MemoryGraphTypeCatalog::new();
+        let person_label = graph_type.add_label("PERSON".to_string()).unwrap();
+        let friend_label = graph_type.add_label("FRIEND".to_string()).unwrap();
+
+        let person_label_set: LabelSet = vec![person_label].into_iter().collect();
+        let person_vt = Arc::new(MemoryVertexTypeCatalog::new(
+            person_label_set.clone(),
+            vec![Property::new("age".to_string(), LogicalType::Int8, false)],
+        ));
+        let friend_label_set: LabelSet = vec![friend_label].into_iter().collect();
+        let friend_et = Arc::new(MemoryEdgeTypeCatalog::new(
+            friend_label_set.clone(),
+            person_vt.clone(),
+            person_vt.clone(),
+            vec![],
+        ));
+        graph_type.add_vertex_type(person_label_set, person_vt);
+        graph_type.add_edge_type(friend_label_set, friend_et);
+
+        let container = Arc::new(GraphContainer::new(
+            Arc::new(graph_type),
+            GraphStorage::Memory(Arc::clone(&graph)),
+        ));
+
+        // Populate vertices and edges
+        let txn = graph
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
+        for i in 1u64..=3u64 {
+            let v = Vertex::new(
+                i,
+                person_label,
+                PropertyRecord::new(vec![ScalarValue::Int8(Some(21 + i as i8))]),
+            );
+            graph.create_vertex(&txn, v).unwrap();
+        }
+        // 1 -> 2, 1 -> 3
+        for (eid, src, dst) in [(1, 1, 2), (2, 1, 3)] {
+            let e = Edge::new(
+                eid,
+                src,
+                dst,
+                friend_label,
+                PropertyRecord::new(vec![]),
+            );
+            graph.create_edge(&txn, e).unwrap();
+        }
+        txn.commit().unwrap();
+
+        let dir: DirectoryOrSchema =
+            (Arc::new(MemoryDirectoryCatalog::new(None)) as Arc<dyn DirectoryProvider>).into();
+        let catalog = MemoryCatalog::new(dir);
+        let runtime = DatabaseRuntime::new(1).expect("runtime should be constructable");
+        let db = Arc::new(DatabaseContext::new(
+            catalog,
+            runtime,
+            DatabaseConfig::default(),
+        ));
+        let mut session = SessionContext::new(db);
+        session.current_graph = Some(minigu_catalog::named_ref::NamedGraphRef::new(
+            "g".into(),
+            container,
+        ));
+        session
+    }
+
+    #[test]
+    fn builder_opens_exactly_one_read_session_for_scan_expand_fetch() {
+        reset_graph_read_session_open_count();
+        let session = build_test_session();
+
+        let person = LabelId::new(1).unwrap();
+        let friend = LabelId::new(2).unwrap();
+        let scan = PlanNode::PhysicalNodeScan(Arc::new(NodeIdScan::new(
+            "a",
+            vec![vec![person]],
+        )));
+        let expand = PlanNode::PhysicalExpand(Arc::new(Expand::new(
+            scan,
+            0,
+            vec![vec![friend]],
+            Some(vec![vec![person]]),
+            Some("e".to_string()),
+            Some("b".to_string()),
+            ExpandDirection::Outgoing,
+        )));
+        let plan = PlanNode::PhysicalVertexPropertyFetch(Arc::new(VertexPropertyFetch::new(
+            expand,
+            "b".to_string(),
+            vec![PropertyId::from(0u32)],
+            vec![PropertyOutput {
+                column_alias: "b_age".to_string(),
+                ty: LogicalType::Int8,
+                nullable: false,
+            }],
+        )));
+
+        let executor = ExecutorBuilder::new(session).build(&plan);
+        let chunks = executor
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(!chunks.is_empty(), "should produce at least one chunk");
+        assert_eq!(
+            graph_read_session_open_count(),
+            1,
+            "should open exactly one graph read session"
+        );
     }
 }

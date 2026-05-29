@@ -8,8 +8,7 @@ use arrow::array::{
 use arrow::datatypes::{DataType, Field};
 use minigu_common::types::{PropertyId, VertexIdArray};
 use minigu_common::value::ScalarValue;
-use minigu_context::graph::{GraphContainer, GraphStorage};
-use minigu_transaction::{GraphTxnManager, IsolationLevel};
+use minigu_context::graph::GraphReadSession;
 
 use crate::error::{ExecutionError, ExecutionResult};
 use crate::source::VertexPropertySource;
@@ -45,175 +44,166 @@ macro_rules! convert_scalar_values_to_array {
     }};
 }
 
-/// Retrieves property values for the given vertex IDs and property IDs,
-/// returning them as ArrayRef columns.
-/// Each ArrayRef must be length-aligned with the input VertexIdArray.
-impl VertexPropertySource for GraphContainer {
+fn scalar_values_to_array(values: Vec<ScalarValue>) -> ArrayRef {
+    let sample_value = values
+        .iter()
+        .find(|v| !matches!(v, ScalarValue::Null))
+        .unwrap_or(&ScalarValue::Null);
+
+    match sample_value {
+        ScalarValue::Int8(_) => {
+            convert_scalar_values_to_array!(values, ScalarValue::Int8, Int8Array, i8)
+        }
+        ScalarValue::Int16(_) => {
+            convert_scalar_values_to_array!(values, ScalarValue::Int16, Int16Array, i16)
+        }
+        ScalarValue::Int32(_) => {
+            convert_scalar_values_to_array!(values, ScalarValue::Int32, Int32Array, i32)
+        }
+        ScalarValue::Int64(_) => {
+            convert_scalar_values_to_array!(values, ScalarValue::Int64, Int64Array, i64)
+        }
+        ScalarValue::UInt8(_) => {
+            convert_scalar_values_to_array!(values, ScalarValue::UInt8, UInt8Array, u8)
+        }
+        ScalarValue::UInt16(_) => {
+            convert_scalar_values_to_array!(values, ScalarValue::UInt16, UInt16Array, u16)
+        }
+        ScalarValue::UInt32(_) => {
+            convert_scalar_values_to_array!(values, ScalarValue::UInt32, UInt32Array, u32)
+        }
+        ScalarValue::UInt64(_) => {
+            convert_scalar_values_to_array!(values, ScalarValue::UInt64, UInt64Array, u64)
+        }
+        ScalarValue::Float32(_) => {
+            convert_scalar_values_to_array!(
+                values,
+                ScalarValue::Float32,
+                Float32Array,
+                f32,
+                |f| f.into_inner()
+            )
+        }
+        ScalarValue::Float64(_) => {
+            convert_scalar_values_to_array!(
+                values,
+                ScalarValue::Float64,
+                Float64Array,
+                f64,
+                |f| f.into_inner()
+            )
+        }
+        ScalarValue::Boolean(_) => {
+            convert_scalar_values_to_array!(values, ScalarValue::Boolean, BooleanArray, bool)
+        }
+        ScalarValue::String(_) => {
+            convert_scalar_values_to_array!(values, ScalarValue::String, StringArray, String)
+        }
+        ScalarValue::Vector { dimension, .. } => {
+            let elem_field = Arc::new(Field::new("item", DataType::Float32, false));
+            let list_size = *dimension as i32;
+            let mut flat: Vec<f32> = Vec::with_capacity(values.len() * (*dimension));
+            let mut nulls = NullBufferBuilder::new(values.len());
+            let mut has_null = false;
+            for value in values.iter() {
+                match value {
+                    ScalarValue::Vector {
+                        value: Some(vector_value),
+                        ..
+                    } => {
+                        flat.extend(vector_value.to_f32_vec().into_iter());
+                        nulls.append_non_null();
+                    }
+                    ScalarValue::Vector { .. } | ScalarValue::Null => {
+                        flat.extend(std::iter::repeat_n(0.0, *dimension));
+                        nulls.append_null();
+                        has_null = true;
+                    }
+                    _ => {
+                        flat.extend(std::iter::repeat_n(0.0, *dimension));
+                        nulls.append_null();
+                        has_null = true;
+                    }
+                }
+            }
+            let values_array = Arc::new(Float32Array::from(flat));
+            let null_buffer = if has_null {
+                Some(
+                    nulls
+                        .finish()
+                        .expect("vector null buffer should build successfully"),
+                )
+            } else {
+                None
+            };
+            Arc::new(FixedSizeListArray::new(
+                elem_field,
+                list_size,
+                values_array,
+                null_buffer,
+            )) as ArrayRef
+        }
+        ScalarValue::Null => {
+            Arc::new(Int64Array::from(vec![None::<i64>; values.len()])) as ArrayRef
+        }
+        _ => Arc::new(Int64Array::from(vec![None::<i64>; values.len()])) as ArrayRef,
+    }
+}
+
+fn scan_vertex_properties_with_read_session(
+    read_session: &GraphReadSession,
+    vertices: &VertexIdArray,
+    property_list: &[PropertyId],
+) -> ExecutionResult<Vec<ArrayRef>> {
+    let mem = Arc::clone(read_session.graph());
+    let txn = Arc::clone(read_session.txn());
+
+    let property_list = if property_list.is_empty() {
+        if let Some(&first_vid) = vertices.values().first() {
+            let sample_vertex = mem
+                .get_vertex(&txn, first_vid)
+                .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
+            let num_properties = sample_vertex.properties().len();
+            (0..num_properties as u32).collect()
+        } else {
+            Vec::new()
+        }
+    } else {
+        Vec::from(property_list)
+    };
+
+    let mut results = Vec::new();
+
+    for prop_id in property_list.iter() {
+        let idx = *prop_id as usize;
+        let mut values = Vec::new();
+
+        for vid in vertices.values().iter().copied() {
+            let v = mem
+                .get_vertex(&txn, vid)
+                .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
+            if v.is_tombstone {
+                values.push(ScalarValue::Null);
+            } else {
+                let sv = v.properties.get(idx).unwrap_or(&ScalarValue::Null);
+                values.push(sv.clone());
+            }
+        }
+
+        let array_ref = scalar_values_to_array(values);
+        results.push(array_ref);
+    }
+
+    Ok(results)
+}
+
+impl VertexPropertySource for GraphReadSession {
     fn scan_vertex_properties(
         &self,
         vertices: &VertexIdArray,
         property_list: &[PropertyId],
     ) -> ExecutionResult<Vec<ArrayRef>> {
-        let mem = match self.graph_storage() {
-            GraphStorage::Memory(mem) => Arc::clone(mem),
-        };
-        let txn = mem
-            .txn_manager()
-            .begin_transaction(IsolationLevel::Serializable)
-            .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
-
-        // If property_list is empty, get all properties from the first vertex
-        let property_list = if property_list.is_empty() {
-            if let Some(&first_vid) = vertices.values().first() {
-                let sample_vertex = mem
-                    .get_vertex(&txn, first_vid)
-                    .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
-                let num_properties = sample_vertex.properties().len();
-                (0..num_properties as u32).collect()
-            } else {
-                // No vertices, return empty list
-                Vec::new()
-            }
-        } else {
-            Vec::from(property_list)
-        };
-
-        let mut results = Vec::new();
-
-        for prop_id in property_list.iter() {
-            let idx = *prop_id as usize;
-            let mut values = Vec::new();
-
-            for vid in vertices.values().iter().copied() {
-                let v = mem
-                    .get_vertex(&txn, vid)
-                    .map_err(|e| ExecutionError::Custom(Box::new(e)))?;
-                if v.is_tombstone {
-                    values.push(ScalarValue::Null);
-                } else {
-                    let sv = v.properties.get(idx).unwrap_or(&ScalarValue::Null);
-                    values.push(sv.clone());
-                }
-            }
-
-            let sample_value = values
-                .iter()
-                .find(|v| !matches!(v, ScalarValue::Null))
-                .unwrap_or(&ScalarValue::Null);
-
-            let array_ref = match sample_value {
-                ScalarValue::Int8(_) => {
-                    convert_scalar_values_to_array!(values, ScalarValue::Int8, Int8Array, i8)
-                }
-                ScalarValue::Int16(_) => {
-                    convert_scalar_values_to_array!(values, ScalarValue::Int16, Int16Array, i16)
-                }
-                ScalarValue::Int32(_) => {
-                    convert_scalar_values_to_array!(values, ScalarValue::Int32, Int32Array, i32)
-                }
-                ScalarValue::Int64(_) => {
-                    convert_scalar_values_to_array!(values, ScalarValue::Int64, Int64Array, i64)
-                }
-                ScalarValue::UInt8(_) => {
-                    convert_scalar_values_to_array!(values, ScalarValue::UInt8, UInt8Array, u8)
-                }
-                ScalarValue::UInt16(_) => {
-                    convert_scalar_values_to_array!(values, ScalarValue::UInt16, UInt16Array, u16)
-                }
-                ScalarValue::UInt32(_) => {
-                    convert_scalar_values_to_array!(values, ScalarValue::UInt32, UInt32Array, u32)
-                }
-                ScalarValue::UInt64(_) => {
-                    convert_scalar_values_to_array!(values, ScalarValue::UInt64, UInt64Array, u64)
-                }
-                ScalarValue::Float32(_) => {
-                    convert_scalar_values_to_array!(
-                        values,
-                        ScalarValue::Float32,
-                        Float32Array,
-                        f32,
-                        |f| f.into_inner()
-                    )
-                }
-                ScalarValue::Float64(_) => {
-                    convert_scalar_values_to_array!(
-                        values,
-                        ScalarValue::Float64,
-                        Float64Array,
-                        f64,
-                        |f| f.into_inner()
-                    )
-                }
-                ScalarValue::Boolean(_) => {
-                    convert_scalar_values_to_array!(
-                        values,
-                        ScalarValue::Boolean,
-                        BooleanArray,
-                        bool
-                    )
-                }
-                ScalarValue::String(_) => {
-                    convert_scalar_values_to_array!(
-                        values,
-                        ScalarValue::String,
-                        StringArray,
-                        String
-                    )
-                }
-                ScalarValue::Vector { dimension, .. } => {
-                    let elem_field = Arc::new(Field::new("item", DataType::Float32, false));
-                    let list_size = *dimension as i32;
-                    let mut flat: Vec<f32> = Vec::with_capacity(values.len() * (*dimension));
-                    let mut nulls = NullBufferBuilder::new(values.len());
-                    let mut has_null = false;
-                    for value in values.iter() {
-                        match value {
-                            ScalarValue::Vector {
-                                value: Some(vector_value),
-                                ..
-                            } => {
-                                flat.extend(vector_value.to_f32_vec().into_iter());
-                                nulls.append_non_null();
-                            }
-                            ScalarValue::Vector { .. } | ScalarValue::Null => {
-                                flat.extend(std::iter::repeat_n(0.0, *dimension));
-                                nulls.append_null();
-                                has_null = true;
-                            }
-                            _ => {
-                                flat.extend(std::iter::repeat_n(0.0, *dimension));
-                                nulls.append_null();
-                                has_null = true;
-                            }
-                        }
-                    }
-                    let values_array = Arc::new(Float32Array::from(flat));
-                    let null_buffer = if has_null {
-                        Some(
-                            nulls
-                                .finish()
-                                .expect("vector null buffer should build successfully"),
-                        )
-                    } else {
-                        None
-                    };
-                    Arc::new(FixedSizeListArray::new(
-                        elem_field,
-                        list_size,
-                        values_array,
-                        null_buffer,
-                    )) as ArrayRef
-                }
-                ScalarValue::Null => {
-                    Arc::new(Int64Array::from(vec![None::<i64>; values.len()])) as ArrayRef
-                }
-                _ => Arc::new(Int64Array::from(vec![None::<i64>; values.len()])) as ArrayRef,
-            };
-
-            results.push(array_ref);
-        }
-
-        Ok(results)
+        scan_vertex_properties_with_read_session(self, vertices, property_list)
     }
 }
 
@@ -228,17 +218,16 @@ mod tests {
     use minigu_context::graph::{GraphContainer, GraphStorage};
     use minigu_storage::common::{PropertyRecord, Vertex};
     use minigu_storage::tp::MemoryGraph;
-    use minigu_transaction::{IsolationLevel, Transaction};
+    use minigu_transaction::{GraphTxnManager, IsolationLevel, Transaction};
 
-    use super::*;
     use crate::source::VertexPropertySource;
 
     const PERSON_LABEL_ID: LabelId = LabelId::new(1).unwrap();
 
-    fn create_test_graph_container() -> GraphContainer {
+    fn create_test_graph_container() -> Arc<GraphContainer> {
         let graph = MemoryGraph::in_memory();
         let graph_type = Arc::new(MemoryGraphTypeCatalog::new());
-        GraphContainer::new(graph_type, GraphStorage::Memory(graph))
+        Arc::new(GraphContainer::new(graph_type, GraphStorage::Memory(graph)))
     }
 
     fn create_test_vertices_with_properties(container: &GraphContainer) {
@@ -299,11 +288,12 @@ mod tests {
     fn test_scan_int32_properties() {
         let container = create_test_graph_container();
         create_test_vertices_with_properties(&container);
+        let read = container.open_read_session().unwrap();
 
         let vertices = VertexIdArray::from_iter_values([0u64, 1u64, 2u64].iter().copied());
         let property_list = vec![PropertyId::from(0u32)];
 
-        let results = container
+        let results = read
             .scan_vertex_properties(&vertices, &property_list)
             .unwrap();
         assert_eq!(results.len(), 1);
@@ -311,16 +301,18 @@ mod tests {
         let int32_array = results[0].as_any().downcast_ref::<Int32Array>().unwrap();
         let values: Vec<Option<i32>> = int32_array.iter().collect();
         assert_eq!(values, vec![Some(10), Some(20), None]);
+        read.commit().unwrap();
     }
 
     #[test]
     fn test_scan_int64_properties() {
         let container = create_test_graph_container();
         create_test_vertices_with_properties(&container);
+        let read = container.open_read_session().unwrap();
         let vertices = VertexIdArray::from_iter_values([0u64, 1u64, 2u64].iter().copied());
         let property_list = vec![PropertyId::from(1u32)];
 
-        let results = container
+        let results = read
             .scan_vertex_properties(&vertices, &property_list)
             .unwrap();
         assert_eq!(results.len(), 1);
@@ -328,16 +320,18 @@ mod tests {
         let int64_array = results[0].as_any().downcast_ref::<Int64Array>().unwrap();
         let values: Vec<Option<i64>> = int64_array.iter().collect();
         assert_eq!(values, vec![Some(100), Some(200), Some(300)]);
+        read.commit().unwrap();
     }
 
     #[test]
     fn test_scan_float32_properties() {
         let container = create_test_graph_container();
         create_test_vertices_with_properties(&container);
+        let read = container.open_read_session().unwrap();
         let vertices = VertexIdArray::from_iter_values([0u64, 1u64, 2u64].iter().copied());
         let property_list = vec![PropertyId::from(2u32)];
 
-        let results = container
+        let results = read
             .scan_vertex_properties(&vertices, &property_list)
             .unwrap();
         assert_eq!(results.len(), 1);
@@ -345,16 +339,18 @@ mod tests {
         let float32_array = results[0].as_any().downcast_ref::<Float32Array>().unwrap();
         let values: Vec<Option<f32>> = float32_array.iter().collect();
         assert_eq!(values, vec![Some(1.5), Some(3.5), Some(5.5)]);
+        read.commit().unwrap();
     }
 
     #[test]
     fn test_scan_float64_properties() {
         let container = create_test_graph_container();
         create_test_vertices_with_properties(&container);
+        let read = container.open_read_session().unwrap();
         let vertices = VertexIdArray::from_iter_values([0u64, 1u64, 2u64].iter().copied());
         let property_list = vec![PropertyId::from(3u32)];
 
-        let results = container
+        let results = read
             .scan_vertex_properties(&vertices, &property_list)
             .unwrap();
         assert_eq!(results.len(), 1);
@@ -362,16 +358,18 @@ mod tests {
         let float64_array = results[0].as_any().downcast_ref::<Float64Array>().unwrap();
         let values: Vec<Option<f64>> = float64_array.iter().collect();
         assert_eq!(values, vec![Some(2.5), Some(4.5), None]);
+        read.commit().unwrap();
     }
 
     #[test]
     fn test_scan_boolean_properties() {
         let container = create_test_graph_container();
         create_test_vertices_with_properties(&container);
+        let read = container.open_read_session().unwrap();
         let vertices = VertexIdArray::from_iter_values([0u64, 1u64, 2u64].iter().copied());
         let property_list = vec![PropertyId::from(4u32)];
 
-        let results = container
+        let results = read
             .scan_vertex_properties(&vertices, &property_list)
             .unwrap();
         assert_eq!(results.len(), 1);
@@ -379,12 +377,14 @@ mod tests {
         let boolean_array = results[0].as_any().downcast_ref::<BooleanArray>().unwrap();
         let values: Vec<Option<bool>> = boolean_array.iter().collect();
         assert_eq!(values, vec![Some(true), Some(false), Some(true)]);
+        read.commit().unwrap();
     }
 
     #[test]
     fn test_scan_multiple_properties() {
         let container = create_test_graph_container();
         create_test_vertices_with_properties(&container);
+        let read = container.open_read_session().unwrap();
         let vertices = VertexIdArray::from_iter_values([0u64, 1u64].iter().copied());
         let property_list = vec![
             PropertyId::from(0u32),
@@ -392,7 +392,7 @@ mod tests {
             PropertyId::from(4u32),
         ];
 
-        let results = container
+        let results = read
             .scan_vertex_properties(&vertices, &property_list)
             .unwrap();
         assert_eq!(results.len(), 3);
@@ -408,15 +408,17 @@ mod tests {
         let boolean_array = results[2].as_any().downcast_ref::<BooleanArray>().unwrap();
         let boolean_values: Vec<Option<bool>> = boolean_array.iter().collect();
         assert_eq!(boolean_values, vec![Some(true), Some(false)]);
+        read.commit().unwrap();
     }
 
     #[test]
     fn test_scan_with_null_values() {
         let container = create_test_graph_container();
         create_test_vertices_with_properties(&container);
+        let read = container.open_read_session().unwrap();
         let vertices = VertexIdArray::from_iter_values([0u64, 2u64].iter().copied());
         let property_list = vec![PropertyId::from(0u32)];
-        let results = container
+        let results = read
             .scan_vertex_properties(&vertices, &property_list)
             .unwrap();
         assert_eq!(results.len(), 1);
@@ -424,16 +426,18 @@ mod tests {
         let int32_array = results[0].as_any().downcast_ref::<Int32Array>().unwrap();
         let values: Vec<Option<i32>> = int32_array.iter().collect();
         assert_eq!(values, vec![Some(10), None]);
+        read.commit().unwrap();
     }
 
     #[test]
     fn test_scan_single_vertex() {
         let container = create_test_graph_container();
         create_test_vertices_with_properties(&container);
+        let read = container.open_read_session().unwrap();
         let vertices = VertexIdArray::from_iter_values([1u64].iter().copied());
         let property_list = vec![PropertyId::from(0u32), PropertyId::from(1u32)];
 
-        let results = container
+        let results = read
             .scan_vertex_properties(&vertices, &property_list)
             .unwrap();
         assert_eq!(results.len(), 2);
@@ -443,21 +447,98 @@ mod tests {
         let int64_array = results[1].as_any().downcast_ref::<Int64Array>().unwrap();
         let int64_values: Vec<Option<i64>> = int64_array.iter().collect();
         assert_eq!(int64_values, vec![Some(200)]);
+        read.commit().unwrap();
     }
 
     #[test]
     fn test_scan_empty_vertex_list() {
         let container = create_test_graph_container();
         create_test_vertices_with_properties(&container);
+        let read = container.open_read_session().unwrap();
         let vertices = VertexIdArray::from_iter_values(std::iter::empty::<u64>());
         let property_list = vec![PropertyId::from(0u32)];
 
-        let results = container
+        let results = read
             .scan_vertex_properties(&vertices, &property_list)
             .unwrap();
         assert_eq!(results.len(), 1);
 
         let array = &results[0];
         assert_eq!(array.len(), 0);
+        read.commit().unwrap();
+    }
+
+    fn update_committed_vertex0_int32(container: &GraphContainer, new_value: i32) {
+        let mem = match container.graph_storage() {
+            GraphStorage::Memory(mem) => Arc::clone(mem),
+        };
+        let txn = mem
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
+        mem.set_vertex_property(
+            &txn,
+            VertexId::from(0u64),
+            vec![0],
+            vec![ScalarValue::Int32(Some(new_value))],
+        )
+        .unwrap();
+        txn.commit().unwrap();
+    }
+
+    #[test]
+    fn graph_read_session_vertex_source_uses_original_snapshot_after_insert() {
+        let container = create_test_graph_container();
+        create_test_vertices_with_properties(&container);
+        let read = container.open_read_session().unwrap();
+
+        let mem = match container.graph_storage() {
+            GraphStorage::Memory(mem) => Arc::clone(mem),
+        };
+        let write_txn = mem
+            .txn_manager()
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
+        let later_vertex = Vertex::new(
+            VertexId::from(99u64),
+            PERSON_LABEL_ID,
+            PropertyRecord::new(vec![
+                ScalarValue::Int32(Some(99)),
+                ScalarValue::Int64(Some(9900)),
+                ScalarValue::Float32(Some(ordered_float::OrderedFloat(9.9))),
+                ScalarValue::Float64(Some(ordered_float::OrderedFloat(99.0))),
+                ScalarValue::Boolean(Some(true)),
+            ]),
+        );
+        mem.create_vertex(&write_txn, later_vertex).unwrap();
+        write_txn.commit().unwrap();
+
+        let batches = read.vertex_source(&None, 64).unwrap().collect::<Vec<_>>();
+        let ids = batches
+            .iter()
+            .flat_map(|array| array.values().iter().copied())
+            .collect::<Vec<_>>();
+
+        assert_eq!(ids, vec![0, 1, 2]);
+        assert!(!ids.contains(&99));
+        read.commit().unwrap();
+    }
+
+    #[test]
+    fn graph_read_session_property_scan_uses_original_snapshot_after_property_update() {
+        let container = create_test_graph_container();
+        create_test_vertices_with_properties(&container);
+        let read = container.open_read_session().unwrap();
+
+        update_committed_vertex0_int32(&container, 99);
+
+        let vertices = VertexIdArray::from_iter_values([0u64]);
+        let columns = read
+            .scan_vertex_properties(&vertices, &[PropertyId::from(0u32)])
+            .unwrap();
+        let values = columns[0].as_any().downcast_ref::<Int32Array>().unwrap();
+
+        assert_eq!(values.value(0), 10);
+        read.commit().unwrap();
     }
 }

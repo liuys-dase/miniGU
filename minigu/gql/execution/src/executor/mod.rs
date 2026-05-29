@@ -19,6 +19,7 @@ pub mod intersect;
 pub mod limit;
 
 pub mod project;
+pub mod query_read;
 pub mod sort;
 pub mod utils;
 pub mod vector_index_scan;
